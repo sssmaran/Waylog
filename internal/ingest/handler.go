@@ -47,11 +47,16 @@ func Events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Println("INGEST: event accepted") //logging event accepted
-
+	
+	// Next module: tail sampling decision happens here (before Kafka).
+	if !Sampler.ShouldKeep(ev) {
+	// Dropped by design — still return 202 so producers never retry
+		w.WriteHeader(http.StatusAccepted)
+		return
+}
 
 	atomic.AddUint64(&accepted, 1)
 
-	// Next module: tail sampling decision happens here (before Kafka).
 	// Next module: publish to Kafka.
 	w.WriteHeader(http.StatusAccepted)
 }
