@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -27,9 +28,12 @@ func Events(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 
 	if err := dec.Decode(&ev); err != nil {
+		log.Println("INGEST: json decode failed:", err) //if it fails logginf the err
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	log.Println("INGEST: event received")
+
 
 	// Ensure server-side timestamp sanity (optional, but helpful)
 	if ev.Timestamp.After(time.Now().Add(5 * time.Minute)) {
@@ -38,9 +42,12 @@ func Events(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := ev.Validate(); err != nil {
+		log.Println("INGEST: event validation failed:", err) //logging validation failed error
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Println("INGEST: event accepted") //logging event accepted
+
 
 	atomic.AddUint64(&accepted, 1)
 
