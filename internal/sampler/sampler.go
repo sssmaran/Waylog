@@ -2,7 +2,6 @@ package sampler
 
 import (
 	"hash/fnv"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -26,16 +25,16 @@ type Sampler struct {
 }
 
 func New(cfg Config) *Sampler {
-	log.Printf(
-		"SAMPLER CONFIG: slow_ms=%d happy_pct=%d",
-		cfg.SlowMs,
-		cfg.HappySampleRatePct,
-	)
+	// log.Printf(
+	// 	"SAMPLER CONFIG: slow_ms=%d happy_pct=%d",
+	// 	cfg.SlowMs,
+	// 	cfg.HappySampleRatePct,
+	// )
 	// sane defaults
 	if cfg.SlowMs <= 0 {
 		cfg.SlowMs = 400 // default "slow" threshold
 	}
-	if cfg.HappySampleRatePct < 0 {
+	if cfg.HappySampleRatePct <= 0 {
 		cfg.HappySampleRatePct = 2 // default 2%
 	}
 	if cfg.HappySampleRatePct > 100 {

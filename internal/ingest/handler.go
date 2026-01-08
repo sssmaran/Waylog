@@ -45,7 +45,7 @@ func Events(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	log.Printf("DECISION latency=%d", ev.Metrics.LatencyMs)
+	// log.Printf("DECISION latency=%d", ev.Metrics.LatencyMs)
 
 	// Next module: tail sampling decision happens here (before Kafka).
 	if !Sampler.ShouldKeep(ev) {
@@ -54,11 +54,11 @@ func Events(w http.ResponseWriter, r *http.Request) {
 		return
 }
 
-	// atomic.AddUint64(&accepted, 1)
-	count := atomic.AddUint64(&accepted, 1)
-	if count%50 == 0 {
-		log.Printf("INGEST: kept events = %d", count) //temp check for every 100 events kept
-}
+	atomic.AddUint64(&accepted, 1)
+// 	count := atomic.AddUint64(&accepted, 1)
+// 	if count%50 == 0 {
+// 		log.Printf("INGEST: kept events = %d", count) //temp check for every 100 events kept
+// }
 
 	// Next module: publish to Kafka.
 	w.WriteHeader(http.StatusAccepted)
