@@ -32,7 +32,6 @@ func Events(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	log.Println("INGEST: event received")
 
 
 	// Ensure server-side timestamp sanity (optional, but helpful)
@@ -46,8 +45,8 @@ func Events(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	log.Println("INGEST: event accepted") //logging event accepted
-	
+	log.Printf("DECISION latency=%d", ev.Metrics.LatencyMs)
+
 	// Next module: tail sampling decision happens here (before Kafka).
 	if !Sampler.ShouldKeep(ev) {
 	// Dropped by design — still return 202 so producers never retry
@@ -55,7 +54,11 @@ func Events(w http.ResponseWriter, r *http.Request) {
 		return
 }
 
-	atomic.AddUint64(&accepted, 1)
+	// atomic.AddUint64(&accepted, 1)
+	count := atomic.AddUint64(&accepted, 1)
+	if count%50 == 0 {
+		log.Printf("INGEST: kept events = %d", count) //temp check for every 100 events kept
+}
 
 	// Next module: publish to Kafka.
 	w.WriteHeader(http.StatusAccepted)
