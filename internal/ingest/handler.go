@@ -8,9 +8,13 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/event"
+	"github.com/sssmaran/WaylogCLI/internal/graph"
 )
 
 var accepted uint64
+
+var graphBuilder = graph.NewBuilder() // GLOBAL GRAPH BUILDER
+
 
 func Health(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -34,6 +38,8 @@ func Events(w http.ResponseWriter, r *http.Request) {
 	}
 
 
+
+
 	// Ensure server-side timestamp sanity (optional, but helpful)
 	if ev.Timestamp.After(time.Now().Add(5 * time.Minute)) {
 		http.Error(w, "timestamp too far in future", http.StatusBadRequest)
@@ -48,18 +54,40 @@ func Events(w http.ResponseWriter, r *http.Request) {
 	// log.Printf("DECISION latency=%d", ev.Metrics.LatencyMs)
 
 	// Next module: tail sampling decision happens here (before Kafka).
-	if !Sampler.ShouldKeep(ev) {
-	// Dropped by design — still return 202 so producers never retry
-		w.WriteHeader(http.StatusAccepted)
-		return
-}
-
-	atomic.AddUint64(&accepted, 1)
-// 	count := atomic.AddUint64(&accepted, 1)
-// 	if count%50 == 0 {
-// 		log.Printf("INGEST: kept events = %d", count) //temp check for every 100 events kept
+// 	if !Sampler.ShouldKeep(ev) {
+// 	// Dropped by design — still return 202 so producers never retry
+// 		w.WriteHeader(http.StatusAccepted)
+// 		return
 // }
 
-	// Next module: publish to Kafka.
+// 	atomic.AddUint64(&accepted, 1)
+// // 	count := atomic.AddUint64(&accepted, 1)
+// // 	if count%50 == 0 {
+// // 		log.Printf("INGEST: kept events = %d", count) //temp check for every 100 events kept
+// // }
+
+// 	// Next module: publish to Kafka.
+// 	w.WriteHeader(http.StatusAccepted)
+if !Sampler.ShouldKeep(ev) {
+	// Dropped by design — still return 202 so producers never retry
+	w.WriteHeader(http.StatusAccepted)
+	return
+}
+
+// BUILD GRAPH FROM REAL EVENT
+	g := graphBuilder.Build(ev)
+	GlobalGraphStore.Merge(g)
+
+	// // LOG GRAPH STATS(temp)
+	// graphSnapshot := GlobalGraphStore.Graph()
+	// log.Printf(
+	// 	"GRAPH: merged event, nodes=%d edges=%d status=%d",
+	// 	len(graphSnapshot.Nodes),
+	// 	len(graphSnapshot.Edges),
+	// 	ev.Outcome.StatusCode,
+	// )
+
+
+	atomic.AddUint64(&accepted, 1)
 	w.WriteHeader(http.StatusAccepted)
 }

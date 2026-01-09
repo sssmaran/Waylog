@@ -11,7 +11,10 @@ func NewService() *Service {
 	return &Service{}
 }
 
+
+
 func (s *Service) Process(req CheckoutRequest) CheckoutResult {
+
 	start := time.Now()
 
 	// ---- feature flags ----

@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/cli"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 )
 
@@ -31,6 +34,7 @@ func main() {
 	)
 	defer stop()
 
+	// Start HTTP server
 	go func() {
 		log.Printf("ingest listening on %s", addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -38,12 +42,17 @@ func main() {
 		}
 	}()
 
+	// Start embedded CLI (same process, same memory)
+	go replLoop()
+
 	<-ctx.Done()
 	log.Println("ingest shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-//with this graceful shutdown - No request finishes without its event being ingested.
+
+	// With graceful shutdown:
+	// No request finishes without its event being ingested.
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("ingest graceful shutdown failed: %v", err)
 	} else {
@@ -51,6 +60,43 @@ func main() {
 	}
 }
 
+func replLoop() {
+	in := bufio.NewScanner(os.Stdin)
+
+	printHelp()
+	for {
+		os.Stdout.WriteString("ingest> ")
+
+		if !in.Scan() {
+			return
+		}
+
+		line := strings.TrimSpace(in.Text())
+		if line == "" {
+			continue
+		}
+
+		switch line {
+		case "exit", "quit":
+			os.Stdout.WriteString("bye\n")
+			os.Exit(0)
+		case "help":
+			printHelp()
+			continue
+		}
+
+		args := strings.Fields(line)
+		cli.Run(args)
+	}
+}
+
+func printHelp() {
+	os.Stdout.WriteString("commands:\n")
+	os.Stdout.WriteString("  graph failures [--tier=premium]\n")
+	os.Stdout.WriteString("  graph explain <request-id>\n")
+	os.Stdout.WriteString("  help\n")
+	os.Stdout.WriteString("  exit\n")
+}
 
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
