@@ -18,6 +18,8 @@ func runGraph(args []string) {
 		handleFailures(args[1:])
 	case "explain":
 		handleExplain(args[1:])
+	case "patterns":
+		handlePatterns()
 	default:
 		fmt.Println("unknown graph command")
 	}
@@ -102,5 +104,30 @@ g := store.Graph()
 	}
 	if ex.LatencyMs != nil {
 		fmt.Printf("- Latency(ms): %v\n", ex.LatencyMs)
+	}
+}
+
+func handlePatterns() {
+	store := ingest.GlobalGraphStore
+	g := store.Graph()
+
+	patterns := graph.DetectFailurePatterns(g)
+
+	if len(patterns) == 0 {
+		fmt.Println("no failure patterns detected")
+		return
+	}
+
+	fmt.Println("Failure patterns detected:")
+
+	for _, p := range patterns {
+		fmt.Printf(
+			"- count=%d error=%s tier=%s flow=%s flags=%v\n",
+			p.Count,
+			p.ErrorCode,
+			p.UserTier,
+			p.Flow,
+			p.FeatureFlags,
+		)
 	}
 }
