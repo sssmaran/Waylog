@@ -1,6 +1,10 @@
 package cli
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/sssmaran/WaylogCLI/internal/graph"
+)
 
 func Run(args []string) {
 	if len(args) == 0 {
@@ -14,6 +18,12 @@ func Run(args []string) {
 	default:
 		usage()
 	}
+}
+
+var store *graph.Store
+
+func SetStore(s *graph.Store) {
+	store = s
 }
 
 func usage() {

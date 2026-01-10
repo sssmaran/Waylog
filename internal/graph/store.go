@@ -34,3 +34,41 @@ func (s *Store) Graph() *Graph {
 	return s.graph
 }
 
+//graph snapshot for testing and debugging for persistence
+func (s *Store) Snapshot() *Graph {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Copy nodes
+	nodes := make(map[string]Node, len(s.graph.Nodes))
+	for id, n := range s.graph.Nodes {
+		var attr map[string]any
+		if n.Attr != nil {
+			attr = make(map[string]any, len(n.Attr))
+			for k, v := range n.Attr {
+				attr[k] = v
+			}
+		}
+		n.Attr = attr
+		nodes[id] = n
+	}
+
+	// Copy edges
+	edges := make([]Edge, len(s.graph.Edges))
+	copy(edges, s.graph.Edges)
+
+	return &Graph{
+		Nodes: nodes,
+		Edges: edges,
+	}
+}
+
+func (s *Store) Restore(g *Graph) {
+	if g == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.graph = g
+}

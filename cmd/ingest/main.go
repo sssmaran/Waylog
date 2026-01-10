@@ -7,16 +7,47 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/cli"
+	"github.com/sssmaran/WaylogCLI/internal/graph"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
+	"github.com/sssmaran/WaylogCLI/internal/persist"
 )
 
 func main() {
+	log.SetOutput(os.Stderr)
 	addr := getenv("INGEST_ADDR", ":8080")
+
+	// ---------------- Graph persistence config ----------------
+
+	snapshotPath := getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
+	snapshotEvery := getenvInt("SNAPSHOT_EVERY_SEC", 5)
+
+	store := graph.NewStore()
+
+	// Restore snapshot (non-fatal)
+	if snap, err := persist.Load(snapshotPath); err == nil {
+		store.Restore(snap.Graph)
+		log.Printf(
+			"SNAPSHOT: loaded %s (nodes=%d edges=%d saved_at=%s)",
+			snapshotPath,
+			snap.NodeCount,
+			snap.EdgeCount,
+			snap.SavedAt.Format(time.RFC3339),
+		)
+	} else {
+		log.Printf("SNAPSHOT: no snapshot loaded (%v)", err)
+	}
+
+	// Share store with ingest + CLI  ✅ CHANGED
+	ingest.SetStore(store)
+	cli.SetStore(store)
+
+	// ---------------- HTTP server ----------------
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", ingest.Health)
@@ -34,7 +65,6 @@ func main() {
 	)
 	defer stop()
 
-	// Start HTTP server
 	go func() {
 		log.Printf("ingest listening on %s", addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -42,8 +72,37 @@ func main() {
 		}
 	}()
 
-	// Start embedded CLI (same process, same memory)
+	// ---------------- Embedded CLI ----------------
+
 	go replLoop()
+
+	// ---------------- Periodic snapshotter ----------------
+
+	ticker := time.NewTicker(time.Duration(snapshotEvery) * time.Second)
+	defer ticker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				g := store.Snapshot()
+				if err := persist.Save(snapshotPath, g); err != nil {
+					log.Printf("SNAPSHOT: save failed: %v", err)
+					continue
+				}
+				log.Printf(
+					"SNAPSHOT: saved (nodes=%d edges=%d) -> %s",
+					len(g.Nodes),
+					len(g.Edges),
+					snapshotPath,
+				)
+			}
+		}
+	}()
+
+	// ---------------- Shutdown ----------------
 
 	<-ctx.Done()
 	log.Println("ingest shutdown signal received")
@@ -51,12 +110,22 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// With graceful shutdown:
-	// No request finishes without its event being ingested.
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("ingest graceful shutdown failed: %v", err)
 	} else {
 		log.Println("ingest shutdown complete")
+	}
+
+	// Final snapshot on shutdown ✅ ADDED
+	g := store.Snapshot()
+	if err := persist.Save(snapshotPath, g); err != nil {
+		log.Printf("SNAPSHOT: final save failed: %v", err)
+	} else {
+		log.Printf(
+			"SNAPSHOT: final save ok (nodes=%d edges=%d)",
+			len(g.Nodes),
+			len(g.Edges),
+		)
 	}
 }
 
@@ -101,6 +170,16 @@ func printHelp() {
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return def
+}
+
+
+func getenvInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }

@@ -12,8 +12,12 @@ func runGraph(args []string) {
 		fmt.Println("usage: waylog graph failures [--tier=premium]")
 		return
 	}
+	g := graphStore().Graph()
+	println("nodes:", len(g.Nodes), "edges:", len(g.Edges))
 
 	switch args[0] {
+	case "stats":
+		handleStats()
 	case "failures":
 		handleFailures(args[1:])
 	case "explain":
@@ -32,49 +36,52 @@ func handleFailures(args []string) {
 			tier = a[7:]
 		}
 	}
-	store := ingest.GlobalGraphStore
-g := store.Graph()
+	g := graphStore().Graph()
 
 	for _, e := range g.Edges {
-		if e.Type != graph.EdgeFailedWith {
-			continue
+	if e.Type != graph.EdgeFailedWith {
+		continue
+	}
+
+	req, ok := g.Nodes[e.From]
+	if !ok {
+		continue
+	}
+
+	var userID string
+	for _, ed := range g.Edges {
+		if ed.From == req.ID && ed.Type == graph.EdgeRequestBy {
+			userID = ed.To
+			break
 		}
+	}
 
-		req := g.Nodes[e.From]
+	user, ok := g.Nodes[userID]
+	if !ok {
+		continue
+	}
 
-		var userID string
-		for _, ed := range g.Edges {
-			if ed.From == req.ID && ed.Type == graph.EdgeRequestBy {
-				userID = ed.To
-				break
-			}
-		}
+	if tier != "" && user.Attr["tier"] != tier {
+		continue
+	}
 
-		user := g.Nodes[userID]
-		if tier != "" && user.Attr["tier"] != tier {
-			continue
-		}
+	fmt.Printf(
+		"request=%s latency=%v tier=%v error=%s\n",
+		req.ID,
+		req.Attr["latency_ms"],
+		user.Attr["tier"],
+		g.Nodes[e.To].Attr["code"],
+	)
+}}
 
-		fmt.Printf(
-			"request=%s latency=%v tier=%v error=%s\n",
-			req.ID,
-			req.Attr["latency_ms"],
-			user.Attr["tier"],
-			g.Nodes[e.To].Attr["code"],
-		)
-	}}
-
-
-	func handleExplain(args []string) {
+func handleExplain(args []string) {
 	if len(args) < 1 {
 		fmt.Println("usage: waylog graph explain <request-id>")
 		return
 	}
 
 	reqID := args[0]
-
-	store := ingest.GlobalGraphStore
-	g := store.Graph()
+	g := graphStore().Graph()
 
 	ex, err := graph.ExplainRequest(g, reqID)
 	if err != nil {
@@ -108,8 +115,7 @@ g := store.Graph()
 }
 
 func handlePatterns() {
-	store := ingest.GlobalGraphStore
-	g := store.Graph()
+	g := graphStore().Graph()
 
 	patterns := graph.DetectFailurePatterns(g)
 
@@ -130,4 +136,31 @@ func handlePatterns() {
 			p.FeatureFlags,
 		)
 	}
+}
+
+func handleStats() {
+	store := graphStore()
+	g := store.Graph()
+
+	var requests, failures int
+
+	for _, n := range g.Nodes {
+		if n.Type == graph.NodeRequest {
+			requests++
+		}
+		if n.Type == graph.NodeError {
+			failures++
+		}
+	}
+
+	fmt.Println("Graph stats:")
+	fmt.Printf("- nodes: %d\n", len(g.Nodes))
+	fmt.Printf("- edges: %d\n", len(g.Edges))
+	fmt.Printf("- requests: %d\n", requests)
+	fmt.Printf("- failures: %d\n", failures)
+}
+
+
+func graphStore() *graph.Store {
+	return ingest.GlobalGraphStore
 }

@@ -15,6 +15,11 @@ var accepted uint64
 
 var graphBuilder = graph.NewBuilder() // GLOBAL GRAPH BUILDER
 
+var store *graph.Store
+
+func SetStore(s *graph.Store) {
+	GlobalGraphStore = s
+}
 
 func Health(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -36,8 +41,6 @@ func Events(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-
-
 
 
 	// Ensure server-side timestamp sanity (optional, but helpful)
@@ -73,10 +76,20 @@ if !Sampler.ShouldKeep(ev) {
 	w.WriteHeader(http.StatusAccepted)
 	return
 }
+log.Printf(
+  "EVENT status=%d success=%v error=%v",
+  ev.Outcome.StatusCode,
+  ev.Outcome.Success,
+  ev.Error,
+)
 
 // BUILD GRAPH FROM REAL EVENT
 	g := graphBuilder.Build(ev)
-	GlobalGraphStore.Merge(g)
+if store != nil {
+	store.Merge(g)
+}
+
+	// GlobalGraphStore.Merge(g)
 
 	// // LOG GRAPH STATS(temp)
 	// graphSnapshot := GlobalGraphStore.Graph()
