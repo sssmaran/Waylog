@@ -15,7 +15,6 @@ var accepted uint64
 
 var graphBuilder = graph.NewBuilder() // GLOBAL GRAPH BUILDER
 
-var store *graph.Store
 
 func SetStore(s *graph.Store) {
 	GlobalGraphStore = s
@@ -85,9 +84,9 @@ log.Printf(
 
 // BUILD GRAPH FROM REAL EVENT
 	g := graphBuilder.Build(ev)
-if store != nil {
-	store.Merge(g)
-}
+if GlobalGraphStore != nil {
+		GlobalGraphStore.Merge(g)
+	}
 
 	// GlobalGraphStore.Merge(g)
 

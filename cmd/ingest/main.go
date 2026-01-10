@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/cli"
-	"github.com/sssmaran/WaylogCLI/internal/graph"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/persist"
 )
@@ -27,11 +26,12 @@ func main() {
 	snapshotPath := getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
 	snapshotEvery := getenvInt("SNAPSHOT_EVERY_SEC", 5)
 
-	store := graph.NewStore()
-
+	store := ingest.GlobalGraphStore
+	snapshotLoaded := false
 	// Restore snapshot (non-fatal)
-	if snap, err := persist.Load(snapshotPath); err == nil {
+	if snap, source, err := persist.LoadWithSource(snapshotPath); err == nil {
 		store.Restore(snap.Graph)
+		snapshotLoaded = true
 		log.Printf(
 			"SNAPSHOT: loaded %s (nodes=%d edges=%d saved_at=%s)",
 			snapshotPath,
@@ -39,6 +39,9 @@ func main() {
 			snap.EdgeCount,
 			snap.SavedAt.Format(time.RFC3339),
 		)
+		if source == "backup" {
+			log.Printf("SNAPSHOT: loaded from backup %s.bak", snapshotPath)
+		}
 	} else {
 		log.Printf("SNAPSHOT: no snapshot loaded (%v)", err)
 	}
@@ -88,16 +91,25 @@ func main() {
 				return
 			case <-ticker.C:
 				g := store.Snapshot()
-				if err := persist.Save(snapshotPath, g); err != nil {
-					log.Printf("SNAPSHOT: save failed: %v", err)
+				if !snapshotLoaded {
+					log.Println("SNAPSHOT: skipped (last load failed)")
 					continue
 				}
-				log.Printf(
-					"SNAPSHOT: saved (nodes=%d edges=%d) -> %s",
-					len(g.Nodes),
-					len(g.Edges),
-					snapshotPath,
-				)
+				if len(g.Nodes) == 0 {
+					log.Println("SNAPSHOT: skipped (graph empty)")
+					continue
+				}
+
+				if err := persist.Save(snapshotPath, g); err != nil {
+					log.Printf("SNAPSHOT: save failed: %v", err)
+				} else {
+					log.Printf(
+						"SNAPSHOT: saved (nodes=%d edges=%d) -> %s",
+						len(g.Nodes),
+						len(g.Edges),
+						snapshotPath,
+					)
+				}
 			}
 		}
 	}()
@@ -118,7 +130,11 @@ func main() {
 
 	// Final snapshot on shutdown ✅ ADDED
 	g := store.Snapshot()
-	if err := persist.Save(snapshotPath, g); err != nil {
+	if !snapshotLoaded {
+		log.Println("SNAPSHOT: final save skipped (last load failed)")
+	} else if len(g.Nodes) == 0 {
+		log.Println("SNAPSHOT: final save skipped (graph empty)")
+	} else if err := persist.Save(snapshotPath, g); err != nil {
 		log.Printf("SNAPSHOT: final save failed: %v", err)
 	} else {
 		log.Printf(

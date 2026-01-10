@@ -1,80 +1,20 @@
-2026/01/09 19:28:19 SNAPSHOT: loaded ./data/graph_snapshot.json (nodes=1694 edges=2593 saved_at=2026-01-10T00:28:12Z)
-2026/01/09 19:28:19 ingest listening on :8080
-nodes: 1694 edges: 2593
-2026/01/09 19:28:24 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:28:29 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-nodes: 1694 edges: 2593
-2026/01/09 19:28:34 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:28:39 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:28:44 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:28:49 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:28:54 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:28:59 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:04 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:09 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:14 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:19 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:24 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:29 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:34 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:39 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:44 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:49 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:54 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:29:59 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:04 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:09 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:14 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:19 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:24 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:29 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:34 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:39 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:44 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:49 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:54 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:30:59 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:04 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:09 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:14 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:19 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:24 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:29 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:34 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:39 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:44 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:49 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:54 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:31:59 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:04 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:09 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:14 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:19 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:24 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:29 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:34 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:39 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:44 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:49 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:54 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:32:59 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:04 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:09 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:14 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:19 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:24 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:29 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:34 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:39 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:44 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:49 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:54 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:33:59 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:34:04 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:34:09 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:34:14 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:34:19 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:34:24 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:34:29 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:34:34 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
-2026/01/09 19:34:39 SNAPSHOT: saved (nodes=1694 edges=2593) -> ./data/graph_snapshot.json
+2026/01/10 07:45:55 SNAPSHOT: loaded ./data/graph_snapshot.json (nodes=2466 edges=3793 saved_at=2026-01-10T12:45:37Z)
+2026/01/10 07:45:55 SNAPSHOT: loaded from backup ./data/graph_snapshot.json.bak
+2026/01/10 07:45:55 ingest listening on :8080
+2026/01/10 07:46:00 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:05 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:10 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+nodes: 2466 edges: 3793
+2026/01/10 07:46:15 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+nodes: 2466 edges: 3793
+2026/01/10 07:46:20 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:25 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:30 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:35 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:40 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:45 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:50 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:55 SNAPSHOT: saved (nodes=2466 edges=3793) -> ./data/graph_snapshot.json
+2026/01/10 07:46:58 ingest shutdown signal received
+2026/01/10 07:46:58 ingest shutdown complete
+2026/01/10 07:46:58 SNAPSHOT: final save ok (nodes=2466 edges=3793)
