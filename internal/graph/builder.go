@@ -50,13 +50,18 @@ func (b *Builder) Build(ev event.WideEvent) *Graph {
 	})
 
 	// --------------------
-	// Service node
+	// Service node (FIXED)
 	// --------------------
-	svcID := ID("service", ev.System.Service)
+	svcID := ID(
+		"service",
+		ev.System.Service,
+		ev.System.Env,
+	)
 	g.AddNode(Node{
 		ID:   svcID,
 		Type: NodeService,
 		Attr: map[string]any{
+			"name":          ev.System.Service,
 			"env":           ev.System.Env,
 			"version":       ev.System.Version,
 			"deployment_id": ev.System.DeploymentID,
@@ -86,6 +91,49 @@ func (b *Builder) Build(ev event.WideEvent) *Graph {
 			Type: EdgeUsedFlag,
 		})
 	}
+
+	// --------------------
+// Service-to-service call edge
+// --------------------
+if ev.System.CallerService != "" {
+	callerID := ID("service", ev.System.CallerService)
+
+	// Ensure caller service node exists
+	g.AddNode(Node{
+		ID:   callerID,
+		Type: NodeService,
+		Attr: map[string]any{
+			"env": ev.System.Env,
+		},
+	})
+
+	// caller_service -> calls -> service
+	g.AddEdge(Edge{
+		From: callerID,
+		To:   svcID,
+		Type: EdgeCalls,
+	})
+}
+	// --------------------
+// Downstream service dependency (optional)
+// --------------------
+if ev.System.DownstreamService != "" {
+	downID := ID("service", ev.System.DownstreamService)
+
+	g.AddNode(Node{
+		ID:   downID,
+		Type: NodeService,
+		Attr: map[string]any{
+			"env": ev.System.Env,
+		},
+	})
+
+	g.AddEdge(Edge{
+		From: svcID,
+		To:   downID,
+		Type: EdgeCalls,
+	})
+}
 
 	// --------------------
 	// Error node (only if present)

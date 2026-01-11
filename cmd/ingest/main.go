@@ -177,11 +177,16 @@ func replLoop() {
 
 func printHelp() {
 	os.Stdout.WriteString("commands:\n")
+	os.Stdout.WriteString("  graph stats\n")
 	os.Stdout.WriteString("  graph failures [--tier=premium]\n")
 	os.Stdout.WriteString("  graph explain <request-id>\n")
+	os.Stdout.WriteString("  graph blast <error-code> [--services] [--top-users=N] [--by-tier]\n")
+	os.Stdout.WriteString("  graph chain <request-id>\n")
 	os.Stdout.WriteString("  help\n")
 	os.Stdout.WriteString("  exit\n")
+
 }
+
 
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {

@@ -40,6 +40,10 @@ type SystemContext struct {
 	Version      string `json:"version"`       // e.g., "1.9.2"
 	DeploymentID string `json:"deployment_id"` // e.g., "deploy_2026_01_05"
 	Env          string `json:"env"`           // "dev", "staging", "prod"
+	DownstreamService   string `json:"downstream_service,omitempty"` 
+	CallerService  string `json:"caller_service,omitempty"` 
+
+
 }
 
 type OutcomeContext struct {
