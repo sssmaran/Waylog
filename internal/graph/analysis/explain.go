@@ -1,6 +1,10 @@
-package graph
+package analysis
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+)
 
 // Explanation is a deterministic, structured view of why a request failed.
 // It is a projection of graph structure — not inference.
@@ -23,7 +27,7 @@ type Explanation struct {
 
 // ExplainRequest reconstructs failure context for a request node.
 // It ONLY reports what exists in the graph.
-func ExplainRequest(g *Graph, requestID string) (Explanation, error) {
+func ExplainRequest(g *core.Graph, requestID string) (Explanation, error) {
 	req, ok := g.Nodes[requestID]
 	if !ok {
 		return Explanation{}, fmt.Errorf("request node not found: %s", requestID)
@@ -41,7 +45,7 @@ func ExplainRequest(g *Graph, requestID string) (Explanation, error) {
 
 	// ---- request -> error ----
 	for _, e := range g.Edges {
-		if e.From == requestID && e.Type == EdgeFailedWith {
+		if e.From == requestID && e.Type == core.EdgeFailedWith {
 			errNode := g.Nodes[e.To]
 			if errNode.Attr != nil {
 				ex.ErrorCode = errNode.Attr["code"]
@@ -53,7 +57,7 @@ func ExplainRequest(g *Graph, requestID string) (Explanation, error) {
 
 	// ---- request -> user ----
 	for _, e := range g.Edges {
-		if e.From == requestID && e.Type == EdgeRequestBy {
+		if e.From == requestID && e.Type == core.EdgeRequestBy {
 			u := g.Nodes[e.To]
 			ex.UserID = u.ID
 			if u.Attr != nil {
@@ -65,7 +69,7 @@ func ExplainRequest(g *Graph, requestID string) (Explanation, error) {
 
 	// ---- request -> feature flags ----
 	for _, e := range g.Edges {
-		if e.From == requestID && e.Type == EdgeUsedFlag {
+		if e.From == requestID && e.Type == core.EdgeUsedFlag {
 			flagNode := g.Nodes[e.To]
 			if flagNode.Attr != nil {
 				if name, ok := flagNode.Attr["name"].(string); ok {
@@ -77,7 +81,7 @@ func ExplainRequest(g *Graph, requestID string) (Explanation, error) {
 
 	// ---- request -> service (optional but supported) ----
 	for _, e := range g.Edges {
-		if e.From == requestID && e.Type == EdgeHandledBy {
+		if e.From == requestID && e.Type == core.EdgeHandledBy {
 			svcNode := g.Nodes[e.To]
 			if svcNode.Attr != nil {
 				ex.Service = svcNode.Attr["name"]

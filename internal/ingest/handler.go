@@ -8,15 +8,16 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/event"
-	"github.com/sssmaran/WaylogCLI/internal/graph"
+	"github.com/sssmaran/WaylogCLI/internal/graph/build"
+	"github.com/sssmaran/WaylogCLI/internal/graph/store"
 )
 
 var accepted uint64
 
-var graphBuilder = graph.NewBuilder() // GLOBAL GRAPH BUILDER
+var graphBuilder = build.NewBuilder() // GLOBAL GRAPH BUILDER
 
 
-func SetStore(s *graph.Store) {
+func SetStore(s *store.Store) {
 	GlobalGraphStore = s
 }
 

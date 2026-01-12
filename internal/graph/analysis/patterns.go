@@ -1,6 +1,11 @@
-package graph
+package analysis
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	"github.com/sssmaran/WaylogCLI/internal/graph/store"
+)
 
 // FailurePattern represents a recurring failure shape in the system.
 type FailurePattern struct {
@@ -14,11 +19,11 @@ type FailurePattern struct {
 
 // DetectFailurePatterns scans the graph and groups failed requests
 // by shared causal attributes.
-func DetectFailurePatterns(g *Graph) []FailurePattern {
+func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 	patterns := map[string]*FailurePattern{}
 
 	for _, e := range g.Edges {
-	if e.Type != EdgeFailedWith {
+	if e.Type != core.EdgeFailedWith {
 		continue
 	}
 
@@ -49,7 +54,7 @@ func DetectFailurePatterns(g *Graph) []FailurePattern {
 
 	// request -> user
 	for _, ed := range g.Edges {
-		if ed.From == req.ID && ed.Type == EdgeRequestBy {
+		if ed.From == req.ID && ed.Type == core.EdgeRequestBy {
 			user, ok := g.Nodes[ed.To]
 			if ok && user.Attr != nil {
 				userTier, _ = user.Attr["tier"].(string)
@@ -60,7 +65,7 @@ func DetectFailurePatterns(g *Graph) []FailurePattern {
 
 	// request -> flags
 	for _, ed := range g.Edges {
-		if ed.From == req.ID && ed.Type == EdgeUsedFlag {
+		if ed.From == req.ID && ed.Type == core.EdgeUsedFlag {
 			flag, ok := g.Nodes[ed.To]
 			if ok && flag.Attr != nil {
 				if name, ok := flag.Attr["name"].(string); ok {
@@ -98,7 +103,7 @@ func DetectFailurePatterns(g *Graph) []FailurePattern {
 
 // DetectFailurePatternsFromSummary builds failure patterns
 // using window summaries instead of graph traversal.
-func DetectFailurePatternsFromSummary(sum WindowSummary) []FailurePattern {
+func DetectFailurePatternsFromSummary(sum store.WindowSummary) []FailurePattern {
 	patterns := map[string]*FailurePattern{}
 
 	for errID, count := range sum.ErrorCount {

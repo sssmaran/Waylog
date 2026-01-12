@@ -1,20 +1,24 @@
-package graph
+package window
 
-import "time"
+import (
+	"time"
+
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+)
 
 // FilterByWindow returns a graph containing ONLY
 // requests active in [start, end] and their 1-hop context.
-func FilterByWindow(g *Graph, start, end time.Time) *Graph {
+func FilterByWindow(g *core.Graph, start, end time.Time) *core.Graph {
 	if g == nil {
-		return New()
+		return core.New()
 	}
 
-	out := New()
+	out := core.New()
 	keep := map[string]bool{}
 
 	// 1. Keep request nodes active in window
 	for id, n := range g.Nodes {
-		if n.Type != NodeRequest {
+		if n.Type != core.NodeRequest {
 			continue
 		}
 		if n.LastSeen.IsZero() {

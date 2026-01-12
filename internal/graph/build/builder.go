@@ -1,9 +1,10 @@
-package graph
+package build
 
 import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/event"
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 )
 
 type Builder struct{}
@@ -12,16 +13,16 @@ func NewBuilder() *Builder {
 	return &Builder{}
 }
 
-func (b *Builder) Build(ev event.WideEvent) *Graph {
-	g := New()
+func (b *Builder) Build(ev event.WideEvent) *core.Graph {
+	g := core.New()
 
 	// --------------------
 	// Request node
 	// --------------------
-	reqID := ID("request", ev.Request.TraceID)
-	req := Node{
+	reqID := core.ID("request", ev.Request.TraceID)
+	req := core.Node{
 		ID:   reqID,
-		Type: NodeRequest,
+		Type: core.NodeRequest,
 		Attr: map[string]any{
 			"event_name":  ev.EventName,
 			"flow":        ev.Request.Flow,
@@ -36,10 +37,10 @@ func (b *Builder) Build(ev event.WideEvent) *Graph {
 	// --------------------
 	// User node
 	// --------------------
-	userID := ID("user", ev.User.ID)
-	user := Node{
+	userID := core.ID("user", ev.User.ID)
+	user := core.Node{
 	ID:   userID,
-	Type: NodeUser,
+	Type: core.NodeUser,
 	Attr: map[string]any{
 		"tier":   ev.User.Tier,
 		"region": ev.User.Region,
@@ -49,23 +50,23 @@ func (b *Builder) Build(ev event.WideEvent) *Graph {
 touch(&user, ev.Timestamp)
 g.AddNode(user)
 
-	g.AddEdge(Edge{
+	g.AddEdge(core.Edge{
 		From: reqID,
 		To:   userID,
-		Type: EdgeRequestBy,
+		Type: core.EdgeRequestBy,
 	})
 
 	// --------------------
-	// Service node (FIXED)
+	// Service node
 	// --------------------
-	svcID := ID(
+	svcID := core.ID(
 		"service",
 		ev.System.Service,
 		ev.System.Env,
 	)
-	svc := Node{
+	svc := core.Node{
 	ID:   svcID,
-	Type: NodeService,
+	Type: core.NodeService,
 	Attr: map[string]any{
 		"name":          ev.System.Service,
 		"env":           ev.System.Env,
@@ -76,20 +77,20 @@ g.AddNode(user)
 touch(&svc, ev.Timestamp)
 g.AddNode(svc)
 
-	g.AddEdge(Edge{
+	g.AddEdge(core.Edge{
 		From: reqID,
 		To:   svcID,
-		Type: EdgeHandledBy,
+		Type: core.EdgeHandledBy,
 	})
 
 	// --------------------
 	// Feature flag nodes
 	// --------------------
 	for _, flag := range ev.Request.FeatureFlags {
-		flagID := ID("feature_flag", flag)
-		flagNode := Node{
+		flagID := core.ID("feature_flag", flag)
+		flagNode := core.Node{
 	ID:   flagID,
-	Type: NodeFlag,
+	Type: core.NodeFlag,
 	Attr: map[string]any{
 		"name": flag,
 	},
@@ -97,10 +98,10 @@ g.AddNode(svc)
 touch(&flagNode, ev.Timestamp)
 g.AddNode(flagNode)
 
-		g.AddEdge(Edge{
+		g.AddEdge(core.Edge{
 			From: reqID,
 			To:   flagID,
-			Type: EdgeUsedFlag,
+			Type: core.EdgeUsedFlag,
 		})
 	}
 
@@ -108,12 +109,12 @@ g.AddNode(flagNode)
 // Service-to-service call edge
 // --------------------
 if ev.System.CallerService != "" {
-	callerID := ID("service", ev.System.CallerService)
+	callerID := core.ID("service", ev.System.CallerService)
 
 	// Ensure caller service node exists
-	caller := Node{
+	caller := core.Node{
 	ID:   callerID,
-	Type: NodeService,
+	Type: core.NodeService,
 	Attr: map[string]any{
 		"env": ev.System.Env,
 	},
@@ -123,21 +124,21 @@ g.AddNode(caller)
 
 
 	// caller_service -> calls -> service
-	g.AddEdge(Edge{
+	g.AddEdge(core.Edge{
 		From: callerID,
 		To:   svcID,
-		Type: EdgeCalls,
+		Type: core.EdgeCalls,
 	})
 }
 	// --------------------
-// Downstream service dependency (optional)
+// Downstream service dependency 
 // --------------------
 if ev.System.DownstreamService != "" {
-	downID := ID("service", ev.System.DownstreamService)
+	downID := core.ID("service", ev.System.DownstreamService)
 
-	down := Node{
+	down := core.Node{
 	ID:   downID,
-	Type: NodeService,
+	Type: core.NodeService,
 	Attr: map[string]any{
 		"env": ev.System.Env,
 	},
@@ -146,21 +147,21 @@ touch(&down, ev.Timestamp)
 g.AddNode(down)
 
 
-	g.AddEdge(Edge{
+	g.AddEdge(core.Edge{
 		From: svcID,
 		To:   downID,
-		Type: EdgeCalls,
+		Type: core.EdgeCalls,
 	})
 }
 
 	// --------------------
-	// Error node (only if present)
+	// Error node
 	// --------------------
 	if ev.Error != nil {
-		errID := ID("error", ev.Error.Code)
-		errNode := Node{
+		errID := core.ID("error", ev.Error.Code)
+		errNode := core.Node{
 	ID:   errID,
-	Type: NodeError,
+	Type: core.NodeError,
 	Attr: map[string]any{
 		"code":    ev.Error.Code,
 		"message": ev.Error.Message,
@@ -169,10 +170,10 @@ g.AddNode(down)
 touch(&errNode, ev.Timestamp)
 g.AddNode(errNode)
 
-		g.AddEdge(Edge{
+		g.AddEdge(core.Edge{
 			From: reqID,
 			To:   errID,
-			Type: EdgeFailedWith,
+			Type: core.EdgeFailedWith,
 		})
 	}
 
@@ -180,7 +181,7 @@ g.AddNode(errNode)
 }
 
 
-func touch(n *Node, ts time.Time) {
+func touch(n *core.Node, ts time.Time) {
 	if ts.IsZero() {
 		return
 	}

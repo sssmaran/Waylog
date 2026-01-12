@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/graph"
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 )
 
 const SnapshotVersion = "1"
@@ -21,13 +21,13 @@ type Snapshot struct {
 	Version   string       `json:"version"`
 	SavedAt   time.Time    `json:"saved_at"`
 	Checksum  string       `json:"checksum"`
-	Graph     *graph.Graph `json:"graph"`
+	Graph     *core.Graph `json:"graph"`
 
 	NodeCount int `json:"node_count"`
 	EdgeCount int `json:"edge_count"`
 }
 
-func Save(path string, g *graph.Graph) error {
+func Save(path string, g *core.Graph) error {
 	if path == "" {
 		return errors.New("snapshot path is empty")
 	}

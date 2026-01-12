@@ -7,8 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/graph"
+	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
+	"github.com/sssmaran/WaylogCLI/internal/query"
 )
 
 func runGraph(args []string) {
@@ -32,6 +35,11 @@ func runGraph(args []string) {
 		handleBlast(args[1:])
 	case "chain":
 		handleChain(args[1:])
+	case "query":
+		handleQuery(args[1:])
+	case "diff":
+		handleDiff(args[1:])
+
 
 
 	default:
@@ -49,7 +57,7 @@ func handleFailures(args []string) {
 	g := graphStore().Graph()
 
 	for _, e := range g.Edges {
-	if e.Type != graph.EdgeFailedWith {
+	if e.Type != core.EdgeFailedWith {
 		continue
 	}
 
@@ -60,7 +68,7 @@ func handleFailures(args []string) {
 
 	var userID string
 	for _, ed := range g.Edges {
-		if ed.From == req.ID && ed.Type == graph.EdgeRequestBy {
+		if ed.From == req.ID && ed.Type == core.EdgeRequestBy {
 			userID = ed.To
 			break
 		}
@@ -93,7 +101,7 @@ func handleExplain(args []string) {
 	reqID := args[0]
 	g := graphStore().Graph()
 
-	ex, err := graph.ExplainRequest(g, reqID)
+	ex, err := analysis.ExplainRequest(g, reqID)
 	if err != nil {
 		fmt.Println("explain error:", err)
 		return
@@ -147,7 +155,7 @@ func handlePatterns(args []string) {
 		start := end.Add(-d)
 
 		sum := store.SummarizeWindow(start, end)
-		patterns := graph.DetectFailurePatternsFromSummary(sum)
+		patterns := analysis.DetectFailurePatternsFromSummary(sum)
 
 		if len(patterns) == 0 {
 			fmt.Println("no failure patterns detected")
@@ -168,7 +176,7 @@ func handlePatterns(args []string) {
 	//full-graph scan
 	g := graphStore().Snapshot()
 
-	patterns := graph.DetectFailurePatterns(g)
+	patterns := analysis.DetectFailurePatterns(g)
 
 	if len(patterns) == 0 {
 		fmt.Println("no failure patterns detected")
@@ -204,15 +212,15 @@ func handleStats() {
 
 	for _, n := range g.Nodes {
 		switch n.Type {
-		case graph.NodeRequest:
+		case core.NodeRequest:
 			requests++
-		case graph.NodeUser:
+		case core.NodeUser:
 			users++
-		case graph.NodeService:
+		case core.NodeService:
 			services++
-		case graph.NodeFlag:
+		case core.NodeFlag:
 			flags++
-		case graph.NodeError:
+		case core.NodeError:
 			failures++
 		}
 	}
@@ -289,7 +297,7 @@ func handleBlast(args []string) {
 	flags := map[string]bool{}
 
 	for _, e := range g.Edges {
-		if e.Type != graph.EdgeFailedWith {
+		if e.Type != core.EdgeFailedWith {
 			continue
 		}
 
@@ -307,18 +315,18 @@ func handleBlast(args []string) {
 			}
 
 			switch ed.Type {
-			case graph.EdgeRequestBy:
+			case core.EdgeRequestBy:
 				u := g.Nodes[ed.To]
 				users[u.ID]++
 				if t, ok := u.Attr["tier"].(string); ok {
 					tiers[t]++
 				}
 
-			case graph.EdgeHandledBy:
+			case core.EdgeHandledBy:
 				s := g.Nodes[ed.To]
 				services[s.ID]++
 
-			case graph.EdgeUsedFlag:
+			case core.EdgeUsedFlag:
 				f := g.Nodes[ed.To]
 				if name, ok := f.Attr["name"].(string); ok {
 					flags[name] = true
@@ -385,7 +393,7 @@ func handleChain(args []string) {
 	// Step 1: find service handling this request
 	var serviceID string
 	for _, e := range g.Edges {
-		if e.From == reqID && e.Type == graph.EdgeHandledBy {
+		if e.From == reqID && e.Type == core.EdgeHandledBy {
 			serviceID = e.To
 			break
 		}
@@ -424,7 +432,7 @@ func handleChain(args []string) {
 		// Step 2: walk to downstream service (if present)
 		next := ""
 		for _, e := range g.Edges {
-			if e.From == curr && e.Type == graph.EdgeCalls {
+			if e.From == curr && e.Type == core.EdgeCalls {
 				next = e.To
 				break
 			}
@@ -436,6 +444,142 @@ func handleChain(args []string) {
 		curr = next
 	}
 }
+func handleQuery(args []string) {
+	if len(args) < 1 {
+		fmt.Println("usage: graph query '<expr>' --window=5m")
+		return
+	}
+
+	expr := args[0]
+	var window string
+
+	for _, a := range args[1:] {
+		if strings.HasPrefix(a, "--window=") {
+			window = strings.TrimPrefix(a, "--window=")
+		}
+	}
+
+	if window == "" {
+		fmt.Println("--window is required")
+		return
+	}
+
+	d, err := time.ParseDuration(window)
+	if err != nil {
+		fmt.Println("invalid window:", err)
+		return
+	}
+
+	pred, err := query.Parse(expr)
+	if err != nil {
+		fmt.Println("query parse error:", err)
+		return
+	}
+
+	end := time.Now()
+	start := end.Add(-d)
+
+	store := graphStore()
+	matched := 0
+
+	store.ForEachRequestFact(start, end, func(f graphstore.RequestFacts) {
+		if pred.Eval(f) {
+			matched++
+		}
+	})
+
+	fmt.Printf("Matched requests: %d\n", matched)
+}
+
+func handleDiff(args []string) {
+	var (
+		current  string
+		baseline string
+		offset   string
+	)
+
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--current="):
+			current = strings.TrimPrefix(a, "--current=")
+		case strings.HasPrefix(a, "--baseline="):
+			baseline = strings.TrimPrefix(a, "--baseline=")
+		case strings.HasPrefix(a, "--offset="):
+			offset = strings.TrimPrefix(a, "--offset=")
+		}
+	}
+
+	if current == "" || baseline == "" || offset == "" {
+		fmt.Println("usage: graph diff --current=5m --baseline=5m --offset=1h")
+		return
+	}
+
+	currDur, err := time.ParseDuration(current)
+	if err != nil {
+		fmt.Println("invalid --current:", err)
+		return
+	}
+	baseDur, err := time.ParseDuration(baseline)
+	if err != nil {
+		fmt.Println("invalid --baseline:", err)
+		return
+	}
+	offDur, err := time.ParseDuration(offset)
+	if err != nil {
+		fmt.Println("invalid --offset:", err)
+		return
+	}
+
+	now := time.Now()
+
+	currEnd := now
+	currStart := currEnd.Add(-currDur)
+
+	baseEnd := currEnd.Add(-offDur)
+	baseStart := baseEnd.Add(-baseDur)
+
+	store := graphStore()
+
+	curr := store.SummarizeWindow(currStart, currEnd)
+	base := store.SummarizeWindow(baseStart, baseEnd)
+
+	diff := analysis.DiffSummaries(base, curr)
+
+	printDiff(diff)
+}
+func printDiff(d analysis.WindowDiff) {
+	if len(d.New) > 0 {
+		fmt.Println("\nNew errors:")
+		for _, e := range d.New {
+			fmt.Printf("- %s (+%d)\n", e.ErrorCode, e.After)
+		}
+	}
+
+	if len(d.Increased) > 0 {
+		fmt.Println("\nIncreased:")
+		for _, e := range d.Increased {
+			fmt.Printf("- %s %+d (%d → %d)\n",
+				e.ErrorCode, e.Delta, e.Before, e.After)
+		}
+	}
+
+	if len(d.Decreased) > 0 {
+		fmt.Println("\nDecreased:")
+		for _, e := range d.Decreased {
+			fmt.Printf("- %s %+d (%d → %d)\n",
+				e.ErrorCode, e.Delta, e.Before, e.After)
+		}
+	}
+
+	if len(d.Removed) > 0 {
+		fmt.Println("\nRemoved:")
+		for _, e := range d.Removed {
+			fmt.Printf("- %s (-%d)\n", e.ErrorCode, e.Before)
+		}
+	}
+}
+
+
 
 
 
@@ -449,6 +593,6 @@ func keys(m map[string]bool) []string {
 
 
 
-func graphStore() *graph.Store {
+func graphStore() *graphstore.Store {
 	return ingest.GlobalGraphStore
 }

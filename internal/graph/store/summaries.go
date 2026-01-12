@@ -1,6 +1,8 @@
-package graph
+package store
 
-import "time"
+import (
+	"time"
+)
 
 type WindowSummary struct {
 	Start time.Time
@@ -57,4 +59,21 @@ func (s *Store) SummarizeWindow(start, end time.Time) WindowSummary {
 	}
 
 	return out
+}
+func (s *Store) ForEachRequestFact(
+	start, end time.Time,
+	fn func(RequestFacts),
+) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, f := range s.requestFacts {
+		if f.SeenAt.IsZero() {
+			continue
+		}
+		if f.SeenAt.Before(start) || f.SeenAt.After(end) {
+			continue
+		}
+		fn(f)
+	}
 }

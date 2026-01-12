@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/sssmaran/WaylogCLI/internal/graph"
+	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 )
 
 func Run(args []string) {
@@ -20,9 +20,9 @@ func Run(args []string) {
 	}
 }
 
-var store *graph.Store
+var store *graphstore.Store
 
-func SetStore(s *graph.Store) {
+func SetStore(s *graphstore.Store) {
 	store = s
 }
 

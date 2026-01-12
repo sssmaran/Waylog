@@ -1,13 +1,16 @@
-package graph
+package store
 
 import (
 	"sync"
 	"time"
+
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	"github.com/sssmaran/WaylogCLI/internal/graph/window"
 )
 
 type Store struct {
 	mu    sync.RWMutex
-	graph *Graph
+	graph *core.Graph
 	//for fast lookups
 	requestFacts map[string]RequestFacts
 	seenRequests map[string]struct{}
@@ -16,7 +19,7 @@ type Store struct {
 
 func NewStore() *Store {
 	return &Store{
-		graph: New(),
+		graph: core.New(),
 		requestFacts: map[string]RequestFacts{},
 		seenRequests: map[string]struct{}{},
 		counters:     NewCounters(),
@@ -26,14 +29,14 @@ func NewStore() *Store {
 // Call ONLY while holding s.mu.
 func (s *Store) ensureGraphLocked() {
 	if s.graph == nil {
-		s.graph = New()
+		s.graph = core.New()
 	}
 }
 
 // Merge merges another graph into this store.
 // Node IDs are deterministic, so duplicates are avoided.
 // Edges are append-only.
-func (s *Store) Merge(g *Graph) {
+func (s *Store) Merge(g *core.Graph) {
 	if g == nil {
 		return
 	}
@@ -61,7 +64,7 @@ func (s *Store) Merge(g *Graph) {
 	s.graph.Edges = append(s.graph.Edges, g.Edges...)
 
 	for id, n := range g.Nodes {
-		if n.Type != NodeRequest {
+		if n.Type != core.NodeRequest {
 			continue
 		}
 		if _, seen := s.seenRequests[id]; seen {
@@ -111,7 +114,7 @@ func (s *Store) applyFactsToCountersLocked(f RequestFacts) {
 //helper for time-window commands 
 // internal/graph/store.go
 
-func mergeNodeTime(dst, src *Node) {
+func mergeNodeTime(dst, src *core.Node) {
     if !src.FirstSeen.IsZero() &&
         (dst.FirstSeen.IsZero() || src.FirstSeen.Before(dst.FirstSeen)) {
         dst.FirstSeen = src.FirstSeen
@@ -126,7 +129,7 @@ func mergeNodeTime(dst, src *Node) {
 
 // Graph returns the live graph pointer.
 // IMPORTANT: callers MUST treat this as read-only.
-func (s *Store) Graph() *Graph {
+func (s *Store) Graph() *core.Graph {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	s.ensureGraphLocked()
@@ -137,7 +140,7 @@ func (s *Store) Graph() *Graph {
 
 // Snapshot returns a deep copy of the graph.
 // This is safe for persistence, debugging, and CLI reads.
-func (s *Store) Snapshot() *Graph {
+func (s *Store) Snapshot() *core.Graph {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -145,7 +148,7 @@ func (s *Store) Snapshot() *Graph {
 	s.ensureGraphLocked()
 
 	// Deep copy nodes
-	nodes := make(map[string]Node, len(s.graph.Nodes))
+	nodes := make(map[string]core.Node, len(s.graph.Nodes))
 for id, n := range s.graph.Nodes {
     var attr map[string]any
     if n.Attr != nil {
@@ -155,7 +158,7 @@ for id, n := range s.graph.Nodes {
         }
     }
 
-    nodes[id] = Node{
+    nodes[id] = core.Node{
         ID:        n.ID,
         Type:      n.Type,
         Attr:      attr,
@@ -166,10 +169,10 @@ for id, n := range s.graph.Nodes {
 
 
 	// Copy edges
-	edges := make([]Edge, len(s.graph.Edges))
+	edges := make([]core.Edge, len(s.graph.Edges))
 	copy(edges, s.graph.Edges)
 
-	return &Graph{
+	return &core.Graph{
 		Nodes: nodes,
 		Edges: edges,
 	}
@@ -178,18 +181,18 @@ for id, n := range s.graph.Nodes {
 
 // Restore replaces the current graph with a defensive copy of g.
 // This avoids memory aliasing with snapshot data.
-func (s *Store) Restore(g *Graph) {
+func (s *Store) Restore(g *core.Graph) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if g == nil {
-		s.graph = New()
+		s.graph = core.New()
 		s.rebuildDerivedIndexesLocked()
 		return
 	}
 
 	// Deep-copy nodes
-	nodes := make(map[string]Node, len(g.Nodes))
+	nodes := make(map[string]core.Node, len(g.Nodes))
 	for id, n := range g.Nodes {
 		var attrCopy map[string]any
 		if n.Attr != nil {
@@ -199,7 +202,7 @@ func (s *Store) Restore(g *Graph) {
 			}
 		}
 
-		nodes[id] = Node{
+		nodes[id] = core.Node{
     ID:        n.ID,
     Type:      n.Type,
     Attr:      attrCopy,
@@ -211,10 +214,10 @@ func (s *Store) Restore(g *Graph) {
 	}
 
 	// Copy edges
-	edges := make([]Edge, len(g.Edges))
+	edges := make([]core.Edge, len(g.Edges))
 	copy(edges, g.Edges)
 
-	s.graph = &Graph{
+	s.graph = &core.Graph{
 		Nodes: nodes,
 		Edges: edges,
 	}
@@ -229,7 +232,7 @@ func (s *Store) PruneOlderThan(cutoff time.Time) {
 	defer s.mu.Unlock()
 
 	s.ensureGraphLocked()
-	s.graph = FilterByWindow(s.graph, cutoff, time.Now())
+	s.graph = window.FilterByWindow(s.graph, cutoff, time.Now())
 	s.rebuildDerivedIndexesLocked()
 }
 
@@ -239,7 +242,7 @@ func (s *Store) rebuildDerivedIndexesLocked() {
 	s.counters = NewCounters()
 
 	for id, n := range s.graph.Nodes {
-		if n.Type != NodeRequest {
+		if n.Type != core.NodeRequest {
 			continue
 		}
 		facts, ok := extractRequestFactsFromGraph(s.graph, id)
@@ -254,7 +257,7 @@ func (s *Store) rebuildDerivedIndexesLocked() {
 
 func (s *Store) backfillRequestTimestampsLocked() {
 	for id, n := range s.graph.Nodes {
-		if n.Type != NodeRequest {
+		if n.Type != core.NodeRequest {
 			continue
 		}
 		if !n.LastSeen.IsZero() {
@@ -300,9 +303,9 @@ func parseTimestampAttr(attr map[string]any) time.Time {
 
 
 
-func extractRequestFactsFromGraph(g *Graph, reqID string) (RequestFacts, bool) {
+func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bool) {
 	reqNode, ok := g.Nodes[reqID]
-	if !ok || reqNode.Type != NodeRequest {
+	if !ok || reqNode.Type != core.NodeRequest {
 		return RequestFacts{}, false
 	}
 
@@ -328,11 +331,11 @@ func extractRequestFactsFromGraph(g *Graph, reqID string) (RequestFacts, bool) {
 		}
 
 		switch n.Type {
-		case NodeService:
+		case core.NodeService:
 			f.Services = append(f.Services, n.ID)
-		case NodeError:
+		case core.NodeError:
 			f.Errors = append(f.Errors, n.ID)
-		case NodeFlag:
+		case core.NodeFlag:
 			f.Flags = append(f.Flags, n.ID)
 		}
 	}

@@ -1,4 +1,4 @@
-package graph
+package core
 
 type EdgeType string
 
