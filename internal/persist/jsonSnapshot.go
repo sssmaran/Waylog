@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/graph"
 )
 
 const SnapshotVersion = "1"
+var ErrSnapshotMissing = errors.New("snapshot missing")
 
 type Snapshot struct {
 	Version   string       `json:"version"`
@@ -26,6 +28,15 @@ type Snapshot struct {
 }
 
 func Save(path string, g *graph.Graph) error {
+	if path == "" {
+		return errors.New("snapshot path is empty")
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir snapshot dir: %w", err)
+	}
+
 	tmp := Snapshot{
 		Version:   SnapshotVersion,
 		SavedAt:   time.Now().UTC(),
@@ -65,6 +76,9 @@ func LoadWithSource(path string) (*Snapshot, string, error) {
 	} else if bakSnap, err2 := loadSnapshot(path + ".bak"); err2 == nil {
 		return bakSnap, "backup", nil
 	} else {
+		if isMissing(err) && isMissing(err2) {
+			return nil, "", ErrSnapshotMissing
+		}
 		return nil, "", fmt.Errorf("load snapshot failed: %v; backup failed: %v", err, err2)
 	}
 }
@@ -114,4 +128,8 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return out.Sync()
+}
+
+func isMissing(err error) bool {
+	return err != nil && errors.Is(err, os.ErrNotExist)
 }

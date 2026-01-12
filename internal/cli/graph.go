@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/graph"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
@@ -26,7 +27,7 @@ func runGraph(args []string) {
 	case "explain":
 		handleExplain(args[1:])
 	case "patterns":
-		handlePatterns()
+		handlePatterns(args[1:])
 	case "blast":
 		handleBlast(args[1:])
 	case "chain":
@@ -123,8 +124,49 @@ func handleExplain(args []string) {
 	}
 }
 
-func handlePatterns() {
-	g := graphStore().Graph()
+func handlePatterns(args []string) {
+	var window string
+
+	for _, a := range args {
+		if strings.HasPrefix(a, "--window=") {
+			window = strings.TrimPrefix(a, "--window=")
+		}
+	}
+
+	store := graphStore()
+
+	//window+summary based (fast-lookup)
+	if window != "" {
+		d, err := time.ParseDuration(window)
+		if err != nil {
+			fmt.Println("invalid --window value:", err)
+			return
+		}
+
+		end := time.Now()
+		start := end.Add(-d)
+
+		sum := store.SummarizeWindow(start, end)
+		patterns := graph.DetectFailurePatternsFromSummary(sum)
+
+		if len(patterns) == 0 {
+			fmt.Println("no failure patterns detected")
+			return
+		}
+
+		fmt.Println("Failure patterns detected (fast windowed):")
+		for _, p := range patterns {
+			fmt.Printf(
+				"- count=%d error=%s\n",
+				p.Count,
+				p.ErrorCode,
+			)
+		}
+		return
+	}
+
+	//full-graph scan
+	g := graphStore().Snapshot()
 
 	patterns := graph.DetectFailurePatterns(g)
 
@@ -146,6 +188,7 @@ func handlePatterns() {
 		)
 	}
 }
+
 
 func handleStats() {
 	store := graphStore()

@@ -1,5 +1,7 @@
 package graph
 
+import "time"
+
 type NodeType string
 
 const (
@@ -14,4 +16,8 @@ type Node struct {
 	ID   string
 	Type NodeType
 	Attr map[string]any
+
+	//for time-window commands 
+    FirstSeen time.Time 
+    LastSeen  time.Time
 }

@@ -92,3 +92,32 @@ func DetectFailurePatterns(g *Graph) []FailurePattern {
 
 	return out
 }
+
+
+
+
+// DetectFailurePatternsFromSummary builds failure patterns
+// using window summaries instead of graph traversal.
+func DetectFailurePatternsFromSummary(sum WindowSummary) []FailurePattern {
+	patterns := map[string]*FailurePattern{}
+
+	for errID, count := range sum.ErrorCount {
+		// NOTE:
+		// At this stage we only know error + count.
+		// Flow / tier / flags will be layered later (Module 6.4).
+		key := errID
+
+		if _, ok := patterns[key]; !ok {
+			patterns[key] = &FailurePattern{
+				ErrorCode: errID,
+			}
+		}
+		patterns[key].Count += count
+	}
+
+	var out []FailurePattern
+	for _, p := range patterns {
+		out = append(out, *p)
+	}
+	return out
+}

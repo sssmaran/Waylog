@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +26,7 @@ func main() {
 
 	snapshotPath := getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
 	snapshotEvery := getenvInt("SNAPSHOT_EVERY_SEC", 5)
+	// retention := getenvDuration("GRAPH_RETENTION", 0)
 
 	store := ingest.GlobalGraphStore
 	snapshotLoaded := false
@@ -42,6 +44,9 @@ func main() {
 		if source == "backup" {
 			log.Printf("SNAPSHOT: loaded from backup %s.bak", snapshotPath)
 		}
+	} else if errors.Is(err, persist.ErrSnapshotMissing) {
+		snapshotLoaded = true
+		log.Printf("SNAPSHOT: none found, starting fresh")
 	} else {
 		log.Printf("SNAPSHOT: no snapshot loaded (%v)", err)
 	}
@@ -90,6 +95,9 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// if retention > 0 {
+				// 	store.PruneOlderThan(time.Now().Add(-retention))
+				// }
 				g := store.Snapshot()
 				if !snapshotLoaded {
 					log.Println("SNAPSHOT: skipped (last load failed)")
@@ -204,3 +212,12 @@ func getenvInt(k string, def int) int {
 	}
 	return def
 }
+
+// func getenvDuration(k string, def time.Duration) time.Duration {
+// 	if v := os.Getenv(k); v != "" {
+// 		if d, err := time.ParseDuration(v); err == nil {
+// 			return d
+// 		}
+// 	}
+// 	return def
+// }
