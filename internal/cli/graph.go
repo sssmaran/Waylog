@@ -39,6 +39,9 @@ func runGraph(args []string) {
 		handleQuery(args[1:])
 	case "diff":
 		handleDiff(args[1:])
+	case "trace":
+		handleTrace(args[1:])
+
 
 
 
@@ -575,6 +578,47 @@ func printDiff(d analysis.WindowDiff) {
 		fmt.Println("\nRemoved:")
 		for _, e := range d.Removed {
 			fmt.Printf("- %s (-%d)\n", e.ErrorCode, e.Before)
+		}
+	}
+}
+
+func handleTrace(args []string) {
+	if len(args) < 1 {
+		fmt.Println("usage: graph trace <trace-id>")
+		return
+	}
+
+	traceID := args[0]
+	g := graphStore().Graph()
+
+	reqID := core.ID("request", traceID)
+	fmt.Printf("Trace %s\n", traceID)
+
+	// find root spans
+	for _, e := range g.Edges {
+		if e.Type != core.EdgeRequestHasSpan || e.From != reqID {
+			continue
+		}
+		printSpanTree(g, e.To, 0)
+	}
+}
+
+func printSpanTree(g *core.Graph, spanID string, depth int) {
+	n, ok := g.Nodes[spanID]
+	if !ok {
+		return
+	}
+
+	indent := strings.Repeat("  ", depth)
+	fmt.Printf("%s• span=%v service=%v\n",
+		indent,
+		n.Attr["span_id"],
+		n.Attr["service"],
+	)
+
+	for _, e := range g.Edges {
+		if e.Type == core.EdgeSpanChildOf && e.To == spanID {
+			printSpanTree(g, e.From, depth+1)
 		}
 	}
 }

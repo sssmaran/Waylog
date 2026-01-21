@@ -31,8 +31,11 @@ type UserContext struct {
 
 type RequestContext struct {
 	TraceID      string   `json:"trace_id"`
-	Flow         string   `json:"flow"`          // e.g., "checkout_v2"
-	FeatureFlags []string `json:"feature_flags"` // e.g., ["new_checkout"]
+	SpanID       string   `json:"span_id,omitempty"`
+	ParentSpanID string   `json:"parent_span_id,omitempty"`
+
+	Flow         string   `json:"flow"`
+	FeatureFlags []string `json:"feature_flags"`
 }
 
 type SystemContext struct {
@@ -81,6 +84,11 @@ func (e WideEvent) Validate() error {
 	if e.Request.TraceID == "" {
 		return errors.New("request.trace_id is required")
 	}
+	// If ParentSpanID is set, SpanID must be set
+if e.Request.ParentSpanID != "" && e.Request.SpanID == "" {
+    return errors.New("request.span_id is required when request.parent_span_id is set")
+}
+
 	if e.System.Service == "" {
 		return errors.New("system.service is required")
 	}

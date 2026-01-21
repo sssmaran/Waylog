@@ -13,8 +13,11 @@ func NewBuilder() *Builder {
 	return &Builder{}
 }
 
+
+
 func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 	g := core.New()
+	errID:=""
 
 	// --------------------
 	// Request node
@@ -82,7 +85,70 @@ g.AddNode(svc)
 		To:   svcID,
 		Type: core.EdgeHandledBy,
 	})
+	// --------------------
+	// Span node
+	// --------------------
+	var spanNodeID string
 
+	if ev.Request.SpanID != "" {
+		spanNodeID = core.ID("span", ev.Request.TraceID, ev.Request.SpanID)
+
+		span := core.Node{
+			ID:   spanNodeID,
+			Type: core.NodeSpan,
+			Attr: map[string]any{
+				"trace_id":       ev.Request.TraceID,
+				"span_id":        ev.Request.SpanID,
+				"parent_span_id": ev.Request.ParentSpanID,
+				"service":        ev.System.Service,
+			},
+		}
+		touch(&span, ev.Timestamp)
+		g.AddNode(span)
+
+		// request → span
+		g.AddEdge(core.Edge{
+			From: reqID,
+			To:   spanNodeID,
+			Type: core.EdgeRequestHasSpan,
+		})
+
+		// span → service
+		g.AddEdge(core.Edge{
+			From: spanNodeID,
+			To:   svcID,
+			Type: core.EdgeSpanOnService,
+		})
+
+		// span → parent span (if exists)
+		if ev.Request.ParentSpanID != "" {
+			parentID := core.ID("span", ev.Request.TraceID, ev.Request.ParentSpanID)
+
+			parent := core.Node{
+				ID:   parentID,
+				Type: core.NodeSpan,
+				Attr: map[string]any{
+					"trace_id": ev.Request.TraceID,
+					"span_id":  ev.Request.ParentSpanID,
+				},
+			}
+			touch(&parent, ev.Timestamp)
+			g.AddNode(parent)
+
+			g.AddEdge(core.Edge{
+				From: spanNodeID,
+				To:   parentID,
+				Type: core.EdgeSpanChildOf,
+			})
+		}
+	}
+if spanNodeID != "" && errID != "" {
+	g.AddEdge(core.Edge{
+		From: spanNodeID,
+		To:   errID,
+		Type: core.EdgeFailedWith,
+	})
+}
 	// --------------------
 	// Feature flag nodes
 	// --------------------
@@ -104,6 +170,9 @@ g.AddNode(flagNode)
 			Type: core.EdgeUsedFlag,
 		})
 	}
+if spanNodeID != "" {
+	g.AddEdge(core.Edge{From: spanNodeID, To: errID, Type: core.EdgeFailedWith})
+}
 
 	// --------------------
 // Service-to-service call edge
@@ -153,12 +222,11 @@ g.AddNode(down)
 		Type: core.EdgeCalls,
 	})
 }
-
-	// --------------------
+// --------------------
 	// Error node
 	// --------------------
 	if ev.Error != nil {
-		errID := core.ID("error", ev.Error.Code)
+		errID = core.ID("error", ev.Error.Code)
 		errNode := core.Node{
 	ID:   errID,
 	Type: core.NodeError,
