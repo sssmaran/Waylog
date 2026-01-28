@@ -10,6 +10,8 @@ const (
 	NodeService NodeType = "service"
 	NodeFlag    NodeType = "feature_flag"
 	NodeError   NodeType = "error"
+	NodeSpan    NodeType = "span"
+
 )
 
 type Node struct {
