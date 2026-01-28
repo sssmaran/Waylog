@@ -111,6 +111,14 @@ func handleExplain(args []string) {
 	}
 
 	fmt.Println("Request failed because:")
+	
+	if ex.SpanID != "" {
+	fmt.Printf(
+		"- Span: %v (%s)\n",
+		ex.SpanService,
+		ex.SpanDepth,
+	)
+}
 
 	if ex.UserTier != nil {
 		fmt.Printf("- User tier: %v\n", ex.UserTier)

@@ -19,6 +19,11 @@ type Explanation struct {
 
 	FeatureFlags []string
 
+	//span-aware attributes
+	SpanID      string
+	SpanService any
+	SpanDepth   string // "root" | "child"
+
 	Service any
 
 	ErrorCode any
@@ -41,6 +46,47 @@ func ExplainRequest(g *core.Graph, requestID string) (Explanation, error) {
 	if req.Attr != nil {
 		ex.LatencyMs = req.Attr["latency_ms"]
 		ex.Flow = req.Attr["flow"]
+	}
+
+	// ---- span -> error (preferred) ----
+	for _, e := range g.Edges {
+		if e.Type != core.EdgeFailedWith {
+			continue
+		}
+
+		// span -> error
+		spanNode, ok := g.Nodes[e.From]
+		if !ok || spanNode.Type != core.NodeSpan {
+			continue
+		}
+
+		errNode := g.Nodes[e.To]
+		if errNode.Attr != nil {
+			ex.ErrorCode = errNode.Attr["code"]
+			ex.ErrorMsg = errNode.Attr["message"]
+		}
+
+		ex.SpanID = spanNode.ID
+
+		// determine span depth
+		if parent := spanNode.Attr["parent_span_id"]; parent != nil && parent != "" {
+			ex.SpanDepth = "child"
+		} else {
+			ex.SpanDepth = "root"
+		}
+
+		// span -> service
+		for _, se := range g.Edges {
+			if se.From == spanNode.ID && se.Type == core.EdgeSpanOnService {
+				svc := g.Nodes[se.To]
+				if svc.Attr != nil {
+					ex.SpanService = svc.Attr["name"]
+				}
+				break
+			}
+		}
+
+		return ex, nil
 	}
 
 	// ---- request -> error ----
