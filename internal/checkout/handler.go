@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/sssmaran/WaylogCLI/internal/event"
+	"github.com/sssmaran/WaylogCLI/internal/trace"
 	"github.com/sssmaran/WaylogCLI/pkg/sdk"
 )
 
@@ -24,11 +24,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := randomUser()
 
-	// ONE trace per incoming request
-	traceID := randID("trace")
-
-	// Root span
-	rootSpanID := uuid.NewString()
+	tc, ok := trace.FromContext(ctx)
+	if !ok {
+		tc = trace.NewRoot()
+	}
+	traceID := tc.TraceID
+	rootSpanID := tc.SpanID
+	parentSpanID := tc.ParentSpanID
 
 	req := CheckoutRequest{User: user}
 	result := h.svc.Process(req)
@@ -38,35 +40,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx,
 		traceID,
 		rootSpanID,
-		"",
+		parentSpanID,
 		"checkout-service",
 		result,
 		user,
 	)
 
 	// Simulated downstream: payment-service
-	paymentSpanID := uuid.NewString()
+	paymentSpan := trace.NewChild(traceID, rootSpanID)
 	paymentResult := result // reuse result for now (can diverge later)
 
 	h.emitSpan(
 		ctx,
 		traceID,
-		paymentSpanID,
-		rootSpanID,
+		paymentSpan.SpanID,
+		paymentSpan.ParentSpanID,
 		"payment-service",
 		paymentResult,
 		user,
 	)
 
 	// Simulated downstream: inventory-service
-	inventorySpanID := uuid.NewString()
+	inventorySpan := trace.NewChild(traceID, rootSpanID)
 	inventoryResult := result
 
 	h.emitSpan(
 		ctx,
 		traceID,
-		inventorySpanID,
-		rootSpanID,
+		inventorySpan.SpanID,
+		inventorySpan.ParentSpanID,
 		"inventory-service",
 		inventoryResult,
 		user,

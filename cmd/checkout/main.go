@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/checkout"
+	"github.com/sssmaran/WaylogCLI/internal/trace"
 	"github.com/sssmaran/WaylogCLI/pkg/sdk"
 )
 
@@ -17,9 +18,10 @@ func main() {
 	events := sdk.New("http://localhost:8080")
 	svc := checkout.NewService()
 	handler := checkout.NewHandler(svc, events)
+	tracedHandler := trace.Middleware(handler)
 
 	mux := http.NewServeMux()
-	mux.Handle("/checkout", handler)
+	mux.Handle("/checkout", tracedHandler)
 	server := &http.Server{
 		Addr:    ":9090",
 		Handler: mux,
