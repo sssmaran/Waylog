@@ -15,7 +15,9 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/internal/cli"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
+	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/persist"
+	"github.com/sssmaran/WaylogCLI/internal/tools"
 )
 
 func main() {
@@ -27,6 +29,7 @@ func main() {
 	snapshotPath := getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
 	snapshotEvery := getenvInt("SNAPSHOT_EVERY_SEC", 5)
 	// retention := getenvDuration("GRAPH_RETENTION", 0)
+	mcpStdio := getenvBool("MCP_STDIO", false)
 
 	store := ingest.GlobalGraphStore
 	snapshotLoaded := false
@@ -51,9 +54,14 @@ func main() {
 		log.Printf("SNAPSHOT: no snapshot loaded (%v)", err)
 	}
 
-	// Share store with ingest + CLI  ✅ CHANGED
+	// Share store with ingest + CLI  //added
 	ingest.SetStore(store)
 	cli.SetStore(store)
+
+	reg := tools.NewRegistry()
+	if err := tools.RegisterGraphTools(reg); err != nil {
+		log.Fatalf("mcp tools init failed: %v", err)
+	}
 
 	// ---------------- HTTP server ----------------
 
@@ -82,7 +90,18 @@ func main() {
 
 	// ---------------- Embedded CLI ----------------
 
-	go replLoop()
+	if mcpStdio {
+		go func() {
+			if err := stdio.Serve(ctx, os.Stdin, os.Stdout, reg, store, stdio.ServerInfo{
+				Name:    "waylog",
+				Version: "0.1.0",
+			}); err != nil && err != context.Canceled {
+				log.Printf("mcp stdio error: %v", err)
+			}
+		}()
+	} else {
+		go replLoop()
+	}
 
 	// ---------------- Periodic snapshotter ----------------
 
@@ -136,7 +155,7 @@ func main() {
 		log.Println("ingest shutdown complete")
 	}
 
-	// Final snapshot on shutdown ✅ ADDED
+	// Final snapshot on shutdown  //added
 	g := store.Snapshot()
 	if !snapshotLoaded {
 		log.Println("SNAPSHOT: final save skipped (last load failed)")
@@ -195,7 +214,6 @@ func printHelp() {
 
 }
 
-
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -203,11 +221,22 @@ func getenv(k, def string) string {
 	return def
 }
 
-
 func getenvInt(k string, def int) int {
 	if v := os.Getenv(k); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+func getenvBool(k string, def bool) bool {
+	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes", "y", "on":
+			return true
+		case "0", "false", "no", "n", "off":
+			return false
 		}
 	}
 	return def

@@ -34,4 +34,4 @@ go.work.sum
 docs
 /*.log
 /data/
-CHANGELOG.local.md
+*.md
