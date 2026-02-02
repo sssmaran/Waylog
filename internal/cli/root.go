@@ -20,7 +20,9 @@ func Run(args []string) {
 	}
 
 	switch args[0] {
-	case "ask":
+	case "help":
+		usage()
+	case "waylog":
 		handleAsk(args[1:])
 	default:
 		usage()
@@ -29,13 +31,13 @@ func Run(args []string) {
 
 func usage() {
 	fmt.Println("usage:")
-	fmt.Println("  waylog ask \"<question>\"")
+	fmt.Println("  waylog \"<question>\"")
 }
 
 func handleAsk(args []string) {
 	prompt := strings.TrimSpace(strings.Join(args, " "))
 	if prompt == "" {
-		fmt.Println("usage: waylog ask \"<question>\"")
+		fmt.Println("usage: waylog \"<question>\"")
 		return
 	}
 

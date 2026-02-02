@@ -28,6 +28,7 @@ func main() {
 
 	snapshotPath := getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
 	snapshotEvery := getenvInt("SNAPSHOT_EVERY_SEC", 5)
+	snapshotLogEvery := getenvInt("SNAPSHOT_LOG_EVERY", 1)
 	// retention := getenvDuration("GRAPH_RETENTION", 0)
 	mcpStdio := getenvBool("MCP_STDIO", false)
 
@@ -107,6 +108,7 @@ func main() {
 
 	ticker := time.NewTicker(time.Duration(snapshotEvery) * time.Second)
 	defer ticker.Stop()
+	snapshotCount := 0
 
 	go func() {
 		for {
@@ -114,22 +116,27 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				snapshotCount++
 				// if retention > 0 {
 				// 	store.PruneOlderThan(time.Now().Add(-retention))
 				// }
 				g := store.Snapshot()
 				if !snapshotLoaded {
-					log.Println("SNAPSHOT: skipped (last load failed)")
+					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
+						log.Println("SNAPSHOT: skipped (last load failed)")
+					}
 					continue
 				}
 				if len(g.Nodes) == 0 {
-					log.Println("SNAPSHOT: skipped (graph empty)")
+					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
+						log.Println("SNAPSHOT: skipped (graph empty)")
+					}
 					continue
 				}
 
 				if err := persist.Save(snapshotPath, g); err != nil {
 					log.Printf("SNAPSHOT: save failed: %v", err)
-				} else {
+				} else if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
 					log.Printf(
 						"SNAPSHOT: saved (nodes=%d edges=%d) -> %s",
 						len(g.Nodes),
@@ -204,9 +211,15 @@ func replLoop() {
 
 func printHelp() {
 	os.Stdout.WriteString("commands:\n")
-	os.Stdout.WriteString("  ask \"<question>\"\n")
+	os.Stdout.WriteString("  waylog \"<question>\"\n")
 	os.Stdout.WriteString("  help\n")
 	os.Stdout.WriteString("  exit\n")
+	os.Stdout.WriteString("\nexamples:\n")
+	os.Stdout.WriteString("  waylog \"show top errors\"\n")
+	os.Stdout.WriteString("  waylog \"summarize trace <trace-id>\"\n")
+	os.Stdout.WriteString("  waylog \"explain request <request-id>\"\n")
+	os.Stdout.WriteString("\nnotes:\n")
+	os.Stdout.WriteString("  MCP stdio: run with MCP_STDIO=1 and use tools/list or tools/call\n")
 
 }
 

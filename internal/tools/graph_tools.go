@@ -249,11 +249,8 @@ func handleTraceGraph(ctx context.Context, store Store, params json.RawMessage) 
 	reqID := core.ID("request", input.TraceID)
 	var roots []traceSpan
 
-	for _, e := range g.Edges {
-		if e.Type != core.EdgeRequestHasSpan || e.From != reqID {
-			continue
-		}
-		roots = append(roots, buildTraceSpan(g, e.To, map[string]bool{}))
+	for _, spanID := range rootSpanIDsForTrace(g, reqID) {
+		roots = append(roots, buildTraceSpan(g, spanID, map[string]bool{}))
 	}
 
 	return traceGraphOutput{
@@ -347,9 +344,23 @@ func handleTraceSummary(ctx context.Context, store Store, params json.RawMessage
 }
 
 func rootSpanIDsForTrace(g *core.Graph, reqID string) []string {
-	var roots []string
+	hasParent := map[string]bool{}
 	for _, e := range g.Edges {
-		if e.Type == core.EdgeRequestHasSpan && e.From == reqID {
+		if e.Type == core.EdgeSpanChildOf {
+			hasParent[e.From] = true
+		}
+	}
+	var roots []string
+	seen := map[string]bool{}
+	for _, e := range g.Edges {
+		if e.Type != core.EdgeRequestHasSpan || e.From != reqID {
+			continue
+		}
+		if seen[e.To] {
+			continue
+		}
+		seen[e.To] = true
+		if !hasParent[e.To] {
 			roots = append(roots, e.To)
 		}
 	}

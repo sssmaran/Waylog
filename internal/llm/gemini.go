@@ -45,7 +45,14 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt string, tools []Tool
 		mode = "text"
 	}
 
-	reqBody, err := c.buildRequest(prompt, tools, history, mode)
+	toolsForPrompt := tools
+	if mode == "text" {
+		if filtered := filterToolsForPrompt(tools, prompt); len(filtered) > 0 {
+			toolsForPrompt = filtered
+		}
+	}
+
+	reqBody, err := c.buildRequest(prompt, toolsForPrompt, history, mode)
 	if err != nil {
 		return Result{}, err
 	}
@@ -81,7 +88,7 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt string, tools []Tool
 	}
 
 	if mode == "text" {
-		return parseGeminiTextResponse(body, history, tools)
+		return parseGeminiTextResponse(body, prompt, history, toolsForPrompt)
 	}
 	return parseGeminiResponse(body)
 }
@@ -339,7 +346,7 @@ func parseGeminiResponse(body []byte) (Result, error) {
 	return out, nil
 }
 
-func parseGeminiTextResponse(body []byte, history []Turn, tools []ToolDefinition) (Result, error) {
+func parseGeminiTextResponse(body []byte, prompt string, history []Turn, tools []ToolDefinition) (Result, error) {
 	var resp geminiResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return Result{}, err
@@ -362,6 +369,9 @@ func parseGeminiTextResponse(body []byte, history []Turn, tools []ToolDefinition
 	}
 	if !toolExists(name, tools) {
 		return Result{}, fmt.Errorf("unsupported tool requested: %s", name)
+	}
+	if filled, ok := fillToolArgsFromPrompt(name, args, prompt); ok {
+		args = filled
 	}
 	return Result{
 		ToolCalls: []ToolCall{
@@ -441,4 +451,198 @@ func toolExists(name string, tools []ToolDefinition) bool {
 		}
 	}
 	return false
+}
+
+func filterToolsForPrompt(tools []ToolDefinition, prompt string) []ToolDefinition {
+	p := strings.ToLower(prompt)
+	var out []ToolDefinition
+
+	add := func(name string) {
+		for _, t := range tools {
+			if t.Name == name {
+				out = append(out, t)
+				return
+			}
+		}
+	}
+
+	switch {
+	case strings.Contains(p, "trace"):
+		add("trace_summary")
+		add("trace_graph")
+		add("explain_request")
+	case strings.Contains(p, "service path") || strings.Contains(p, "path"):
+		add("trace_summary")
+		add("failure_chain")
+	case strings.Contains(p, "explain") || strings.Contains(p, "info"):
+		add("explain_request")
+	case strings.Contains(p, "blast"):
+		add("blast_radius")
+	case strings.Contains(p, "pattern"):
+		add("failure_patterns")
+	case strings.Contains(p, "diff") || strings.Contains(p, "compare"):
+		add("compare_windows")
+	case strings.Contains(p, "query"):
+		add("graph_query")
+	case strings.Contains(p, "insight") || strings.Contains(p, "top") || strings.Contains(p, "stats"):
+		add("graph_insights")
+	case strings.Contains(p, "failure") || strings.Contains(p, "error"):
+		add("graph_failures")
+		add("graph_insights")
+	}
+
+	return out
+}
+
+func fillToolArgsFromPrompt(tool string, raw json.RawMessage, prompt string) (json.RawMessage, bool) {
+	args := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return raw, false
+		}
+	}
+
+	setIfMissing := func(key, val string) {
+		if val == "" {
+			return
+		}
+		if _, ok := args[key]; ok {
+			return
+		}
+		args[key] = val
+	}
+
+	switch tool {
+	case "explain_request", "failure_chain":
+		setIfMissing("request_id", extractRequestID(prompt))
+	case "trace_graph":
+		setIfMissing("trace_id", extractTraceID(prompt))
+	case "trace_summary":
+		setIfMissing("trace_id", extractTraceID(prompt))
+		setIfMissing("request_id", extractRequestID(prompt))
+	}
+
+	if len(args) == 0 {
+		return raw, false
+	}
+	out, err := json.Marshal(args)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
+}
+
+func extractRequestID(prompt string) string {
+	if id := extractHexIDAfterKeyword(prompt, "request"); id != "" {
+		return id
+	}
+	return extractFirstHexID(prompt)
+}
+
+func extractTraceID(prompt string) string {
+	if id := extractUUIDAfterKeyword(prompt, "trace"); id != "" {
+		return id
+	}
+	if id := extractHexIDAfterKeyword(prompt, "trace"); id != "" {
+		return id
+	}
+	if id := extractFirstUUID(prompt); id != "" {
+		return id
+	}
+	return extractFirstHexID(prompt)
+}
+
+func extractHexIDAfterKeyword(prompt, keyword string) string {
+	p := strings.ToLower(prompt)
+	idx := strings.Index(p, keyword)
+	if idx == -1 {
+		return ""
+	}
+	rest := prompt[idx+len(keyword):]
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	candidate := trimToken(fields[0])
+	if isHex(candidate) {
+		return candidate
+	}
+	return ""
+}
+
+func extractUUIDAfterKeyword(prompt, keyword string) string {
+	p := strings.ToLower(prompt)
+	idx := strings.Index(p, keyword)
+	if idx == -1 {
+		return ""
+	}
+	rest := prompt[idx+len(keyword):]
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	candidate := trimToken(fields[0])
+	if isUUID(candidate) {
+		return candidate
+	}
+	return ""
+}
+
+func extractFirstHexID(prompt string) string {
+	for _, token := range strings.Fields(prompt) {
+		candidate := trimToken(token)
+		if isHex(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func extractFirstUUID(prompt string) string {
+	for _, token := range strings.Fields(prompt) {
+		candidate := trimToken(token)
+		if isUUID(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func trimToken(token string) string {
+	return strings.Trim(token, " \t\n\r\"'`.,;:()[]{}<>")
+}
+
+func isHex(s string) bool {
+	if len(s) < 16 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }
