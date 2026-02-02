@@ -242,7 +242,7 @@ func buildAnswerPrompt(prompt string, history []Turn) string {
 	var b strings.Builder
 	b.WriteString("User question: ")
 	b.WriteString(prompt)
-	b.WriteString("\nTool results:\n")
+	b.WriteString("\n\nTool results:\n")
 	for _, turn := range history {
 		if turn.ToolResult == nil {
 			continue
@@ -254,7 +254,14 @@ func buildAnswerPrompt(prompt string, history []Turn) string {
 		b.Write(payload)
 		b.WriteString("\n")
 	}
-	b.WriteString("Provide a concise, direct answer to the user.")
+	b.WriteString("\nProvide a concise, structured answer.\n")
+	b.WriteString("Format:\n")
+	b.WriteString("Title line summarizing the result.\n")
+	b.WriteString("One short explanatory sentence after the title.\n")
+	b.WriteString("Then sections with labels and bullet points using `- key: value`.\n")
+	b.WriteString("Keep IDs on their own bullet lines for easy copy.\n")
+	b.WriteString("If available, include the request type (flow/event) and service path.\n")
+	b.WriteString("Do not include raw tool JSON in the response.\n")
 	return b.String()
 }
 
@@ -351,7 +358,7 @@ func parseGeminiTextResponse(body []byte, history []Turn, tools []ToolDefinition
 		return Result{}, err
 	}
 	if name == "NO_TOOL" {
-		return Result{Text: "No suitable tool found for that request."}, nil
+		return Result{Text: "I couldn't map that to a tool. Try: \"show top errors\", \"summarize trace <trace-id>\", or \"explain request <request-id>\"."}, nil
 	}
 	if !toolExists(name, tools) {
 		return Result{}, fmt.Errorf("unsupported tool requested: %s", name)

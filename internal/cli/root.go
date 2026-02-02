@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/llm"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 )
@@ -20,8 +20,6 @@ func Run(args []string) {
 	}
 
 	switch args[0] {
-	case "graph":
-		runGraph(args[1:])
 	case "ask":
 		handleAsk(args[1:])
 	default:
@@ -29,16 +27,9 @@ func Run(args []string) {
 	}
 }
 
-var store *graphstore.Store
-
-func SetStore(s *graphstore.Store) {
-	store = s
-}
-
 func usage() {
 	fmt.Println("usage:")
-	fmt.Println(" graph failures [--tier=premium]")
-	fmt.Println(" ask \"<question>\"")
+	fmt.Println("  waylog ask \"<question>\"")
 }
 
 func handleAsk(args []string) {
@@ -90,7 +81,7 @@ func handleAsk(args []string) {
 	}
 
 	answer, err := llm.Ask(context.Background(), client, toolDefs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
-		return reg.Call(ctx, graphStore(), name, params)
+		return reg.Call(ctx, ingest.GlobalGraphStore, name, params)
 	}), prompt, 5)
 	if err != nil {
 		fmt.Println("ask error:", err)

@@ -54,9 +54,8 @@ func main() {
 		log.Printf("SNAPSHOT: no snapshot loaded (%v)", err)
 	}
 
-	// Share store with ingest + CLI  //added
+	// Share store with ingest
 	ingest.SetStore(store)
-	cli.SetStore(store)
 
 	reg := tools.NewRegistry()
 	if err := tools.RegisterGraphTools(reg); err != nil {
@@ -92,6 +91,7 @@ func main() {
 
 	if mcpStdio {
 		go func() {
+			log.Printf("MCP stdio ready (protocol %s)", "2024-11-05")
 			if err := stdio.Serve(ctx, os.Stdin, os.Stdout, reg, store, stdio.ServerInfo{
 				Name:    "waylog",
 				Version: "0.1.0",
@@ -204,11 +204,6 @@ func replLoop() {
 
 func printHelp() {
 	os.Stdout.WriteString("commands:\n")
-	os.Stdout.WriteString("  graph stats\n")
-	os.Stdout.WriteString("  graph failures [--tier=premium]\n")
-	os.Stdout.WriteString("  graph explain <request-id>\n")
-	os.Stdout.WriteString("  graph blast <error-code> [--services] [--top-users=N] [--by-tier]\n")
-	os.Stdout.WriteString("  graph chain <request-id>\n")
 	os.Stdout.WriteString("  ask \"<question>\"\n")
 	os.Stdout.WriteString("  help\n")
 	os.Stdout.WriteString("  exit\n")

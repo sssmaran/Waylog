@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/event"
+	"github.com/sssmaran/WaylogCLI/internal/trace"
 )
 
 type Client struct {
@@ -26,6 +27,7 @@ func New(baseURL string) *Client {
 }
 
 func (c *Client) Emit(ctx context.Context, ev event.WideEvent) error {
+	ensureTraceContext(ctx, &ev)
 	if err := ev.Validate(); err != nil {
 		return fmt.Errorf("invalid event: %w", err)
 	}
@@ -52,4 +54,34 @@ func (c *Client) Emit(ctx context.Context, ev event.WideEvent) error {
 	}
 
 	return nil
+}
+
+func ensureTraceContext(ctx context.Context, ev *event.WideEvent) {
+	if ev == nil {
+		return
+	}
+
+	if tc, ok := trace.FromContext(ctx); ok && tc.TraceID != "" {
+		if ev.Request.TraceID == "" {
+			ev.Request.TraceID = tc.TraceID
+		}
+		if ev.Request.SpanID == "" {
+			parent := ev.Request.ParentSpanID
+			if parent == "" {
+				parent = tc.SpanID
+			}
+			child := trace.NewChild(ev.Request.TraceID, parent)
+			ev.Request.SpanID = child.SpanID
+			ev.Request.ParentSpanID = child.ParentSpanID
+		}
+		return
+	}
+
+	if ev.Request.TraceID == "" {
+		tc := trace.NewRoot()
+		ev.Request.TraceID = tc.TraceID
+		if ev.Request.SpanID == "" {
+			ev.Request.SpanID = tc.SpanID
+		}
+	}
 }

@@ -14,16 +14,17 @@ import (
 )
 
 const (
-	toolGraphStatsName = "graph_stats"
-	toolExplainReqName = "explain_request"
-	toolTraceGraphName = "trace_graph"
-	toolFailuresName   = "graph_failures"
-	toolPatternsName   = "failure_patterns"
-	toolBlastName      = "blast_radius"
-	toolChainName      = "failure_chain"
-	toolQueryName      = "graph_query"
-	toolDiffName       = "compare_windows"
-	toolInsightsName   = "graph_insights"
+	toolGraphStatsName   = "graph_stats"
+	toolExplainReqName   = "explain_request"
+	toolTraceGraphName   = "trace_graph"
+	toolTraceSummaryName = "trace_summary"
+	toolFailuresName     = "graph_failures"
+	toolPatternsName     = "failure_patterns"
+	toolBlastName        = "blast_radius"
+	toolChainName        = "failure_chain"
+	toolQueryName        = "graph_query"
+	toolDiffName         = "compare_windows"
+	toolInsightsName     = "graph_insights"
 )
 
 func RegisterGraphTools(reg *Registry) error {
@@ -51,6 +52,15 @@ func RegisterGraphTools(reg *Registry) error {
 		InputSchema:  json.RawMessage(traceGraphInputSchema),
 		OutputSchema: json.RawMessage(traceGraphOutputSchema),
 		Handler:      handleTraceGraph,
+	}); err != nil {
+		return err
+	}
+	if err := reg.Register(Tool{
+		Name:         toolTraceSummaryName,
+		Description:  "Summarize a trace with request type, latency, and service path.",
+		InputSchema:  json.RawMessage(traceSummaryInputSchema),
+		OutputSchema: json.RawMessage(traceSummaryOutputSchema),
+		Handler:      handleTraceSummary,
 	}); err != nil {
 		return err
 	}
@@ -277,6 +287,155 @@ func buildTraceSpan(g *core.Graph, spanID string, visited map[string]bool) trace
 	}
 
 	return out
+}
+
+type traceSummaryInput struct {
+	TraceID string `json:"trace_id"`
+}
+
+type traceSummaryOutput struct {
+	TraceID     string     `json:"trace_id"`
+	RequestID   string     `json:"request_id"`
+	EventName   string     `json:"event_name,omitempty"`
+	Flow        string     `json:"flow,omitempty"`
+	LatencyMs   any        `json:"latency_ms,omitempty"`
+	RootSpanIDs []string   `json:"root_span_ids,omitempty"`
+	Paths       [][]string `json:"paths,omitempty"`
+}
+
+func handleTraceSummary(ctx context.Context, store Store, params json.RawMessage) (any, error) {
+	_ = ctx
+	var input traceSummaryInput
+	if err := json.Unmarshal(params, &input); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if input.TraceID == "" {
+		return nil, fmt.Errorf("trace_id required")
+	}
+
+	g := store.Snapshot()
+	reqID := core.ID("request", input.TraceID)
+
+	out := traceSummaryOutput{
+		TraceID:   input.TraceID,
+		RequestID: reqID,
+	}
+
+	if req, ok := g.Nodes[reqID]; ok {
+		if req.Attr != nil {
+			if name, ok := req.Attr["event_name"].(string); ok {
+				out.EventName = name
+			}
+			if flow, ok := req.Attr["flow"].(string); ok {
+				out.Flow = flow
+			}
+			out.LatencyMs = req.Attr["latency_ms"]
+		}
+	}
+
+	rootSpans := rootSpanIDsForTrace(g, reqID)
+	out.RootSpanIDs = rootSpans
+	out.Paths = spanPathsForRoots(g, rootSpans)
+
+	if len(out.Paths) == 0 {
+		if chain := serviceChainForRequest(g, reqID); len(chain) > 0 {
+			out.Paths = [][]string{chain}
+		}
+	}
+
+	return out, nil
+}
+
+func rootSpanIDsForTrace(g *core.Graph, reqID string) []string {
+	var roots []string
+	for _, e := range g.Edges {
+		if e.Type == core.EdgeRequestHasSpan && e.From == reqID {
+			roots = append(roots, e.To)
+		}
+	}
+	return roots
+}
+
+func spanPathsForRoots(g *core.Graph, roots []string) [][]string {
+	if len(roots) == 0 {
+		return nil
+	}
+	children := map[string][]string{}
+	for _, e := range g.Edges {
+		if e.Type == core.EdgeSpanChildOf {
+			children[e.To] = append(children[e.To], e.From)
+		}
+	}
+
+	var paths [][]string
+	for _, root := range roots {
+		dfsSpanPaths(g, root, children, nil, &paths)
+	}
+	return paths
+}
+
+func dfsSpanPaths(g *core.Graph, spanID string, children map[string][]string, prefix []string, out *[][]string) {
+	n, ok := g.Nodes[spanID]
+	if !ok {
+		return
+	}
+	service := ""
+	if n.Attr != nil {
+		if s, ok := n.Attr["service"].(string); ok {
+			service = s
+		}
+	}
+	if service == "" {
+		service = spanID
+	}
+	path := append(prefix, service)
+	kids := children[spanID]
+	if len(kids) == 0 {
+		*out = append(*out, path)
+		return
+	}
+	for _, child := range kids {
+		dfsSpanPaths(g, child, children, path, out)
+	}
+}
+
+func serviceChainForRequest(g *core.Graph, reqID string) []string {
+	serviceID := ""
+	for _, e := range g.Edges {
+		if e.From == reqID && e.Type == core.EdgeHandledBy {
+			serviceID = e.To
+			break
+		}
+	}
+	if serviceID == "" {
+		return nil
+	}
+	visited := map[string]bool{}
+	var services []string
+	curr := serviceID
+	for {
+		if visited[curr] {
+			break
+		}
+		visited[curr] = true
+		svc, ok := g.Nodes[curr]
+		if !ok {
+			break
+		}
+		services = append(services, serviceNameForNode(svc))
+		next := ""
+		for _, e := range g.Edges {
+			if e.From == curr && e.Type == core.EdgeCalls {
+				next = e.To
+				break
+			}
+		}
+		if next == "" {
+			break
+		}
+		curr = next
+	}
+	return services
 }
 
 type failuresInput struct {
@@ -1047,6 +1206,33 @@ const traceGraphOutputSchema = `{
     }
   },
   "required": ["trace_id", "roots"],
+  "additionalProperties": false
+}`
+
+const traceSummaryInputSchema = `{
+  "type": "object",
+  "properties": {
+    "trace_id": { "type": "string" }
+  },
+  "required": ["trace_id"],
+  "additionalProperties": false
+}`
+
+const traceSummaryOutputSchema = `{
+  "type": "object",
+  "properties": {
+    "trace_id": { "type": "string" },
+    "request_id": { "type": "string" },
+    "event_name": { "type": "string" },
+    "flow": { "type": "string" },
+    "latency_ms": {},
+    "root_span_ids": { "type": "array", "items": { "type": "string" } },
+    "paths": {
+      "type": "array",
+      "items": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "required": ["trace_id", "request_id"],
   "additionalProperties": false
 }`
 
