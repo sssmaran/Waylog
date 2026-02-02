@@ -158,6 +158,7 @@ func handleGraphStats(ctx context.Context, store Store, _ json.RawMessage) (any,
 
 type explainRequestInput struct {
 	RequestID string `json:"request_id"`
+	TraceID   string `json:"trace_id"`
 }
 
 type explainRequestOutput struct {
@@ -181,11 +182,15 @@ func handleExplainRequest(ctx context.Context, store Store, params json.RawMessa
 	if err := json.Unmarshal(params, &input); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
-	if input.RequestID == "" {
-		return nil, fmt.Errorf("request_id required")
+	if input.RequestID == "" && input.TraceID == "" {
+		return nil, fmt.Errorf("request_id or trace_id required")
+	}
+	requestID := input.RequestID
+	if requestID == "" {
+		requestID = core.ID("request", input.TraceID)
 	}
 	g := store.Snapshot()
-	ex, err := analysis.ExplainRequest(g, input.RequestID)
+	ex, err := analysis.ExplainRequest(g, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -280,6 +285,7 @@ type failuresInput struct {
 
 type failureEntry struct {
 	RequestID string `json:"request_id"`
+	TraceID   string `json:"trace_id,omitempty"`
 	LatencyMs any    `json:"latency_ms,omitempty"`
 	Tier      string `json:"tier,omitempty"`
 	ErrorCode string `json:"error_code,omitempty"`
@@ -336,8 +342,16 @@ func handleFailures(ctx context.Context, store Store, params json.RawMessage) (a
 			latency = req.Attr["latency_ms"]
 		}
 
+		traceID := ""
+		if req.Attr != nil {
+			if tid, ok := req.Attr["trace_id"].(string); ok {
+				traceID = tid
+			}
+		}
+
 		out = append(out, failureEntry{
 			RequestID: req.ID,
+			TraceID:   traceID,
 			LatencyMs: latency,
 			Tier:      userTier,
 			ErrorCode: errorCode,
@@ -980,9 +994,9 @@ const graphStatsOutputSchema = `{
 const explainRequestInputSchema = `{
   "type": "object",
   "properties": {
-    "request_id": { "type": "string" }
+    "request_id": { "type": "string" },
+    "trace_id": { "type": "string" }
   },
-  "required": ["request_id"],
   "additionalProperties": false
 }`
 
@@ -1053,6 +1067,7 @@ const failuresOutputSchema = `{
         "type": "object",
         "properties": {
           "request_id": { "type": "string" },
+          "trace_id": { "type": "string" },
           "latency_ms": {},
           "tier": { "type": "string" },
           "error_code": { "type": "string" }

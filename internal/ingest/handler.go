@@ -16,7 +16,6 @@ var accepted uint64
 
 var graphBuilder = build.NewBuilder() // GLOBAL GRAPH BUILDER
 
-
 func SetStore(s *store.Store) {
 	GlobalGraphStore = s
 }
@@ -42,7 +41,6 @@ func Events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
 	// Ensure server-side timestamp sanity (optional, but helpful)
 	if ev.Timestamp.After(time.Now().Add(5 * time.Minute)) {
 		http.Error(w, "timestamp too far in future", http.StatusBadRequest)
@@ -57,35 +55,36 @@ func Events(w http.ResponseWriter, r *http.Request) {
 	// log.Printf("DECISION latency=%d", ev.Metrics.LatencyMs)
 
 	// Next module: tail sampling decision happens here (before Kafka).
-// 	if !Sampler.ShouldKeep(ev) {
-// 	// Dropped by design — still return 202 so producers never retry
-// 		w.WriteHeader(http.StatusAccepted)
-// 		return
-// }
+	// 	if !Sampler.ShouldKeep(ev) {
+	// 	// Dropped by design — still return 202 so producers never retry
+	// 		w.WriteHeader(http.StatusAccepted)
+	// 		return
+	// }
 
-// 	atomic.AddUint64(&accepted, 1)
-// // 	count := atomic.AddUint64(&accepted, 1)
-// // 	if count%50 == 0 {
-// // 		log.Printf("INGEST: kept events = %d", count) //temp check for every 100 events kept
-// // }
+	// 	atomic.AddUint64(&accepted, 1)
+	// // 	count := atomic.AddUint64(&accepted, 1)
+	// // 	if count%50 == 0 {
+	// // 		log.Printf("INGEST: kept events = %d", count) //temp check for every 100 events kept
+	// // }
 
-// 	// Next module: publish to Kafka.
-// 	w.WriteHeader(http.StatusAccepted)
-if !Sampler.ShouldKeep(ev) {
-	// Dropped by design — still return 202 so producers never retry
-	w.WriteHeader(http.StatusAccepted)
-	return
-}
-log.Printf(
-  "EVENT status=%d success=%v error=%v",
-  ev.Outcome.StatusCode,
-  ev.Outcome.Success,
-  ev.Error,
-)
+	// // Next module: publish to Kafka.
+	// w.WriteHeader(http.StatusAccepted)
+	if !Sampler.ShouldKeep(ev) {
+		// Dropped by design — still return 202 so producers never retry
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	log.Printf(
+		"EVENT trace=%s status=%d success=%v error=%v",
+		ev.Request.TraceID,
+		ev.Outcome.StatusCode,
+		ev.Outcome.Success,
+		ev.Error,
+	)
 
-// BUILD GRAPH FROM REAL EVENT
+	// BUILD GRAPH FROM REAL EVENT
 	g := graphBuilder.Build(ev)
-if GlobalGraphStore != nil {
+	if GlobalGraphStore != nil {
 		GlobalGraphStore.Merge(g)
 	}
 
@@ -100,10 +99,6 @@ if GlobalGraphStore != nil {
 	// 	ev.Outcome.StatusCode,
 	// )
 
-
 	atomic.AddUint64(&accepted, 1)
 	w.WriteHeader(http.StatusAccepted)
 }
-
-
-

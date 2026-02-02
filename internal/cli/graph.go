@@ -42,9 +42,6 @@ func runGraph(args []string) {
 	case "trace":
 		handleTrace(args[1:])
 
-
-
-
 	default:
 		fmt.Println("unknown graph command")
 	}
@@ -60,40 +57,41 @@ func handleFailures(args []string) {
 	g := graphStore().Graph()
 
 	for _, e := range g.Edges {
-	if e.Type != core.EdgeFailedWith {
-		continue
-	}
-
-	req, ok := g.Nodes[e.From]
-	if !ok {
-		continue
-	}
-
-	var userID string
-	for _, ed := range g.Edges {
-		if ed.From == req.ID && ed.Type == core.EdgeRequestBy {
-			userID = ed.To
-			break
+		if e.Type != core.EdgeFailedWith {
+			continue
 		}
-	}
 
-	user, ok := g.Nodes[userID]
-	if !ok {
-		continue
-	}
+		req, ok := g.Nodes[e.From]
+		if !ok {
+			continue
+		}
 
-	if tier != "" && user.Attr["tier"] != tier {
-		continue
-	}
+		var userID string
+		for _, ed := range g.Edges {
+			if ed.From == req.ID && ed.Type == core.EdgeRequestBy {
+				userID = ed.To
+				break
+			}
+		}
 
-	fmt.Printf(
-		"request=%s latency=%v tier=%v error=%s\n",
-		req.ID,
-		req.Attr["latency_ms"],
-		user.Attr["tier"],
-		g.Nodes[e.To].Attr["code"],
-	)
-}}
+		user, ok := g.Nodes[userID]
+		if !ok {
+			continue
+		}
+
+		if tier != "" && user.Attr["tier"] != tier {
+			continue
+		}
+
+		fmt.Printf(
+			"request=%s latency=%v tier=%v error=%s\n",
+			req.ID,
+			req.Attr["latency_ms"],
+			user.Attr["tier"],
+			g.Nodes[e.To].Attr["code"],
+		)
+	}
+}
 
 func handleExplain(args []string) {
 	if len(args) < 1 {
@@ -111,14 +109,14 @@ func handleExplain(args []string) {
 	}
 
 	fmt.Println("Request failed because:")
-	
+
 	if ex.SpanID != "" {
-	fmt.Printf(
-		"- Span: %v (%s)\n",
-		ex.SpanService,
-		ex.SpanDepth,
-	)
-}
+		fmt.Printf(
+			"- Span: %v (%s)\n",
+			ex.SpanService,
+			ex.SpanDepth,
+		)
+	}
 
 	if ex.UserTier != nil {
 		fmt.Printf("- User tier: %v\n", ex.UserTier)
@@ -208,17 +206,16 @@ func handlePatterns(args []string) {
 	}
 }
 
-
 func handleStats() {
 	store := graphStore()
 	g := store.Graph()
 
 	var (
-		requests     int
-		users        int
-		services     int
-		flags        int
-		failures     int
+		requests int
+		users    int
+		services int
+		flags    int
+		failures int
 	)
 
 	for _, n := range g.Nodes {
@@ -345,7 +342,6 @@ func handleBlast(args []string) {
 			}
 		}
 	}
-	
 
 	// Summary
 	fmt.Printf("\nBlast radius for error: %s\n\n", errorCode)
@@ -630,20 +626,6 @@ func printSpanTree(g *core.Graph, spanID string, depth int) {
 		}
 	}
 }
-
-
-
-
-
-func keys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
-
 
 func graphStore() *graphstore.Store {
 	return ingest.GlobalGraphStore

@@ -209,6 +209,7 @@ func printHelp() {
 	os.Stdout.WriteString("  graph explain <request-id>\n")
 	os.Stdout.WriteString("  graph blast <error-code> [--services] [--top-users=N] [--by-tier]\n")
 	os.Stdout.WriteString("  graph chain <request-id>\n")
+	os.Stdout.WriteString("  ask \"<question>\"\n")
 	os.Stdout.WriteString("  help\n")
 	os.Stdout.WriteString("  exit\n")
 
