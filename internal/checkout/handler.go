@@ -1,144 +1,60 @@
 package checkout
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
-	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/event"
-	"github.com/sssmaran/WaylogCLI/internal/trace"
-	"github.com/sssmaran/WaylogCLI/pkg/sdk"
+	"github.com/sssmaran/WaylogCLI/pkg/waylog"
+	"github.com/sssmaran/WaylogCLI/pkg/waylog/trace"
 )
 
 type Handler struct {
-	svc    *Service
-	events *sdk.Client
+	svc *Service
 }
 
-func NewHandler(svc *Service, events *sdk.Client) *Handler {
-	return &Handler{svc: svc, events: events}
+func NewHandler(svc *Service) *Handler {
+	return &Handler{svc: svc}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := randomUser()
 
-	tc, ok := trace.FromContext(ctx)
-	if !ok {
-		tc = trace.NewRoot()
+	result := h.svc.Process(CheckoutRequest{User: user})
+
+	ctx = waylog.WithUser(ctx, waylog.User{
+		ID:     user.ID,
+		Tier:   user.Tier,
+		Region: user.Region,
+		VIP:    user.VIP,
+	})
+	ctx = waylog.WithFlow(ctx, result.Flow)
+	ctx = waylog.WithFlags(ctx, result.Flags)
+
+	if !result.Success {
+		waylog.Error(ctx, codedError{code: result.ErrorCode, message: result.ErrorMsg})
 	}
-	traceID := tc.TraceID
-	rootSpanID := tc.SpanID
-	parentSpanID := tc.ParentSpanID
-
-	req := CheckoutRequest{User: user}
-	result := h.svc.Process(req)
-
-	// Root span: checkout-service
-	h.emitSpan(
-		ctx,
-		traceID,
-		rootSpanID,
-		parentSpanID,
-		"checkout-service",
-		result,
-		user,
-	)
-
-	// Simulated downstream: payment-service
-	paymentSpan := trace.NewChild(traceID, rootSpanID)
-	paymentResult := result // reuse result for now (can diverge later)
-
-	h.emitSpan(
-		ctx,
-		traceID,
-		paymentSpan.SpanID,
-		paymentSpan.ParentSpanID,
-		"payment-service",
-		paymentResult,
-		user,
-	)
-
-	// Simulated downstream: inventory-service
-	inventorySpan := trace.NewChild(traceID, rootSpanID)
-	inventoryResult := result
-
-	h.emitSpan(
-		ctx,
-		traceID,
-		inventorySpan.SpanID,
-		inventorySpan.ParentSpanID,
-		"inventory-service",
-		inventoryResult,
-		user,
-	)
 
 	w.WriteHeader(result.StatusCode)
+	traceID := ""
+	if tc, ok := trace.FromContext(ctx); ok {
+		traceID = tc.TraceID
+	}
 	json.NewEncoder(w).Encode(map[string]any{
-		"success": result.Success,
+		"success":  result.Success,
 		"trace_id": traceID,
 	})
 }
 
-
-func buildError(r CheckoutResult) *event.ErrorContext {
-	if r.Success {
-		return nil
-	}
-	return &event.ErrorContext{
-		Code:    r.ErrorCode,
-		Message: r.ErrorMsg,
-	}
+type codedError struct {
+	code    string
+	message string
 }
 
-func (h *Handler) emitSpan(
-	ctx context.Context,
-	traceID string,
-	spanID string,
-	parentSpanID string,
-	service string,
-	result CheckoutResult,
-	user User,
-) {
-	ev := event.WideEvent{
-		SchemaVersion: event.SchemaVersion,
-		EventName:     "checkout_span",
-		Timestamp:     time.Now().UTC(),
+func (e codedError) Error() string {
+	return e.message
+}
 
-		User: event.UserContext{
-			ID:     user.ID,
-			Tier:   user.Tier,
-			Region: user.Region,
-			VIP:    user.VIP,
-		},
-
-		Request: event.RequestContext{
-			TraceID:      traceID,
-			SpanID:       spanID,
-			ParentSpanID: parentSpanID,
-			Flow:         result.Flow,
-			FeatureFlags: result.Flags,
-		},
-
-		System: event.SystemContext{
-			Service: service,
-			Version: "0.1.0",
-			Env:     "dev",
-		},
-
-		Outcome: event.OutcomeContext{
-			Success:    result.Success,
-			StatusCode: result.StatusCode,
-			Kind:       "internal",
-		},
-
-		Error: buildError(result),
-
-		Metrics: event.MetricsContext{
-			LatencyMs: result.LatencyMs,
-		},
-	}
-
-	_ = h.events.Emit(ctx, ev)
+func (e codedError) Code() string {
+	return e.code
 }

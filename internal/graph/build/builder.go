@@ -3,8 +3,8 @@ package build
 import (
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/event"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
 type Builder struct{}

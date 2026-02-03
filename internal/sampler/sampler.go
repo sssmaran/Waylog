@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sssmaran/WaylogCLI/internal/event"
+	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
 type Config struct {
@@ -86,9 +86,9 @@ func (s *Sampler) keepByHash(ev event.WideEvent) bool {
 // Helper to load config from env (kept here to avoid dependency sprawl)
 func LoadConfigFromEnv() Config {
 	return Config{
-		SlowMs:            getenvInt("SLOW_MS", 400),
+		SlowMs:             getenvInt("SLOW_MS", 400),
 		HappySampleRatePct: getenvInt("HAPPY_SAMPLE_RATE_PCT", 2),
-		Salt:              getenv("SAMPLE_SALT", "waylog"),
+		Salt:               getenv("SAMPLE_SALT", "waylog"),
 	}
 }
 

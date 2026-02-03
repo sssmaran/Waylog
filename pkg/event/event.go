@@ -30,23 +30,21 @@ type UserContext struct {
 }
 
 type RequestContext struct {
-	TraceID      string   `json:"trace_id"`
-	SpanID       string   `json:"span_id,omitempty"`
-	ParentSpanID string   `json:"parent_span_id,omitempty"`
+	TraceID      string `json:"trace_id"`
+	SpanID       string `json:"span_id,omitempty"`
+	ParentSpanID string `json:"parent_span_id,omitempty"`
 
 	Flow         string   `json:"flow"`
 	FeatureFlags []string `json:"feature_flags"`
 }
 
 type SystemContext struct {
-	Service      string `json:"service"`       // e.g., "payment-service"
-	Version      string `json:"version"`       // e.g., "1.9.2"
-	DeploymentID string `json:"deployment_id"` // e.g., "deploy_2026_01_05"
-	Env          string `json:"env"`           // "dev", "staging", "prod"
-	DownstreamService   string `json:"downstream_service,omitempty"` 
-	CallerService  string `json:"caller_service,omitempty"` 
-
-
+	Service           string `json:"service"`       // e.g., "payment-service"
+	Version           string `json:"version"`       // e.g., "1.9.2"
+	DeploymentID      string `json:"deployment_id"` // e.g., "deploy_2026_01_05"
+	Env               string `json:"env"`           // "dev", "staging", "prod"
+	DownstreamService string `json:"downstream_service,omitempty"`
+	CallerService     string `json:"caller_service,omitempty"`
 }
 
 type OutcomeContext struct {
@@ -85,9 +83,9 @@ func (e WideEvent) Validate() error {
 		return errors.New("request.trace_id is required")
 	}
 	// If ParentSpanID is set, SpanID must be set
-if e.Request.ParentSpanID != "" && e.Request.SpanID == "" {
-    return errors.New("request.span_id is required when request.parent_span_id is set")
-}
+	if e.Request.ParentSpanID != "" && e.Request.SpanID == "" {
+		return errors.New("request.span_id is required when request.parent_span_id is set")
+	}
 
 	if e.System.Service == "" {
 		return errors.New("system.service is required")

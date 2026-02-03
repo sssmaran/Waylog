@@ -6,22 +6,53 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/checkout"
-	"github.com/sssmaran/WaylogCLI/internal/trace"
-	"github.com/sssmaran/WaylogCLI/pkg/sdk"
+	"github.com/sssmaran/WaylogCLI/pkg/waylog"
+	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
 )
 
+type coded interface {
+	Code() string
+}
+
 func main() {
-	events := sdk.New("http://localhost:8080")
+	cfg := waylog.Config{
+		Service:      "checkout-service",
+		Env:          "dev",
+		Version:      "0.1.0",
+		DeploymentID: os.Getenv("DEPLOYMENT_ID"),
+		ErrorClassifier: func(err error) string {
+			if err == nil {
+				return ""
+			}
+			if codedErr, ok := err.(coded); ok {
+				return codedErr.Code()
+			}
+			return ""
+		},
+	}
+
+	if brokers := splitEnvList("KAFKA_BROKERS"); len(brokers) > 0 {
+		cfg.Kafka = waylog.KafkaConfig{
+			Brokers: brokers,
+			Topic:   getenv("KAFKA_TOPIC", "wide_events"),
+		}
+	}
+
+	err := waylog.Init(cfg)
+	if err != nil {
+		log.Fatalf("waylog init failed: %v", err)
+	}
+
 	svc := checkout.NewService()
-	handler := checkout.NewHandler(svc, events)
-	tracedHandler := trace.Middleware(handler)
+	handler := checkout.NewHandler(svc)
 
 	mux := http.NewServeMux()
-	mux.Handle("/checkout", tracedHandler)
+	mux.Handle("/checkout", wayloghttp.Middleware(handler))
 	server := &http.Server{
 		Addr:    ":9090",
 		Handler: mux,
@@ -43,13 +74,39 @@ func main() {
 
 	<-ctx.Done()
 	log.Println("checkout shutdown signal received")
- // with this graceful shutdown - No request finishes without its event being emitted.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("checkout graceful shutdown failed: %v", err)
-	} else {
-		log.Println("checkout shutdown complete")
 	}
+	if err := waylog.Shutdown(shutdownCtx); err != nil {
+		log.Printf("waylog shutdown failed: %v", err)
+	}
+	log.Println("checkout shutdown complete")
+}
+
+func getenv(key, def string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return def
+	}
+	return value
+}
+
+func splitEnvList(key string) []string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }

@@ -32,6 +32,13 @@ func Run(args []string) {
 func usage() {
 	fmt.Println("usage:")
 	fmt.Println("  waylog \"<question>\"")
+	fmt.Println("")
+	fmt.Println("examples:")
+	fmt.Println("  waylog \"show top errors\"")
+	fmt.Println("  waylog \"trace summary for trace <trace-id>\"")
+	fmt.Println("  waylog \"explain request <trace-id>\"")
+	fmt.Println("  waylog \"graph_query expr='error_code=PMT_502' window='10m'\"")
+	fmt.Println("  waylog \"compare_windows current='10m' baseline='10m' offset='1h'\"")
 }
 
 func handleAsk(args []string) {
@@ -86,11 +93,31 @@ func handleAsk(args []string) {
 		return reg.Call(ctx, ingest.GlobalGraphStore, name, params)
 	}), prompt, 5)
 	if err != nil {
-		fmt.Println("ask error:", err)
+		printAskError(err)
 		return
 	}
 
 	fmt.Println(answer)
+}
+
+func printAskError(err error) {
+	msg := err.Error()
+	fmt.Println("ask error:", err)
+
+	switch {
+	case strings.Contains(msg, "expr required") || strings.Contains(msg, "window required"):
+		fmt.Println("tip: graph_query requires both expr and window, for example:")
+		fmt.Println("  waylog \"graph_query expr='error_code=PMT_502' window='10m'\"")
+	case strings.Contains(msg, "query parse error"):
+		fmt.Println("tip: check your query syntax. Example:")
+		fmt.Println("  waylog \"graph_query expr='success=false' window='10m'\"")
+	case strings.Contains(msg, "request_id or trace_id required"):
+		fmt.Println("tip: provide a trace ID, for example:")
+		fmt.Println("  waylog \"explain request <trace-id>\"")
+	case strings.Contains(msg, "current, baseline, and offset required"):
+		fmt.Println("tip: compare_windows needs current, baseline, and offset, for example:")
+		fmt.Println("  waylog \"compare_windows current='10m' baseline='10m' offset='1h'\"")
+	}
 }
 
 func loadDotEnv(path string) {
