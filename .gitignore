@@ -35,3 +35,4 @@ docs
 /*.log
 /data/
 *.md
+.env.example

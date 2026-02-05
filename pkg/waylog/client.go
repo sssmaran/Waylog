@@ -2,7 +2,6 @@ package waylog
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -30,7 +29,7 @@ func Init(cfg Config) error {
 	defer initMu.Unlock()
 
 	if defaultClient.Load() != nil {
-		return errors.New("waylog: already initialized")
+		return ErrAlreadyInitialized
 	}
 	client, err := New(cfg)
 	if err != nil {
@@ -42,10 +41,10 @@ func Init(cfg Config) error {
 
 func New(cfg Config) (*Client, error) {
 	if cfg.Service == "" {
-		return nil, errors.New("waylog: service is required")
+		return nil, ErrServiceRequired
 	}
 	if cfg.Env == "" {
-		return nil, errors.New("waylog: env is required")
+		return nil, ErrEnvRequired
 	}
 
 	applyDefaults(&cfg)

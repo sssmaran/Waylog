@@ -141,13 +141,6 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 			})
 		}
 	}
-	if spanNodeID != "" && errID != "" {
-		g.AddEdge(core.Edge{
-			From: spanNodeID,
-			To:   errID,
-			Type: core.EdgeFailedWith,
-		})
-	}
 	// --------------------
 	// Feature flag nodes
 	// --------------------
@@ -168,9 +161,6 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 			To:   flagID,
 			Type: core.EdgeUsedFlag,
 		})
-	}
-	if spanNodeID != "" {
-		g.AddEdge(core.Edge{From: spanNodeID, To: errID, Type: core.EdgeFailedWith})
 	}
 
 	// --------------------
@@ -240,6 +230,15 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 			To:   errID,
 			Type: core.EdgeFailedWith,
 		})
+
+		// span → error (only when both exist)
+		if spanNodeID != "" {
+			g.AddEdge(core.Edge{
+				From: spanNodeID,
+				To:   errID,
+				Type: core.EdgeFailedWith,
+			})
+		}
 	}
 
 	return g

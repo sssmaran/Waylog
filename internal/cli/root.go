@@ -1,19 +1,31 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/llm"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 )
 
+// defaultStore is set via SetDefaultStore for backward compatibility.
+var defaultStore tools.Store
+
+// SetDefaultStore sets the default store for CLI commands that don't provide one.
+func SetDefaultStore(s tools.Store) {
+	defaultStore = s
+}
+
+// Run runs the CLI with the default store.
 func Run(args []string) {
+	RunWithStore(defaultStore, args)
+}
+
+// RunWithStore runs the CLI with the provided store.
+func RunWithStore(store tools.Store, args []string) {
 	if len(args) == 0 {
 		usage()
 		return
@@ -23,7 +35,7 @@ func Run(args []string) {
 	case "help":
 		usage()
 	case "waylog":
-		handleAsk(args[1:])
+		handleAsk(store, args[1:])
 	default:
 		usage()
 	}
@@ -41,14 +53,12 @@ func usage() {
 	fmt.Println("  waylog \"compare_windows current='10m' baseline='10m' offset='1h'\"")
 }
 
-func handleAsk(args []string) {
+func handleAsk(store tools.Store, args []string) {
 	prompt := strings.TrimSpace(strings.Join(args, " "))
 	if prompt == "" {
 		fmt.Println("usage: waylog \"<question>\"")
 		return
 	}
-
-	loadDotEnv(".env")
 
 	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
 	if apiKey == "" {
@@ -90,14 +100,14 @@ func handleAsk(args []string) {
 	}
 
 	answer, err := llm.Ask(context.Background(), client, toolDefs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
-		return reg.Call(ctx, ingest.GlobalGraphStore, name, params)
+		return reg.Call(ctx, store, name, params)
 	}), prompt, 5)
 	if err != nil {
 		printAskError(err)
 		return
 	}
 
-	fmt.Println(answer)
+	fmt.Println(colorizeOutput(answer))
 }
 
 func printAskError(err error) {
@@ -120,33 +130,24 @@ func printAskError(err error) {
 	}
 }
 
-func loadDotEnv(path string) {
-	file, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer file.Close()
+const (
+	ansiReset  = "\033[0m"
+	ansiRed    = "\033[31m"
+	ansiGreen  = "\033[32m"
+	ansiYellow = "\033[33m"
+	ansiCyan   = "\033[36m"
+)
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		line = strings.TrimPrefix(line, "export ")
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		val := strings.TrimSpace(parts[1])
-		if key == "" {
-			continue
-		}
-		if _, exists := os.LookupEnv(key); exists {
-			continue
-		}
-		val = strings.Trim(val, `"'`)
-		_ = os.Setenv(key, val)
+func colorizeOutput(s string) string {
+	lower := strings.ToLower(s)
+	switch {
+	case strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "failure"):
+		return ansiRed + s + ansiReset
+	case strings.Contains(lower, "warning") || strings.Contains(lower, "warn"):
+		return ansiYellow + s + ansiReset
+	case strings.Contains(lower, "success") || strings.Contains(lower, "ok"):
+		return ansiGreen + s + ansiReset
+	default:
+		return ansiCyan + s + ansiReset
 	}
 }

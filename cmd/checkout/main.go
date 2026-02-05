@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/checkout"
+	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/pkg/waylog"
 	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
 )
@@ -36,10 +36,10 @@ func main() {
 		},
 	}
 
-	if brokers := splitEnvList("KAFKA_BROKERS"); len(brokers) > 0 {
+	if brokers := config.SplitEnvList("KAFKA_BROKERS"); len(brokers) > 0 {
 		cfg.Kafka = waylog.KafkaConfig{
 			Brokers: brokers,
-			Topic:   getenv("KAFKA_TOPIC", "wide_events"),
+			Topic:   config.Getenv("KAFKA_TOPIC", "wide_events"),
 		}
 	}
 
@@ -86,27 +86,3 @@ func main() {
 	log.Println("checkout shutdown complete")
 }
 
-func getenv(key, def string) string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return def
-	}
-	return value
-}
-
-func splitEnvList(key string) []string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return nil
-	}
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		item := strings.TrimSpace(part)
-		if item == "" {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
-}

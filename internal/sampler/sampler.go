@@ -2,10 +2,9 @@ package sampler
 
 import (
 	"hash/fnv"
-	"os"
-	"strconv"
 	"strings"
 
+	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
@@ -83,30 +82,11 @@ func (s *Sampler) keepByHash(ev event.WideEvent) bool {
 	return bucket < s.cfg.HappySampleRatePct
 }
 
-// Helper to load config from env (kept here to avoid dependency sprawl)
+// LoadConfigFromEnv loads sampler configuration from environment variables.
 func LoadConfigFromEnv() Config {
 	return Config{
-		SlowMs:             getenvInt("SLOW_MS", 400),
-		HappySampleRatePct: getenvInt("HAPPY_SAMPLE_RATE_PCT", 2),
-		Salt:               getenv("SAMPLE_SALT", "waylog"),
+		SlowMs:             config.GetenvInt("SLOW_MS", 400),
+		HappySampleRatePct: config.GetenvInt("HAPPY_SAMPLE_RATE_PCT", 2),
+		Salt:               config.Getenv("SAMPLE_SALT", "waylog"),
 	}
-}
-
-func getenv(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
-func getenvInt(k string, def int) int {
-	v := getenv(k, "")
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
 }

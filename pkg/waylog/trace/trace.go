@@ -3,8 +3,12 @@ package trace
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 type TraceContext struct {
@@ -25,16 +29,40 @@ func FromContext(ctx context.Context) (TraceContext, bool) {
 	return tc, ok
 }
 
+// fallbackCounter is used to generate unique IDs when crypto/rand fails.
+var fallbackCounter atomic.Uint64
+
 func NewTraceID() string {
 	buf := make([]byte, 16)
-	_, _ = rand.Read(buf)
+	if _, err := rand.Read(buf); err != nil {
+		// Retry once
+		if _, err = rand.Read(buf); err != nil {
+			// Fallback: derive bytes from time-based hash
+			fillFallback(buf)
+		}
+	}
 	return strings.ToLower(hex.EncodeToString(buf))
 }
 
 func NewSpanID() string {
 	buf := make([]byte, 8)
-	_, _ = rand.Read(buf)
+	if _, err := rand.Read(buf); err != nil {
+		// Retry once
+		if _, err = rand.Read(buf); err != nil {
+			// Fallback: derive bytes from time-based hash
+			fillFallback(buf)
+		}
+	}
 	return strings.ToLower(hex.EncodeToString(buf))
+}
+
+// fillFallback fills buf with bytes derived from a time-based hash.
+// This is used when crypto/rand fails (extremely rare).
+func fillFallback(buf []byte) {
+	counter := fallbackCounter.Add(1)
+	input := fmt.Sprintf("%d-%d", time.Now().UnixNano(), counter)
+	h := sha256.Sum256([]byte(input))
+	copy(buf, h[:len(buf)])
 }
 
 func ParseTraceparent(header string) (traceID string, parentSpanID string, flags string, ok bool) {

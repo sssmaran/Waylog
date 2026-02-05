@@ -8,21 +8,27 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/sssmaran/WaylogCLI/internal/config"
 )
 
 func main() {
-	brokers := splitEnvList("KAFKA_BROKERS")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	brokers := config.SplitEnvList("KAFKA_BROKERS")
 	if len(brokers) == 0 {
 		brokers = []string{"localhost:9092"}
 	}
-	topic := getenv("KAFKA_TOPIC", "wide_events")
-	ingestURL := getenv("INGEST_URL", "http://localhost:8080/v1/events")
-	groupID := getenv("KAFKA_GROUP_ID", "waylog-demo-bridge")
+	topic := config.Getenv("KAFKA_TOPIC", "wide_events")
+	ingestURL := config.Getenv("INGEST_URL", "http://localhost:8080/v1/events")
+	groupID := config.Getenv("KAFKA_GROUP_ID", "waylog-demo-bridge")
 
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: brokers,
@@ -33,18 +39,28 @@ func main() {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	ensureTopicReady(brokers, topic)
+	if err := ensureTopicReady(ctx, brokers, topic); err != nil {
+		if ctx.Err() != nil {
+			log.Println("bridge shutdown during startup")
+			return
+		}
+		log.Fatalf("failed to ensure topic ready: %v", err)
+	}
 
 	log.Printf("bridge reading %s from %v and posting to %s", topic, brokers, ingestURL)
 	for {
-		msg, err := reader.ReadMessage(context.Background())
+		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				log.Println("bridge shutdown signal received")
+				return
+			}
 			log.Printf("kafka read failed: %v (retrying)", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		req, err := http.NewRequest(http.MethodPost, ingestURL, bytes.NewReader(msg.Value))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, ingestURL, bytes.NewReader(msg.Value))
 		if err != nil {
 			log.Printf("request build failed: %v", err)
 			continue
@@ -53,6 +69,10 @@ func main() {
 
 		resp, err := client.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				log.Println("bridge shutdown signal received")
+				return
+			}
 			log.Printf("ingest post failed: %v", err)
 			continue
 		}
@@ -65,48 +85,38 @@ func main() {
 	}
 }
 
-func getenv(key, def string) string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return def
-	}
-	return value
-}
 
-func splitEnvList(key string) []string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return nil
-	}
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		item := strings.TrimSpace(part)
-		if item == "" {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-func ensureTopicReady(brokers []string, topic string) {
+func ensureTopicReady(ctx context.Context, brokers []string, topic string) error {
 	if len(brokers) == 0 || topic == "" {
-		return
+		return nil
 	}
 
 	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		controller, err := controllerAddress(brokers[0])
 		if err != nil {
 			log.Printf("kafka controller not ready: %v (retrying)", err)
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
 			continue
 		}
 
 		conn, err := kafka.Dial("tcp", controller)
 		if err != nil {
 			log.Printf("kafka controller dial failed: %v (retrying)", err)
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
 			continue
 		}
 
@@ -119,11 +129,15 @@ func ensureTopicReady(brokers []string, topic string) {
 
 		if err != nil && !strings.Contains(err.Error(), "Topic with this name already exists") {
 			log.Printf("kafka create topic failed: %v (retrying)", err)
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
 			continue
 		}
 
-		return
+		return nil
 	}
 }
 
