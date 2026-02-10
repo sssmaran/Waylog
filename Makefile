@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build ingest ingest-mcp waylog checkout test fmt vet clean kafka-up kafka-down demo demo-stop
+.PHONY: help build ingest ingest-mcp waylog checkout test fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop
 
 help:
 	@echo "Targets:"
@@ -17,12 +17,17 @@ help:
 	@echo "  kafka-down - stop local Kafka via docker compose"
 	@echo "  demo     - start Kafka + demo flow (single terminal)"
 	@echo "  demo-stop - stop Kafka + demo processes"
+	@echo "  micro-demo - start 3-service micro-demo (gateway+checkout+payment)"
+	@echo "  micro-demo-stop - stop micro-demo processes"
 
 build:
 	go build ./cmd/ingest
 	go build ./cmd/checkout
 	go build ./cmd/waylog
 	go build ./cmd/bridge
+	go build ./cmd/api-gateway
+	go build ./cmd/checkout-demo
+	go build ./cmd/payment-demo
 
 ingest:
 	go run ./cmd/ingest
@@ -46,7 +51,7 @@ vet:
 	go vet ./...
 
 clean:
-	rm -f ingest checkout waylog bridge
+	rm -f ingest checkout waylog bridge api-gateway checkout-demo payment-demo
 
 kafka-up:
 	docker compose -f docker-compose.kafka.yml up -d
@@ -59,3 +64,9 @@ demo:
 
 demo-stop:
 	./scripts/demo-stop.sh
+
+micro-demo:
+	START_KAFKA=1 ./scripts/micro-demo.sh
+
+micro-demo-stop:
+	./scripts/micro-demo-stop.sh

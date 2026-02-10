@@ -112,42 +112,139 @@ func handleAsk(store tools.Store, args []string) {
 
 func printAskError(err error) {
 	msg := err.Error()
-	fmt.Println("ask error:", err)
+	fmt.Printf("%s✗ %s%s\n", ansiRed, msg, ansiReset)
 
+	var tip string
 	switch {
 	case strings.Contains(msg, "expr required") || strings.Contains(msg, "window required"):
-		fmt.Println("tip: graph_query requires both expr and window, for example:")
-		fmt.Println("  waylog \"graph_query expr='error_code=PMT_502' window='10m'\"")
+		tip = "graph_query requires both expr and window, for example:\n  waylog \"graph_query expr='error_code=PMT_502' window='10m'\""
 	case strings.Contains(msg, "query parse error"):
-		fmt.Println("tip: check your query syntax. Example:")
-		fmt.Println("  waylog \"graph_query expr='success=false' window='10m'\"")
+		tip = "check your query syntax. Example:\n  waylog \"graph_query expr='success=false' window='10m'\""
 	case strings.Contains(msg, "request_id or trace_id required"):
-		fmt.Println("tip: provide a trace ID, for example:")
-		fmt.Println("  waylog \"explain request <trace-id>\"")
+		tip = "provide a trace ID, for example:\n  waylog \"explain request <trace-id>\""
 	case strings.Contains(msg, "current, baseline, and offset required"):
-		fmt.Println("tip: compare_windows needs current, baseline, and offset, for example:")
-		fmt.Println("  waylog \"compare_windows current='10m' baseline='10m' offset='1h'\"")
+		tip = "compare_windows needs current, baseline, and offset, for example:\n  waylog \"compare_windows current='10m' baseline='10m' offset='1h'\""
+	case strings.Contains(msg, "map that to a tool") || strings.Contains(msg, "couldn't"):
+		tip = "Try: \"show top errors\", \"summarize trace <id>\", or \"explain request <id>\""
+	}
+	if tip != "" {
+		fmt.Printf("%s💡 %s%s\n", ansiYellow, tip, ansiReset)
 	}
 }
 
 const (
-	ansiReset  = "\033[0m"
-	ansiRed    = "\033[31m"
-	ansiGreen  = "\033[32m"
-	ansiYellow = "\033[33m"
-	ansiCyan   = "\033[36m"
+	ansiReset   = "\033[0m"
+	ansiBold    = "\033[1m"
+	ansiDim     = "\033[2m"
+	ansiRed     = "\033[31m"
+	ansiGreen   = "\033[32m"
+	ansiYellow  = "\033[33m"
+	ansiBlue    = "\033[34m"
+	ansiMagenta = "\033[35m"
+	ansiCyan    = "\033[36m"
+	ansiWhite   = "\033[37m"
 )
 
 func colorizeOutput(s string) string {
-	lower := strings.ToLower(s)
-	switch {
-	case strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "failure"):
-		return ansiRed + s + ansiReset
-	case strings.Contains(lower, "warning") || strings.Contains(lower, "warn"):
-		return ansiYellow + s + ansiReset
-	case strings.Contains(lower, "success") || strings.Contains(lower, "ok"):
-		return ansiGreen + s + ansiReset
-	default:
-		return ansiCyan + s + ansiReset
+	lines := strings.Split(s, "\n")
+	var out strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(colorizeLine(line))
 	}
+	return out.String()
+}
+
+func colorizeLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+
+	// Empty lines
+	if trimmed == "" {
+		return ""
+	}
+
+	// Section headers: **Title** or **Title**
+	if strings.HasPrefix(trimmed, "**") && strings.HasSuffix(trimmed, "**") {
+		title := strings.Trim(trimmed, "* ")
+		return fmt.Sprintf("\n%s%s%s%s", ansiBold, ansiCyan, title, ansiReset)
+	}
+
+	// Bullet lines: - key: value
+	if strings.HasPrefix(trimmed, "- ") {
+		return colorizeBullet(trimmed)
+	}
+
+	// Title line (first non-empty, non-bullet, non-header line) — bold white
+	if !strings.HasPrefix(trimmed, "-") && !strings.HasPrefix(trimmed, "*") {
+		return fmt.Sprintf("%s%s%s", ansiWhite, trimmed, ansiReset)
+	}
+
+	return line
+}
+
+func colorizeBullet(line string) string {
+	// Split "- key: value" into key and value
+	content := strings.TrimPrefix(line, "- ")
+	parts := strings.SplitN(content, ": ", 2)
+
+	if len(parts) != 2 {
+		return fmt.Sprintf("  %s•%s %s", ansiDim, ansiReset, content)
+	}
+
+	key := parts[0]
+	value := parts[1]
+
+	// Color the value based on the key type
+	coloredValue := colorizeValue(key, value)
+	return fmt.Sprintf("  %s•%s %s%s:%s %s", ansiDim, ansiReset, ansiDim, key, ansiReset, coloredValue)
+}
+
+func colorizeValue(key, value string) string {
+	lowerKey := strings.ToLower(key)
+	lowerVal := strings.ToLower(value)
+
+	// Error codes and error-related values
+	if strings.Contains(lowerKey, "error") || strings.Contains(lowerKey, "failure") {
+		return fmt.Sprintf("%s%s%s%s", ansiBold, ansiRed, value, ansiReset)
+	}
+
+	// Trace/request/span IDs — cyan for easy copy
+	if strings.Contains(lowerKey, "trace_id") || strings.Contains(lowerKey, "request_id") ||
+		strings.Contains(lowerKey, "span") {
+		return fmt.Sprintf("%s%s%s", ansiCyan, value, ansiReset)
+	}
+
+	// Counts and numeric values
+	if strings.Contains(lowerKey, "count") || strings.Contains(lowerKey, "total") ||
+		strings.Contains(lowerKey, "latency") {
+		return fmt.Sprintf("%s%s%s%s", ansiBold, ansiYellow, value, ansiReset)
+	}
+
+	// Service names
+	if strings.Contains(lowerKey, "service") {
+		return fmt.Sprintf("%s%s%s", ansiMagenta, value, ansiReset)
+	}
+
+	// Event names
+	if strings.Contains(lowerKey, "event") || strings.Contains(lowerKey, "flow") {
+		return fmt.Sprintf("%s%s%s", ansiBlue, value, ansiReset)
+	}
+
+	// Service paths (arrows)
+	if strings.Contains(value, "->") {
+		return fmt.Sprintf("%s%s%s", ansiMagenta, value, ansiReset)
+	}
+
+	// Success/failure status values
+	if lowerVal == "true" || lowerVal == "success" || lowerVal == "ok" {
+		return fmt.Sprintf("%s%s%s", ansiGreen, value, ansiReset)
+	}
+	if lowerVal == "false" || strings.Contains(lowerVal, "fail") || strings.Contains(lowerVal, "error") {
+		return fmt.Sprintf("%s%s%s", ansiRed, value, ansiReset)
+	}
+
+	// Default — white
+	return fmt.Sprintf("%s%s%s", ansiWhite, value, ansiReset)
 }

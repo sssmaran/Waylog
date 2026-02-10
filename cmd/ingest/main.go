@@ -191,7 +191,7 @@ func replLoop() {
 
 	printHelp()
 	for {
-		os.Stdout.WriteString("ingest> ")
+		os.Stdout.WriteString("\033[1m\033[36mingest>\033[0m ")
 
 		if !in.Scan() {
 			return
@@ -217,14 +217,13 @@ func replLoop() {
 }
 
 func printHelp() {
-	os.Stdout.WriteString("commands:\n")
+	os.Stdout.WriteString("\033[1m\033[36mcommands:\033[0m\n")
 	os.Stdout.WriteString("  waylog \"<question>\"\n")
 	os.Stdout.WriteString("  help\n")
 	os.Stdout.WriteString("  exit\n")
-	os.Stdout.WriteString("\nexamples:\n")
-	os.Stdout.WriteString("  waylog \"show top errors\"\n")
-	os.Stdout.WriteString("  waylog \"summarize trace <trace-id>\"\n")
-	os.Stdout.WriteString("  waylog \"explain request <request-id>\"\n")
-	os.Stdout.WriteString("\nnotes:\n")
-	os.Stdout.WriteString("  MCP stdio: run with MCP_STDIO=1 and use tools/list or tools/call\n")
+	os.Stdout.WriteString("\n\033[1m\033[36mexamples:\033[0m\n")
+	os.Stdout.WriteString("  waylog \"\033[33mshow top errors\033[0m\"\n")
+	os.Stdout.WriteString("  waylog \"\033[33msummarize trace <trace-id>\033[0m\"\n")
+	os.Stdout.WriteString("  waylog \"\033[33mexplain request <request-id>\033[0m\"\n")
+	os.Stdout.WriteString("\n\033[2mnotes: MCP stdio: run with MCP_STDIO=1\033[0m\n")
 }
