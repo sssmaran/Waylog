@@ -142,6 +142,20 @@ func WithFeatureFlags(flags ...string) EventOption {
 	}
 }
 
+// WithTimestamp sets the event timestamp.
+func WithTimestamp(t time.Time) EventOption {
+	return func(ev *event.WideEvent) {
+		ev.Timestamp = t
+	}
+}
+
+// WithEventName sets the event name directly.
+func WithEventName(name string) EventOption {
+	return func(ev *event.WideEvent) {
+		ev.EventName = name
+	}
+}
+
 // MakeGraph creates a graph with the given nodes and edges.
 func MakeGraph(nodes []core.Node, edges []core.Edge) *core.Graph {
 	g := core.New()

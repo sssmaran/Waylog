@@ -19,12 +19,13 @@ type Store struct {
 
 func NewStore() *Store {
 	return &Store{
-		graph: core.New(),
+		graph:        core.New(),
 		requestFacts: map[string]RequestFacts{},
 		seenRequests: map[string]struct{}{},
 		counters:     NewCounters(),
 	}
 }
+
 // ensureGraphLocked guarantees s.graph is non-nil.
 // Call ONLY while holding s.mu.
 func (s *Store) ensureGraphLocked() {
@@ -45,21 +46,26 @@ func (s *Store) Merge(g *core.Graph) {
 	defer s.mu.Unlock()
 	s.ensureGraphLocked()
 
-
 	// Merge nodes
 	for id, incoming := range g.Nodes {
-    existing, exists := s.graph.Nodes[id]
-    if !exists {
-        s.graph.Nodes[id] = incoming
-        continue
-    }
+		existing, exists := s.graph.Nodes[id]
+		if !exists {
+			s.graph.Nodes[id] = incoming
+			continue
+		}
 
-    // Merge time ranges (imp!)
-    mergeNodeTime(&existing, &incoming)
+		// Merge time ranges (imp!)
+		mergeNodeTime(&existing, &incoming)
 
-    // merging attrs if needed later
-    s.graph.Nodes[id] = existing
-}
+		// Deterministic merge for request and span nodes
+		if existing.Type == core.NodeRequest {
+			mergeRequestAttrs(&existing, &incoming)
+		}
+		if existing.Type == core.NodeSpan {
+			mergeSpanAttrs(&existing, &incoming)
+		}
+		s.graph.Nodes[id] = existing
+	}
 	// Merge edges
 	s.graph.Edges = append(s.graph.Edges, g.Edges...)
 
@@ -111,21 +117,131 @@ func (s *Store) applyFactsToCountersLocked(f RequestFacts) {
 
 }
 
-//helper for time-window commands 
+//helper for time-window commands
 // internal/graph/store.go
 
 func mergeNodeTime(dst, src *core.Node) {
-    if !src.FirstSeen.IsZero() &&
-        (dst.FirstSeen.IsZero() || src.FirstSeen.Before(dst.FirstSeen)) {
-        dst.FirstSeen = src.FirstSeen
-    }
+	if !src.FirstSeen.IsZero() &&
+		(dst.FirstSeen.IsZero() || src.FirstSeen.Before(dst.FirstSeen)) {
+		dst.FirstSeen = src.FirstSeen
+	}
 
-    if !src.LastSeen.IsZero() &&
-        (dst.LastSeen.IsZero() || src.LastSeen.After(dst.LastSeen)) {
-        dst.LastSeen = src.LastSeen
-    }
+	if !src.LastSeen.IsZero() &&
+		(dst.LastSeen.IsZero() || src.LastSeen.After(dst.LastSeen)) {
+		dst.LastSeen = src.LastSeen
+	}
 }
 
+// mergeRequestAttrs applies deterministic merge rules for request nodes.
+// - success: AND (any failure makes the request failed)
+// - If incoming is from root span (is_root=true): overwrite status_code, latency_ms, event_name
+// - error_codes: accumulated as deduplicated []string
+func mergeRequestAttrs(dst, src *core.Node) {
+	if dst.Attr == nil {
+		dst.Attr = map[string]any{}
+	}
+	if src.Attr == nil {
+		return
+	}
+
+	// success = AND: any false makes it false
+	if srcSuccess, ok := src.Attr["success"].(bool); ok && !srcSuccess {
+		dst.Attr["success"] = false
+	}
+
+	// If incoming event is from root span, its values become the trace-level summary
+	if isRoot, ok := src.Attr["is_root"].(bool); ok && isRoot {
+		if v, ok := src.Attr["status_code"]; ok {
+			dst.Attr["status_code"] = v
+		}
+		if v, ok := src.Attr["latency_ms"]; ok {
+			dst.Attr["latency_ms"] = v
+		}
+		if v, ok := src.Attr["event_name"]; ok {
+			dst.Attr["event_name"] = v
+		}
+		dst.Attr["is_root"] = true
+	}
+
+	// Accumulate error_codes as deduplicated []string
+	mergeErrorCodes(dst, src)
+}
+
+func mergeErrorCodes(dst, src *core.Node) {
+	var codes []string
+	seen := map[string]struct{}{}
+	appendCode := func(code string) {
+		if code == "" {
+			return
+		}
+		if _, exists := seen[code]; exists {
+			return
+		}
+		codes = append(codes, code)
+		seen[code] = struct{}{}
+	}
+
+	// Include prior merged state first, then single-code attrs, then incoming values.
+	for _, c := range attrToStringSlice(dst.Attr["error_codes"]) {
+		appendCode(c)
+	}
+	if dstErr, ok := dst.Attr["error_code"].(string); ok {
+		appendCode(dstErr)
+	}
+	for _, c := range attrToStringSlice(src.Attr["error_codes"]) {
+		appendCode(c)
+	}
+	if srcErr, ok := src.Attr["error_code"].(string); ok {
+		appendCode(srcErr)
+	}
+
+	if len(codes) > 0 {
+		dst.Attr["error_codes"] = codes
+	}
+}
+
+func attrToStringSlice(v any) []string {
+	switch values := v.(type) {
+	case []string:
+		return values
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, item := range values {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// mergeSpanAttrs enriches a stub span node with data from the real event.
+// Stubs are created when a child event arrives before its parent's own event.
+// When the parent's event arrives, its enriched fields fill in the gaps.
+func mergeSpanAttrs(dst, src *core.Node) {
+	if dst.Attr == nil {
+		dst.Attr = map[string]any{}
+	}
+	if src.Attr == nil {
+		return
+	}
+
+	// Fill in any attrs that dst is missing from src
+	enrichKeys := []string{
+		"event_name", "status_code", "success", "latency_ms",
+		"flow", "timestamp", "caller_service", "downstream_service",
+		"service", "error_code",
+	}
+	for _, key := range enrichKeys {
+		if _, hasDst := dst.Attr[key]; !hasDst {
+			if v, hasSrc := src.Attr[key]; hasSrc {
+				dst.Attr[key] = v
+			}
+		}
+	}
+}
 
 // Graph returns the live graph pointer.
 // IMPORTANT: callers MUST treat this as read-only.
@@ -133,7 +249,6 @@ func (s *Store) Graph() *core.Graph {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	s.ensureGraphLocked()
-
 
 	return s.graph
 }
@@ -149,24 +264,23 @@ func (s *Store) Snapshot() *core.Graph {
 
 	// Deep copy nodes
 	nodes := make(map[string]core.Node, len(s.graph.Nodes))
-for id, n := range s.graph.Nodes {
-    var attr map[string]any
-    if n.Attr != nil {
-        attr = make(map[string]any, len(n.Attr))
-        for k, v := range n.Attr {
-            attr[k] = v
-        }
-    }
+	for id, n := range s.graph.Nodes {
+		var attr map[string]any
+		if n.Attr != nil {
+			attr = make(map[string]any, len(n.Attr))
+			for k, v := range n.Attr {
+				attr[k] = v
+			}
+		}
 
-    nodes[id] = core.Node{
-        ID:        n.ID,
-        Type:      n.Type,
-        Attr:      attr,
-        FirstSeen: n.FirstSeen,
-        LastSeen:  n.LastSeen,
-    }
-}
-
+		nodes[id] = core.Node{
+			ID:        n.ID,
+			Type:      n.Type,
+			Attr:      attr,
+			FirstSeen: n.FirstSeen,
+			LastSeen:  n.LastSeen,
+		}
+	}
 
 	// Copy edges
 	edges := make([]core.Edge, len(s.graph.Edges))
@@ -177,7 +291,6 @@ for id, n := range s.graph.Nodes {
 		Edges: edges,
 	}
 }
-
 
 // Restore replaces the current graph with a defensive copy of g.
 // This avoids memory aliasing with snapshot data.
@@ -203,14 +316,13 @@ func (s *Store) Restore(g *core.Graph) {
 		}
 
 		nodes[id] = core.Node{
-    ID:        n.ID,
-    Type:      n.Type,
-    Attr:      attrCopy,
-    FirstSeen: n.FirstSeen,
-    LastSeen:  n.LastSeen,
-}
+			ID:        n.ID,
+			Type:      n.Type,
+			Attr:      attrCopy,
+			FirstSeen: n.FirstSeen,
+			LastSeen:  n.LastSeen,
+		}
 
-		
 	}
 
 	// Copy edges
@@ -299,10 +411,6 @@ func parseTimestampAttr(attr map[string]any) time.Time {
 	return time.Time{}
 }
 
-
-
-
-
 func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bool) {
 	reqNode, ok := g.Nodes[reqID]
 	if !ok || reqNode.Type != core.NodeRequest {
@@ -343,15 +451,7 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 	return f, true
 }
 
-
-
-
-
-
-
-
 //prev version of store.go- which  deals with not a copy of graph but direct pointer manipulation
-
 
 // package graph
 

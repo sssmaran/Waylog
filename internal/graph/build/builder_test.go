@@ -65,6 +65,14 @@ func TestBuilder_Build_ErrorNode(t *testing.T) {
 	if !hasEdge {
 		t.Error("expected request→error edge with EdgeFailedWith")
 	}
+
+	req, ok := g.Nodes[reqID]
+	if !ok {
+		t.Fatalf("expected request node %s to exist", reqID)
+	}
+	if got := req.Attr["error_code"]; got != ev.Error.Code {
+		t.Errorf("request attr error_code = %v, want %s", got, ev.Error.Code)
+	}
 }
 
 func TestBuilder_Build_SpanErrorEdge_OnlyWhenBothExist(t *testing.T) {
@@ -323,4 +331,103 @@ func TestBuilder_Build_FeatureFlags(t *testing.T) {
 			t.Errorf("expected request→flag edge for %s", flag)
 		}
 	}
+}
+
+func TestBuilder_Build_SpanNodeEnrichedAttrs(t *testing.T) {
+	builder := NewBuilder()
+	ev := testutil.MakeEvent(
+		testutil.WithTraceID("0123456789abcdef0123456789abcdef"),
+		testutil.WithSpanID("0123456789abcdef"),
+		testutil.WithService("payment-service"),
+		testutil.WithLatency(42),
+		testutil.WithStatusCode(502),
+		testutil.WithCallerService("checkout"),
+		testutil.WithDownstreamService("stripe"),
+		testutil.WithError("PMT_502", "payment failed"),
+	)
+
+	g := builder.Build(ev)
+
+	spanID := core.ID("span", ev.Request.TraceID, ev.Request.SpanID)
+	span, ok := g.Nodes[spanID]
+	if !ok {
+		t.Fatalf("expected span node %s to exist", spanID)
+	}
+
+	checks := map[string]any{
+		"trace_id":           ev.Request.TraceID,
+		"span_id":            ev.Request.SpanID,
+		"parent_span_id":     ev.Request.ParentSpanID,
+		"service":            "payment-service",
+		"event_name":         ev.EventName,
+		"status_code":        502,
+		"success":            false,
+		"latency_ms":         int64(42),
+		"caller_service":     "checkout",
+		"downstream_service": "stripe",
+		"error_code":         "PMT_502",
+	}
+	for key, want := range checks {
+		got, exists := span.Attr[key]
+		if !exists {
+			t.Errorf("span attr %q missing", key)
+			continue
+		}
+		if got != want {
+			t.Errorf("span attr %q = %v (%T), want %v (%T)", key, got, got, want, want)
+		}
+	}
+
+	// flow and timestamp should also be present
+	if _, ok := span.Attr["flow"]; !ok {
+		t.Error("span attr \"flow\" missing")
+	}
+	if _, ok := span.Attr["timestamp"]; !ok {
+		t.Error("span attr \"timestamp\" missing")
+	}
+}
+
+func TestBuilder_Build_RequestIsRoot(t *testing.T) {
+	builder := NewBuilder()
+
+	t.Run("root span (no parent)", func(t *testing.T) {
+		ev := testutil.MakeEvent(
+			testutil.WithSpanID("0123456789abcdef"),
+			testutil.WithParentSpanID(""),
+		)
+		g := builder.Build(ev)
+		reqID := core.ID("request", ev.Request.TraceID)
+		req := g.Nodes[reqID]
+		isRoot, ok := req.Attr["is_root"].(bool)
+		if !ok || !isRoot {
+			t.Errorf("expected is_root=true for root span, got %v", req.Attr["is_root"])
+		}
+	})
+
+	t.Run("child span (has parent)", func(t *testing.T) {
+		ev := testutil.MakeEvent(
+			testutil.WithSpanID("0123456789abcdef"),
+			testutil.WithParentSpanID("fedcba9876543210"),
+		)
+		g := builder.Build(ev)
+		reqID := core.ID("request", ev.Request.TraceID)
+		req := g.Nodes[reqID]
+		isRoot, ok := req.Attr["is_root"].(bool)
+		if !ok || isRoot {
+			t.Errorf("expected is_root=false for child span, got %v", req.Attr["is_root"])
+		}
+	})
+
+	t.Run("no span id", func(t *testing.T) {
+		ev := testutil.MakeEvent(
+			testutil.WithSpanID(""),
+		)
+		g := builder.Build(ev)
+		reqID := core.ID("request", ev.Request.TraceID)
+		req := g.Nodes[reqID]
+		isRoot, ok := req.Attr["is_root"].(bool)
+		if !ok || isRoot {
+			t.Errorf("expected is_root=false when span_id is empty, got %v", req.Attr["is_root"])
+		}
+	})
 }
