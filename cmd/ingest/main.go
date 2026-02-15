@@ -77,6 +77,12 @@ func main() {
 	mux.HandleFunc("/healthz", ingestServer.Health)
 	mux.HandleFunc("/v1/events", ingestServer.Events)
 
+	// Read APIs with CORS
+	corsOrigin := config.Getenv("CORS_ORIGIN", "*")
+	mux.HandleFunc("/v1/traces/story", ingest.CORSWrap(corsOrigin, ingestServer.TraceStory))
+	mux.HandleFunc("/v1/traces/recent", ingest.CORSWrap(corsOrigin, ingestServer.RecentTraces))
+	mux.HandleFunc("/v1/overview", ingest.CORSWrap(corsOrigin, ingestServer.Overview))
+
 	server := &http.Server{
 		Addr:    addr,
 		Handler: mux,
