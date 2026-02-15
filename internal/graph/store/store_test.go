@@ -134,3 +134,169 @@ func TestStore_Merge_SpanStubEnrichment(t *testing.T) {
 		t.Errorf("event_name = %v, want api-gateway.request", got)
 	}
 }
+
+func TestStore_EdgeDedup(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "cccccccccccccccccccccccccccccccc"
+
+	ev := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("aaaaaaaaaaaaaaaa"),
+		testutil.WithService("api-gateway"),
+		testutil.WithStatusCode(200),
+	)
+
+	g := b.Build(ev)
+	s.Merge(g)
+	edgeCount1 := len(s.Snapshot().Edges)
+
+	// Merge the same graph again — edge count should not increase
+	s.Merge(g)
+	edgeCount2 := len(s.Snapshot().Edges)
+
+	if edgeCount2 != edgeCount1 {
+		t.Errorf("edge count increased from %d to %d after duplicate merge", edgeCount1, edgeCount2)
+	}
+}
+
+func TestStore_Index_TraceToRequest(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "dddddddddddddddddddddddddddddddd"
+
+	ev := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("bbbbbbbbbbbbbbbb"),
+	)
+	s.Merge(b.Build(ev))
+
+	reqID, ok := s.RequestIDForTrace(traceID)
+	if !ok {
+		t.Fatal("expected RequestIDForTrace to return true")
+	}
+	expectedReqID := core.ID("request", traceID)
+	if reqID != expectedReqID {
+		t.Errorf("RequestIDForTrace = %s, want %s", reqID, expectedReqID)
+	}
+
+	// Unknown trace
+	_, ok = s.RequestIDForTrace("0000000000000000000000000000000f")
+	if ok {
+		t.Error("expected RequestIDForTrace to return false for unknown trace")
+	}
+}
+
+func TestStore_Index_TraceToSpans(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+	// Two events for the same trace with different spans
+	ev1 := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("1111111111111111"),
+		testutil.WithParentSpanID(""),
+		testutil.WithService("api-gateway"),
+	)
+	ev2 := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("2222222222222222"),
+		testutil.WithParentSpanID("1111111111111111"),
+		testutil.WithService("checkout-demo"),
+	)
+
+	s.Merge(b.Build(ev1))
+	s.Merge(b.Build(ev2))
+	s.Merge(b.Build(ev2)) // duplicate merge should not duplicate span IDs in index
+
+	spanIDs := s.SpanIDsForTrace(traceID)
+	// ev1 creates span 1111, ev2 creates span 2222 + stub for parent 1111.
+	// Index should contain unique IDs only.
+	if len(spanIDs) != 2 {
+		t.Errorf("expected exactly 2 unique span IDs for trace, got %d: %v", len(spanIDs), spanIDs)
+	}
+
+	// Verify the span IDs contain our expected spans
+	expected := map[string]bool{
+		core.ID("span", traceID, "1111111111111111"): false,
+		core.ID("span", traceID, "2222222222222222"): false,
+	}
+	for _, id := range spanIDs {
+		if _, ok := expected[id]; ok {
+			expected[id] = true
+		}
+	}
+	for id, found := range expected {
+		if !found {
+			t.Errorf("expected span ID %s not found in index", id)
+		}
+	}
+}
+
+func TestStore_Index_SpanIDsForTrace_ReturnsCopy(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "abababababababababababababababab"
+
+	ev := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("3333333333333333"),
+		testutil.WithService("api-gateway"),
+	)
+	s.Merge(b.Build(ev))
+
+	got := s.SpanIDsForTrace(traceID)
+	if len(got) == 0 {
+		t.Fatal("expected at least one span ID")
+	}
+	got[0] = "mutated-by-caller"
+
+	fresh := s.SpanIDsForTrace(traceID)
+	if len(fresh) == 0 {
+		t.Fatal("expected at least one span ID on second read")
+	}
+	if fresh[0] == "mutated-by-caller" {
+		t.Fatal("SpanIDsForTrace returned internal backing slice; caller mutation leaked into store")
+	}
+}
+
+func TestStore_Index_Restore_Rebuilds(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "ffffffffffffffffffffffffffffffff"
+
+	ev := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("aaaaaaaaaaaaaaaa"),
+		testutil.WithService("api-gateway"),
+	)
+	s.Merge(b.Build(ev))
+
+	// Take snapshot and restore into a fresh store
+	snap := s.Snapshot()
+	s2 := NewStore()
+	s2.Restore(snap)
+
+	// Indexes should be rebuilt from restored graph
+	reqID, ok := s2.RequestIDForTrace(traceID)
+	if !ok {
+		t.Fatal("RequestIDForTrace should work after Restore")
+	}
+	if reqID != core.ID("request", traceID) {
+		t.Errorf("RequestIDForTrace = %s, want %s", reqID, core.ID("request", traceID))
+	}
+
+	spanIDs := s2.SpanIDsForTrace(traceID)
+	if len(spanIDs) == 0 {
+		t.Error("SpanIDsForTrace should return spans after Restore")
+	}
+
+	// Edge dedup should also work after restore — merge same snapshot again
+	edgesBefore := len(s2.Snapshot().Edges)
+	s2.Merge(snap)
+	edgesAfter := len(s2.Snapshot().Edges)
+	if edgesAfter != edgesBefore {
+		t.Errorf("edges grew from %d to %d after duplicate merge post-Restore", edgesBefore, edgesAfter)
+	}
+}

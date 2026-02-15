@@ -12,17 +12,23 @@ type Store struct {
 	mu    sync.RWMutex
 	graph *core.Graph
 	//for fast lookups
-	requestFacts map[string]RequestFacts
-	seenRequests map[string]struct{}
-	counters     *Counters
+	requestFacts   map[string]RequestFacts
+	seenRequests   map[string]struct{}
+	counters       *Counters
+	edgeSet        map[string]struct{} // "from:to:type" for dedup
+	traceToRequest map[string]string   // trace_id -> request node ID
+	traceToSpans   map[string][]string // trace_id -> []span node IDs
 }
 
 func NewStore() *Store {
 	return &Store{
-		graph:        core.New(),
-		requestFacts: map[string]RequestFacts{},
-		seenRequests: map[string]struct{}{},
-		counters:     NewCounters(),
+		graph:          core.New(),
+		requestFacts:   map[string]RequestFacts{},
+		seenRequests:   map[string]struct{}{},
+		counters:       NewCounters(),
+		edgeSet:        map[string]struct{}{},
+		traceToRequest: map[string]string{},
+		traceToSpans:   map[string][]string{},
 	}
 }
 
@@ -66,8 +72,29 @@ func (s *Store) Merge(g *core.Graph) {
 		}
 		s.graph.Nodes[id] = existing
 	}
-	// Merge edges
-	s.graph.Edges = append(s.graph.Edges, g.Edges...)
+	// Merge edges (deduplicated)
+	for _, e := range g.Edges {
+		key := e.From + ":" + e.To + ":" + string(e.Type)
+		if _, exists := s.edgeSet[key]; exists {
+			continue
+		}
+		s.edgeSet[key] = struct{}{}
+		s.graph.Edges = append(s.graph.Edges, e)
+	}
+
+	// Update trace indexes
+	for id, n := range g.Nodes {
+		traceID, _ := n.Attr["trace_id"].(string)
+		if traceID == "" {
+			continue
+		}
+		switch n.Type {
+		case core.NodeRequest:
+			s.traceToRequest[traceID] = id
+		case core.NodeSpan:
+			s.traceToSpans[traceID] = appendUniqueString(s.traceToSpans[traceID], id)
+		}
+	}
 
 	for id, n := range g.Nodes {
 		if n.Type != core.NodeRequest {
@@ -292,6 +319,22 @@ func (s *Store) Snapshot() *core.Graph {
 	}
 }
 
+// RequestIDForTrace returns the request node ID for a given trace ID.
+func (s *Store) RequestIDForTrace(traceID string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.traceToRequest[traceID]
+	return id, ok
+}
+
+// SpanIDsForTrace returns all span node IDs for a given trace ID.
+func (s *Store) SpanIDsForTrace(traceID string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	spanIDs := s.traceToSpans[traceID]
+	return append([]string(nil), spanIDs...)
+}
+
 // Restore replaces the current graph with a defensive copy of g.
 // This avoids memory aliasing with snapshot data.
 func (s *Store) Restore(g *core.Graph) {
@@ -352,6 +395,29 @@ func (s *Store) rebuildDerivedIndexesLocked() {
 	s.requestFacts = map[string]RequestFacts{}
 	s.seenRequests = map[string]struct{}{}
 	s.counters = NewCounters()
+	s.edgeSet = map[string]struct{}{}
+	s.traceToRequest = map[string]string{}
+	s.traceToSpans = map[string][]string{}
+
+	// Rebuild edge set
+	for _, e := range s.graph.Edges {
+		key := e.From + ":" + e.To + ":" + string(e.Type)
+		s.edgeSet[key] = struct{}{}
+	}
+
+	// Rebuild trace indexes
+	for id, n := range s.graph.Nodes {
+		traceID, _ := n.Attr["trace_id"].(string)
+		if traceID == "" {
+			continue
+		}
+		switch n.Type {
+		case core.NodeRequest:
+			s.traceToRequest[traceID] = id
+		case core.NodeSpan:
+			s.traceToSpans[traceID] = appendUniqueString(s.traceToSpans[traceID], id)
+		}
+	}
 
 	for id, n := range s.graph.Nodes {
 		if n.Type != core.NodeRequest {
@@ -411,6 +477,15 @@ func parseTimestampAttr(attr map[string]any) time.Time {
 	return time.Time{}
 }
 
+func appendUniqueString(values []string, candidate string) []string {
+	for _, existing := range values {
+		if existing == candidate {
+			return values
+		}
+	}
+	return append(values, candidate)
+}
+
 func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bool) {
 	reqNode, ok := g.Nodes[reqID]
 	if !ok || reqNode.Type != core.NodeRequest {
@@ -450,80 +525,3 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 
 	return f, true
 }
-
-//prev version of store.go- which  deals with not a copy of graph but direct pointer manipulation
-
-// package graph
-
-// import "sync"
-
-// type Store struct {
-// 	mu    sync.Mutex
-// 	graph *Graph
-// }
-
-// func NewStore() *Store {
-// 	return &Store{
-// 		graph: New(),
-// 	}
-// }
-// func (s *Store) Merge(g *Graph) {
-// 	s.mu.Lock()
-// 	defer s.mu.Unlock()
-
-// 	// Merge nodes (deterministic IDs prevent duplication)
-// 	for id, node := range g.Nodes {
-// 		if _, exists := s.graph.Nodes[id]; !exists {
-// 			s.graph.Nodes[id] = node
-// 		}
-// 	}
-
-// 	// Merge edges (append-only)
-// 	s.graph.Edges = append(s.graph.Edges, g.Edges...)
-// }
-
-// func (s *Store) Graph() *Graph {
-// 	s.mu.Lock()
-// 	defer s.mu.Unlock()
-
-// 	return s.graph
-// }
-
-// //graph snapshot for testing and debugging for persistence
-// func (s *Store) Snapshot() *Graph {
-// 	s.mu.Lock()
-// 	defer s.mu.Unlock()
-
-// 	// Copy nodes
-// 	nodes := make(map[string]Node, len(s.graph.Nodes))
-// 	for id, n := range s.graph.Nodes {
-// 		var attr map[string]any
-// 		if n.Attr != nil {
-// 			attr = make(map[string]any, len(n.Attr))
-// 			for k, v := range n.Attr {
-// 				attr[k] = v
-// 			}
-// 		}
-// 		n.Attr = attr
-// 		nodes[id] = n
-// 	}
-
-// 	// Copy edges
-// 	edges := make([]Edge, len(s.graph.Edges))
-// 	copy(edges, s.graph.Edges)
-
-// 	return &Graph{
-// 		Nodes: nodes,
-// 		Edges: edges,
-// 	}
-// }
-
-// func (s *Store) Restore(g *Graph) {
-// 	if g == nil {
-// 		return
-// 	}
-
-// 	s.mu.Lock()
-// 	defer s.mu.Unlock()
-// 	s.graph = g
-// }
