@@ -240,6 +240,9 @@ func TestBuilder_Build_UserNode(t *testing.T) {
 	if user.Attr["tier"] != ev.User.Tier {
 		t.Errorf("expected tier %s, got %v", ev.User.Tier, user.Attr["tier"])
 	}
+	if user.Attr["id"] != ev.User.ID {
+		t.Errorf("expected id %s, got %v", ev.User.ID, user.Attr["id"])
+	}
 }
 
 func TestBuilder_Build_CallerService(t *testing.T) {

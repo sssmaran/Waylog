@@ -49,6 +49,7 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 		ID:   userID,
 		Type: core.NodeUser,
 		Attr: map[string]any{
+			"id":     ev.User.ID,
 			"tier":   ev.User.Tier,
 			"region": ev.User.Region,
 			"vip":    ev.User.VIP,
