@@ -55,6 +55,9 @@ Use the UI to send requests, then query with:
   waylog "show top errors"
   waylog "trace summary for trace <trace-id>"
 
+To launch the TUI dashboard:
+  make waylog-live
+
 Press Ctrl+C to stop everything.
 INFO
 
