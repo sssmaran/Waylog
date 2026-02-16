@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -48,6 +49,18 @@ func MiddlewareWithClient(client *waylog.Client) func(http.Handler) http.Handler
 			}
 
 			defer func() {
+				if recovered := recover(); recovered != nil {
+					panicErr := fmt.Errorf("panic: %v", recovered)
+					if client != nil {
+						client.Error(ctx, panicErr)
+						client.RequestEnd(ctx)
+					} else {
+						waylog.Error(ctx, panicErr)
+						waylog.RequestEnd(ctx)
+					}
+					panic(recovered)
+				}
+
 				if client != nil {
 					client.RequestEnd(ctx)
 					return

@@ -173,12 +173,7 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 	}
 
 	g := store.Snapshot()
-	spanToRequest := map[string]string{}
-	for _, e := range g.Edges {
-		if e.Type == core.EdgeRequestHasSpan {
-			spanToRequest[e.To] = e.From
-		}
-	}
+	spanToRequest := spanToRequestIndex(g)
 
 	requests := map[string]bool{}
 	users := map[string]int{}
@@ -200,15 +195,14 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 			continue
 		}
 
-		reqID := e.From
-		if fromNode, ok := g.Nodes[e.From]; ok && fromNode.Type == core.NodeSpan {
-			if parentReq, ok := spanToRequest[e.From]; ok {
-				reqID = parentReq
-			} else {
-				continue
-			}
+		reqID, ok := requestIDForFailureEdge(g, e, spanToRequest)
+		if !ok {
+			continue
 		}
 
+		if requests[reqID] {
+			continue
+		}
 		requests[reqID] = true
 
 		for _, ed := range g.Edges {

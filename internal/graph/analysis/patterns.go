@@ -28,7 +28,7 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 		}
 
 		req, ok := g.Nodes[e.From]
-		if !ok {
+		if !ok || req.Type != core.NodeRequest {
 			continue
 		}
 

@@ -117,6 +117,35 @@ func serviceChainForRequest(g *core.Graph, reqID string) []string {
 	return services
 }
 
+func spanToRequestIndex(g *core.Graph) map[string]string {
+	index := map[string]string{}
+	for _, e := range g.Edges {
+		if e.Type == core.EdgeRequestHasSpan {
+			index[e.To] = e.From
+		}
+	}
+	return index
+}
+
+func requestIDForFailureEdge(g *core.Graph, edge core.Edge, spanToRequest map[string]string) (string, bool) {
+	fromNode, ok := g.Nodes[edge.From]
+	if !ok {
+		return "", false
+	}
+	switch fromNode.Type {
+	case core.NodeRequest:
+		return edge.From, true
+	case core.NodeSpan:
+		reqID, ok := spanToRequest[edge.From]
+		if !ok || reqID == "" {
+			return "", false
+		}
+		return reqID, true
+	default:
+		return "", false
+	}
+}
+
 // errorCodeForID returns the error code attribute for an error node ID.
 func errorCodeForID(g *core.Graph, id string) string {
 	n, ok := g.Nodes[id]

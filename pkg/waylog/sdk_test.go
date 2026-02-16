@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -143,6 +144,48 @@ func TestErrorUpgradesTo500(t *testing.T) {
 	}
 	if ev.Outcome.Success {
 		t.Fatalf("expected failure")
+	}
+}
+
+func TestPanicMarkedAsFailureAndRePanics(t *testing.T) {
+	client, mem := newTestClient(t)
+
+	h := wayloghttp.MiddlewareWithClient(client)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	recovered := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				recovered = true
+			}
+		}()
+		h.ServeHTTP(rec, req)
+	}()
+	if !recovered {
+		t.Fatalf("expected panic to be re-thrown by middleware")
+	}
+
+	events := flushAndEvents(t, client, mem)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev.EventName != "checkout-service.error" {
+		t.Fatalf("unexpected event name: %s", ev.EventName)
+	}
+	if ev.Outcome.Success {
+		t.Fatalf("expected failure event")
+	}
+	if ev.Outcome.StatusCode != 500 {
+		t.Fatalf("expected status 500, got %d", ev.Outcome.StatusCode)
+	}
+	if ev.Error == nil || !strings.Contains(ev.Error.Message, "panic: boom") {
+		t.Fatalf("expected panic error message, got %+v", ev.Error)
 	}
 }
 

@@ -139,11 +139,24 @@ func handleInsights(ctx context.Context, store Store, params json.RawMessage) (a
 	errorCounts := map[string]int{}
 	serviceCounts := map[string]int{}
 	total := 0
+	spanToRequest := spanToRequestIndex(g)
+	seenFailures := map[string]bool{}
 
 	for _, e := range g.Edges {
 		if e.Type != core.EdgeFailedWith {
 			continue
 		}
+		reqID, ok := requestIDForFailureEdge(g, e, spanToRequest)
+		if !ok {
+			continue
+		}
+
+		failureKey := reqID + "|" + e.To
+		if seenFailures[failureKey] {
+			continue
+		}
+		seenFailures[failureKey] = true
+
 		errNode := g.Nodes[e.To]
 		code := ""
 		if errNode.Attr != nil {
@@ -154,20 +167,6 @@ func handleInsights(ctx context.Context, store Store, params json.RawMessage) (a
 		}
 		errorCounts[code]++
 		total++
-
-		reqID := e.From
-		if fromNode, ok := g.Nodes[e.From]; ok && fromNode.Type == core.NodeSpan {
-			reqID = ""
-			for _, re := range g.Edges {
-				if re.Type == core.EdgeRequestHasSpan && re.To == e.From {
-					reqID = re.From
-					break
-				}
-			}
-			if reqID == "" {
-				continue
-			}
-		}
 
 		for _, ed := range g.Edges {
 			if ed.From == reqID && ed.Type == core.EdgeHandledBy {
