@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Waylog Micro-Demo</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
+    h1 { font-size: 1.4em; }
+    button { margin: 6px 4px; padding: 10px 18px; font-size: 0.95em; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; }
+    button:hover { background: #e8e8e8; }
+    pre { background: #f0f0f0; padding: 16px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; min-height: 60px; }
+  </style>
+</head>
+<body>
+  <h1>Waylog Micro-Demo</h1>
+  <div>
+    <button onclick="purchase('')">Purchase (Success)</button>
+    <button onclick="purchase('db_fail')">Purchase (DB Fail)</button>
+    <button onclick="purchase('payment_fail')">Purchase (Payment Fail)</button>
+    <button onclick="purchase('checkout_fail')">Purchase (Checkout Fail)</button>
+  </div>
+  <pre id="result">Click a button to send a request...</pre>
+  <script>
+    async function purchase(force) {
+      const el = document.getElementById('result');
+      el.textContent = 'Loading...';
+      try {
+        const url = force ? '/purchase?force=' + encodeURIComponent(force) : '/purchase';
+        const resp = await fetch(url);
+        const data = await resp.json();
+        el.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        el.textContent = 'Error: ' + err.message;
+      }
+    }
+  </script>
+</body>
+</html>

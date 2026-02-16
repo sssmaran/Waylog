@@ -11,7 +11,6 @@ const (
 	NodeFlag    NodeType = "feature_flag"
 	NodeError   NodeType = "error"
 	NodeSpan    NodeType = "span"
-
 )
 
 type Node struct {
@@ -19,7 +18,7 @@ type Node struct {
 	Type NodeType
 	Attr map[string]any
 
-	//for time-window commands 
-    FirstSeen time.Time 
-    LastSeen  time.Time
+	//for time-window commands
+	FirstSeen time.Time
+	LastSeen  time.Time
 }

@@ -34,7 +34,6 @@ func (s *Store) SummarizeWindow(start, end time.Time) WindowSummary {
 			continue
 		}
 
-
 		for _, errID := range f.Errors {
 			out.ErrorCount[errID]++
 

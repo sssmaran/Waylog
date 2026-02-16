@@ -3,8 +3,8 @@ package build
 import (
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/event"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
 type Builder struct{}
@@ -16,6 +16,7 @@ func NewBuilder() *Builder {
 func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 	g := core.New()
 	errID := ""
+	isRoot := ev.Request.SpanID != "" && ev.Request.ParentSpanID == ""
 
 	// --------------------
 	// Request node
@@ -31,7 +32,11 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 			"latency_ms":  ev.Metrics.LatencyMs,
 			"success":     ev.Outcome.Success,
 			"status_code": ev.Outcome.StatusCode,
+			"is_root":     isRoot,
 		},
+	}
+	if ev.Error != nil {
+		req.Attr["error_code"] = ev.Error.Code
 	}
 	touch(&req, ev.Timestamp)
 	g.AddNode(req)
@@ -44,6 +49,7 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 		ID:   userID,
 		Type: core.NodeUser,
 		Attr: map[string]any{
+			"id":     ev.User.ID,
 			"tier":   ev.User.Tier,
 			"region": ev.User.Region,
 			"vip":    ev.User.VIP,
@@ -92,15 +98,27 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 	if ev.Request.SpanID != "" {
 		spanNodeID = core.ID("span", ev.Request.TraceID, ev.Request.SpanID)
 
+		spanAttrs := map[string]any{
+			"trace_id":           ev.Request.TraceID,
+			"span_id":            ev.Request.SpanID,
+			"parent_span_id":     ev.Request.ParentSpanID,
+			"service":            ev.System.Service,
+			"event_name":         ev.EventName,
+			"status_code":        ev.Outcome.StatusCode,
+			"success":            ev.Outcome.Success,
+			"latency_ms":         ev.Metrics.LatencyMs,
+			"flow":               ev.Request.Flow,
+			"timestamp":          ev.Timestamp,
+			"caller_service":     ev.System.CallerService,
+			"downstream_service": ev.System.DownstreamService,
+		}
+		if ev.Error != nil {
+			spanAttrs["error_code"] = ev.Error.Code
+		}
 		span := core.Node{
 			ID:   spanNodeID,
 			Type: core.NodeSpan,
-			Attr: map[string]any{
-				"trace_id":       ev.Request.TraceID,
-				"span_id":        ev.Request.SpanID,
-				"parent_span_id": ev.Request.ParentSpanID,
-				"service":        ev.System.Service,
-			},
+			Attr: spanAttrs,
 		}
 		touch(&span, ev.Timestamp)
 		g.AddNode(span)
@@ -141,13 +159,6 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 			})
 		}
 	}
-	if spanNodeID != "" && errID != "" {
-		g.AddEdge(core.Edge{
-			From: spanNodeID,
-			To:   errID,
-			Type: core.EdgeFailedWith,
-		})
-	}
 	// --------------------
 	// Feature flag nodes
 	// --------------------
@@ -168,9 +179,6 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 			To:   flagID,
 			Type: core.EdgeUsedFlag,
 		})
-	}
-	if spanNodeID != "" {
-		g.AddEdge(core.Edge{From: spanNodeID, To: errID, Type: core.EdgeFailedWith})
 	}
 
 	// --------------------
@@ -240,6 +248,15 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 			To:   errID,
 			Type: core.EdgeFailedWith,
 		})
+
+		// span → error (only when both exist)
+		if spanNodeID != "" {
+			g.AddEdge(core.Edge{
+				From: spanNodeID,
+				To:   errID,
+				Type: core.EdgeFailedWith,
+			})
+		}
 	}
 
 	return g

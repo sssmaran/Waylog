@@ -26,8 +26,7 @@ func tokenize(s string) []string {
 	return strings.Fields(s)
 }
 
-
-//helper funcs
+// helper funcs
 func parseOr(tokens []string) (Predicate, []string, error) {
 	left, rest, err := parseAnd(tokens)
 	if err != nil {

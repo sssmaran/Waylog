@@ -8,35 +8,38 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/cli"
+	"github.com/sssmaran/WaylogCLI/internal/config"
+	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/persist"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 )
 
+var graphStore *graphstore.Store
+
 func main() {
 	log.SetOutput(os.Stderr)
-	addr := getenv("INGEST_ADDR", ":8080")
+	addr := config.Getenv("INGEST_ADDR", ":8080")
 
 	// ---------------- Graph persistence config ----------------
 
-	snapshotPath := getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
-	snapshotEvery := getenvInt("SNAPSHOT_EVERY_SEC", 5)
-	snapshotLogEvery := getenvInt("SNAPSHOT_LOG_EVERY", 1)
-	// retention := getenvDuration("GRAPH_RETENTION", 0)
-	mcpStdio := getenvBool("MCP_STDIO", false)
+	snapshotPath := config.Getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
+	snapshotEvery := config.GetenvInt("SNAPSHOT_EVERY_SEC", 5)
+	snapshotLogEvery := config.GetenvInt("SNAPSHOT_LOG_EVERY", 1)
+	mcpStdio := config.GetenvBool("MCP_STDIO", false)
 
-	store := ingest.GlobalGraphStore
+	graphStore = graphstore.NewStore()
 	snapshotLoaded := false
+
 	// Restore snapshot (non-fatal)
 	if snap, source, err := persist.LoadWithSource(snapshotPath); err == nil {
-		store.Restore(snap.Graph)
+		graphStore.Restore(snap.Graph)
 		snapshotLoaded = true
 		log.Printf(
 			"SNAPSHOT: loaded %s (nodes=%d edges=%d saved_at=%s)",
@@ -55,8 +58,13 @@ func main() {
 		log.Printf("SNAPSHOT: no snapshot loaded (%v)", err)
 	}
 
-	// Share store with ingest
-	ingest.SetStore(store)
+	// Create ingest server with the store
+	ingestServer := ingest.NewServer(ingest.ServerConfig{
+		Store: graphStore,
+	})
+
+	// Set default store for CLI
+	cli.SetDefaultStore(graphStore)
 
 	reg := tools.NewRegistry()
 	if err := tools.RegisterGraphTools(reg); err != nil {
@@ -66,8 +74,14 @@ func main() {
 	// ---------------- HTTP server ----------------
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", ingest.Health)
-	mux.HandleFunc("/v1/events", ingest.Events)
+	mux.HandleFunc("/healthz", ingestServer.Health)
+	mux.HandleFunc("/v1/events", ingestServer.Events)
+
+	// Read APIs with CORS
+	corsOrigin := config.Getenv("CORS_ORIGIN", "*")
+	mux.HandleFunc("/v1/traces/story", ingest.CORSWrap(corsOrigin, ingestServer.TraceStory))
+	mux.HandleFunc("/v1/traces/recent", ingest.CORSWrap(corsOrigin, ingestServer.RecentTraces))
+	mux.HandleFunc("/v1/overview", ingest.CORSWrap(corsOrigin, ingestServer.Overview))
 
 	server := &http.Server{
 		Addr:    addr,
@@ -93,7 +107,7 @@ func main() {
 	if mcpStdio {
 		go func() {
 			log.Printf("MCP stdio ready (protocol %s)", "2024-11-05")
-			if err := stdio.Serve(ctx, os.Stdin, os.Stdout, reg, store, stdio.ServerInfo{
+			if err := stdio.Serve(ctx, os.Stdin, os.Stdout, reg, graphStore, stdio.ServerInfo{
 				Name:    "waylog",
 				Version: "0.1.0",
 			}); err != nil && err != context.Canceled {
@@ -117,10 +131,7 @@ func main() {
 				return
 			case <-ticker.C:
 				snapshotCount++
-				// if retention > 0 {
-				// 	store.PruneOlderThan(time.Now().Add(-retention))
-				// }
-				g := store.Snapshot()
+				g := graphStore.Snapshot()
 				if !snapshotLoaded {
 					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
 						log.Println("SNAPSHOT: skipped (last load failed)")
@@ -162,8 +173,8 @@ func main() {
 		log.Println("ingest shutdown complete")
 	}
 
-	// Final snapshot on shutdown  //added
-	g := store.Snapshot()
+	// Final snapshot on shutdown
+	g := graphStore.Snapshot()
 	if !snapshotLoaded {
 		log.Println("SNAPSHOT: final save skipped (last load failed)")
 	} else if len(g.Nodes) == 0 {
@@ -180,11 +191,13 @@ func main() {
 }
 
 func replLoop() {
+	config.LoadDotEnv(".env")
+
 	in := bufio.NewScanner(os.Stdin)
 
 	printHelp()
 	for {
-		os.Stdout.WriteString("ingest> ")
+		os.Stdout.WriteString("\033[1m\033[36mingest>\033[0m ")
 
 		if !in.Scan() {
 			return
@@ -210,52 +223,13 @@ func replLoop() {
 }
 
 func printHelp() {
-	os.Stdout.WriteString("commands:\n")
+	os.Stdout.WriteString("\033[1m\033[36mcommands:\033[0m\n")
 	os.Stdout.WriteString("  waylog \"<question>\"\n")
 	os.Stdout.WriteString("  help\n")
 	os.Stdout.WriteString("  exit\n")
-	os.Stdout.WriteString("\nexamples:\n")
-	os.Stdout.WriteString("  waylog \"show top errors\"\n")
-	os.Stdout.WriteString("  waylog \"summarize trace <trace-id>\"\n")
-	os.Stdout.WriteString("  waylog \"explain request <request-id>\"\n")
-	os.Stdout.WriteString("\nnotes:\n")
-	os.Stdout.WriteString("  MCP stdio: run with MCP_STDIO=1 and use tools/list or tools/call\n")
-
+	os.Stdout.WriteString("\n\033[1m\033[36mexamples:\033[0m\n")
+	os.Stdout.WriteString("  waylog \"\033[33mshow top errors\033[0m\"\n")
+	os.Stdout.WriteString("  waylog \"\033[33msummarize trace <trace-id>\033[0m\"\n")
+	os.Stdout.WriteString("  waylog \"\033[33mexplain request <request-id>\033[0m\"\n")
+	os.Stdout.WriteString("\n\033[2mnotes: MCP stdio: run with MCP_STDIO=1\033[0m\n")
 }
-
-func getenv(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
-func getenvInt(k string, def int) int {
-	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func getenvBool(k string, def bool) bool {
-	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-		switch strings.ToLower(v) {
-		case "1", "true", "yes", "y", "on":
-			return true
-		case "0", "false", "no", "n", "off":
-			return false
-		}
-	}
-	return def
-}
-
-// func getenvDuration(k string, def time.Duration) time.Duration {
-// 	if v := os.Getenv(k); v != "" {
-// 		if d, err := time.ParseDuration(v); err == nil {
-// 			return d
-// 		}
-// 	}
-// 	return def
-// }

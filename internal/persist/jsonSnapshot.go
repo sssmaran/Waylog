@@ -15,13 +15,14 @@ import (
 )
 
 const SnapshotVersion = "1"
+
 var ErrSnapshotMissing = errors.New("snapshot missing")
 
 type Snapshot struct {
-	Version   string       `json:"version"`
-	SavedAt   time.Time    `json:"saved_at"`
-	Checksum  string       `json:"checksum"`
-	Graph     *core.Graph `json:"graph"`
+	Version  string      `json:"version"`
+	SavedAt  time.Time   `json:"saved_at"`
+	Checksum string      `json:"checksum"`
+	Graph    *core.Graph `json:"graph"`
 
 	NodeCount int `json:"node_count"`
 	EdgeCount int `json:"edge_count"`
@@ -58,11 +59,32 @@ func Save(path string, g *core.Graph) error {
 		return err
 	}
 
+	// Atomic write: write to temp file in same directory, then rename
+	tmpPath := path + ".tmp"
+
+	// 1. Write to temp file
+	if err := os.WriteFile(tmpPath, out, 0644); err != nil {
+		return fmt.Errorf("write temp snapshot: %w", err)
+	}
+
+	// 2. Fsync temp file to ensure data is on disk
+	f, err := os.Open(tmpPath)
+	if err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
+
+	// 3. Backup existing file BEFORE rename (so .bak = previous good state)
 	if _, err := os.Stat(path); err == nil {
 		_ = copyFile(path, path+".bak")
 	}
 
-	return os.WriteFile(path, out, 0644)
+	// 4. Atomically replace primary file
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename temp snapshot: %w", err)
+	}
+
+	return nil
 }
 
 func Load(path string) (*Snapshot, error) {

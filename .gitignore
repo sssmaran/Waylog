@@ -31,7 +31,18 @@ go.work.sum
 # .idea/
 # .vscode/
 
-docs
 /*.log
 /data/
 *.md
+.env.example
+
+# Local runtime/build artifacts
+/ingest
+/checkout
+/waylog
+/bridge
+/waylog-live
+/api-gateway
+/checkout-demo
+/db-demo
+/payment-demo

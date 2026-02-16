@@ -8,12 +8,10 @@ const (
 	EdgeUsedFlag   EdgeType = "used_flag"
 	EdgeFailedWith EdgeType = "failed_with"
 	EdgeCalls      EdgeType = "calls"
-	
-	EdgeRequestHasSpan EdgeType = "has_span"      
-	EdgeSpanChildOf    EdgeType = "span_child_of" 
-	EdgeSpanOnService  EdgeType = "span_on"   
-	
 
+	EdgeRequestHasSpan EdgeType = "has_span"
+	EdgeSpanChildOf    EdgeType = "span_child_of"
+	EdgeSpanOnService  EdgeType = "span_on"
 )
 
 type Edge struct {
