@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/checkout"
+	"github.com/sssmaran/WaylogCLI/examples/microdemo"
 	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/pkg/waylog"
 	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
@@ -21,7 +21,7 @@ type coded interface {
 
 func main() {
 	cfg := waylog.Config{
-		Service:      "checkout-service",
+		Service:      "checkout-demo",
 		Env:          "dev",
 		Version:      "0.1.0",
 		DeploymentID: os.Getenv("DEPLOYMENT_ID"),
@@ -29,8 +29,8 @@ func main() {
 			if err == nil {
 				return ""
 			}
-			if codedErr, ok := err.(coded); ok {
-				return codedErr.Code()
+			if c, ok := err.(coded); ok {
+				return c.Code()
 			}
 			return ""
 		},
@@ -43,45 +43,42 @@ func main() {
 		}
 	}
 
-	err := waylog.Init(cfg)
-	if err != nil {
+	if err := waylog.Init(cfg); err != nil {
 		log.Fatalf("waylog init failed: %v", err)
 	}
 
-	svc := checkout.NewService()
-	handler := checkout.NewHandler(svc)
+	paymentURL := config.Getenv("PAYMENT_URL", "http://localhost:9083")
+	dbURL := config.Getenv("DB_URL", "http://localhost:9084")
+	handler := microdemo.NewCheckoutHandler(paymentURL, dbURL)
 
 	mux := http.NewServeMux()
 	mux.Handle("/checkout", wayloghttp.Middleware(handler))
+
 	server := &http.Server{
-		Addr:    ":9090",
+		Addr:    ":9082",
 		Handler: mux,
 	}
 
-	ctx, stop := signal.NotifyContext(
-		context.Background(),
-		os.Interrupt,
-		syscall.SIGTERM,
-	)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		log.Println("checkout service listening on :9090")
+		log.Println("checkout-demo listening on :9082")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("checkout server error: %v", err)
+			log.Fatalf("checkout-demo server error: %v", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("checkout shutdown signal received")
+	log.Println("checkout-demo shutdown signal received")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("checkout graceful shutdown failed: %v", err)
+		log.Printf("checkout-demo graceful shutdown failed: %v", err)
 	}
 	if err := waylog.Shutdown(shutdownCtx); err != nil {
 		log.Printf("waylog shutdown failed: %v", err)
 	}
-	log.Println("checkout shutdown complete")
+	log.Println("checkout-demo shutdown complete")
 }

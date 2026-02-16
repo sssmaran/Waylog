@@ -36,3 +36,17 @@ docs
 /data/
 *.md
 .env.example
+
+# Local runtime/build artifacts
+/ingest
+/checkout
+/waylog
+/bridge
+/waylog-live
+/api-gateway
+/checkout-demo
+/db-demo
+/payment-demo
+/ingest.log
+/data/graph_snapshot.json
+/data/graph_snapshot.json.bak

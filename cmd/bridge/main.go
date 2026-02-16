@@ -85,7 +85,6 @@ func main() {
 	}
 }
 
-
 func ensureTopicReady(ctx context.Context, brokers []string, topic string) error {
 	if len(brokers) == 0 || topic == "" {
 		return nil

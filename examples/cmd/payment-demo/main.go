@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/examples/microdemo"
 	"github.com/sssmaran/WaylogCLI/internal/config"
-	"github.com/sssmaran/WaylogCLI/internal/microdemo"
 	"github.com/sssmaran/WaylogCLI/pkg/waylog"
 	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
 )

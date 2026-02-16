@@ -30,15 +30,19 @@ if [[ "${START_KAFKA:-}" == "1" ]]; then
 fi
 
 # Start payment-demo
-GOCACHE="$GOCACHE_DIR" go run ./cmd/payment-demo &
+GOCACHE="$GOCACHE_DIR" go run ./examples/cmd/payment-demo &
+pids+=("$!")
+
+# Start db-demo
+GOCACHE="$GOCACHE_DIR" go run ./examples/cmd/db-demo &
 pids+=("$!")
 
 # Start checkout-demo
-GOCACHE="$GOCACHE_DIR" go run ./cmd/checkout-demo &
+GOCACHE="$GOCACHE_DIR" go run ./examples/cmd/checkout-demo &
 pids+=("$!")
 
 # Start api-gateway
-GOCACHE="$GOCACHE_DIR" go run ./cmd/api-gateway &
+GOCACHE="$GOCACHE_DIR" go run ./examples/cmd/api-gateway &
 pids+=("$!")
 
 # Start Kafka -> ingest bridge
@@ -47,7 +51,7 @@ pids+=("$!")
 
 cat <<INFO
 
-Micro-demo running (3-service chain: gateway -> checkout -> payment).
+Micro-demo running (4 services: gateway -> checkout; checkout does db then payment).
 - Gateway UI:  http://localhost:9081/demo
 - Gateway API: http://localhost:9081/purchase
 

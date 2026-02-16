@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/microdemo"
+	"github.com/sssmaran/WaylogCLI/examples/microdemo"
 	"github.com/sssmaran/WaylogCLI/pkg/waylog"
 	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
 	"github.com/sssmaran/WaylogCLI/pkg/waylog/transport"
@@ -45,8 +45,13 @@ func TestMicroDemoChain(t *testing.T) {
 	paymentServer := httptest.NewServer(wayloghttp.MiddlewareWithClient(client)(paymentHandler))
 	defer paymentServer.Close()
 
-	// Start checkout test server pointing at payment
-	checkoutHandler := microdemo.NewCheckoutHandler(paymentServer.URL)
+	// Start db test server
+	dbHandler := microdemo.NewDBHandler()
+	dbServer := httptest.NewServer(wayloghttp.MiddlewareWithClient(client)(dbHandler))
+	defer dbServer.Close()
+
+	// Start checkout test server pointing at db, then payment
+	checkoutHandler := microdemo.NewCheckoutHandler(paymentServer.URL, dbServer.URL)
 	checkoutServer := httptest.NewServer(wayloghttp.MiddlewareWithClient(client)(checkoutHandler))
 	defer checkoutServer.Close()
 
@@ -67,6 +72,7 @@ func TestMicroDemoChain(t *testing.T) {
 		{"success", "", http.StatusOK, true},
 		{"payment_fail", "payment_fail", http.StatusBadGateway, false},
 		{"checkout_fail", "checkout_fail", http.StatusInternalServerError, false},
+		{"db_fail", "db_fail", http.StatusBadGateway, false},
 	}
 
 	for _, tt := range tests {

@@ -20,13 +20,13 @@ type tickMsg time.Time
 // Model is the root bubbletea model. It dispatches messages to sub-models
 // and handles view switching.
 type Model struct {
-	activeView   activeView
-	prevView     activeView
+	activeView    activeView
+	prevView      activeView
 	width, height int
-	dashboard    DashboardModel
-	story        StoryModel
-	api          *APIClient
-	pollInterval time.Duration
+	dashboard     DashboardModel
+	story         StoryModel
+	api           *APIClient
+	pollInterval  time.Duration
 }
 
 func NewModel(client *APIClient, interval time.Duration) Model {

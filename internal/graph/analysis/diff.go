@@ -2,7 +2,6 @@ package analysis
 
 import "github.com/sssmaran/WaylogCLI/internal/graph/store"
 
-
 type DiffEntry struct {
 	ErrorCode string
 	Before    int
@@ -11,11 +10,12 @@ type DiffEntry struct {
 }
 
 type WindowDiff struct {
-	New        []DiffEntry
-	Removed    []DiffEntry
-	Increased  []DiffEntry
-	Decreased  []DiffEntry
+	New       []DiffEntry
+	Removed   []DiffEntry
+	Increased []DiffEntry
+	Decreased []DiffEntry
 }
+
 func DiffSummaries(before, after store.WindowSummary) WindowDiff {
 	out := WindowDiff{}
 

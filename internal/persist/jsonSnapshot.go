@@ -15,13 +15,14 @@ import (
 )
 
 const SnapshotVersion = "1"
+
 var ErrSnapshotMissing = errors.New("snapshot missing")
 
 type Snapshot struct {
-	Version   string       `json:"version"`
-	SavedAt   time.Time    `json:"saved_at"`
-	Checksum  string       `json:"checksum"`
-	Graph     *core.Graph `json:"graph"`
+	Version  string      `json:"version"`
+	SavedAt  time.Time   `json:"saved_at"`
+	Checksum string      `json:"checksum"`
+	Graph    *core.Graph `json:"graph"`
 
 	NodeCount int `json:"node_count"`
 	EdgeCount int `json:"edge_count"`

@@ -11,15 +11,21 @@ import (
 )
 
 type CheckoutHandler struct {
-	paymentURL string
-	client     *http.Client
+	paymentURL    string
+	dbURL         string
+	paymentClient *http.Client
+	dbClient      *http.Client
 }
 
-func NewCheckoutHandler(paymentURL string) *CheckoutHandler {
+func NewCheckoutHandler(paymentURL, dbURL string) *CheckoutHandler {
 	return &CheckoutHandler{
 		paymentURL: paymentURL,
-		client: &http.Client{
+		dbURL:      dbURL,
+		paymentClient: &http.Client{
 			Transport: wayloghttp.WrapTransport(http.DefaultTransport, "payment-demo"),
+		},
+		dbClient: &http.Client{
+			Transport: wayloghttp.WrapTransport(http.DefaultTransport, "db-demo"),
 		},
 	}
 }
@@ -33,13 +39,14 @@ func (h *CheckoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		traceID = tc.TraceID
 	}
 
+	ctx = waylog.WithUser(ctx, waylog.User{
+		ID:     "demo-user",
+		Tier:   "standard",
+		Region: "us-east-1",
+	})
+	ctx = waylog.WithFlow(ctx, "checkout")
+
 	if force == "checkout_fail" {
-		ctx = waylog.WithUser(ctx, waylog.User{
-			ID:     "demo-user",
-			Tier:   "standard",
-			Region: "us-east-1",
-		})
-		ctx = waylog.WithFlow(ctx, "checkout")
 		waylog.Error(ctx, codedError{code: "CHK_500", message: "checkout processing failed"})
 
 		w.WriteHeader(http.StatusInternalServerError)
@@ -47,6 +54,42 @@ func (h *CheckoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"success":  false,
 			"trace_id": traceID,
 			"error":    "checkout processing failed",
+		})
+		return
+	}
+
+	dbReq, err := http.NewRequestWithContext(ctx, "GET", h.dbURL+"/db?force="+force, nil)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]any{
+			"success":  false,
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
+		return
+	}
+
+	dbResp, err := h.dbClient.Do(dbReq)
+	if err != nil {
+		waylog.Error(ctx, codedError{code: "CHK_DB_502", message: "db service unavailable"})
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]any{
+			"success":  false,
+			"trace_id": traceID,
+			"error":    "db service unavailable",
+		})
+		return
+	}
+	_, _ = io.Copy(io.Discard, dbResp.Body)
+	_ = dbResp.Body.Close()
+
+	if dbResp.StatusCode >= http.StatusInternalServerError {
+		waylog.Error(ctx, codedError{code: "CHK_DB_DOWNSTREAM", message: "downstream db failed"})
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]any{
+			"success":  false,
+			"trace_id": traceID,
+			"error":    "database operation failed",
 		})
 		return
 	}
@@ -62,7 +105,7 @@ func (h *CheckoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.client.Do(req)
+	resp, err := h.paymentClient.Do(req)
 	if err != nil {
 		waylog.Error(ctx, codedError{code: "CHK_502", message: "payment service unavailable"})
 		w.WriteHeader(http.StatusBadGateway)
@@ -76,13 +119,6 @@ func (h *CheckoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-
-	ctx = waylog.WithUser(ctx, waylog.User{
-		ID:     "demo-user",
-		Tier:   "standard",
-		Region: "us-east-1",
-	})
-	ctx = waylog.WithFlow(ctx, "checkout")
 
 	if resp.StatusCode >= http.StatusInternalServerError {
 		waylog.Error(ctx, codedError{code: "CHK_DOWNSTREAM", message: "downstream payment failed"})
