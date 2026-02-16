@@ -31,7 +31,6 @@ go.work.sum
 # .idea/
 # .vscode/
 
-docs
 /*.log
 /data/
 *.md
@@ -47,6 +46,3 @@ docs
 /checkout-demo
 /db-demo
 /payment-demo
-/ingest.log
-/data/graph_snapshot.json
-/data/graph_snapshot.json.bak

@@ -7,6 +7,7 @@ export GOCACHE="$GOCACHE_DIR"
 export KAFKA_BROKERS="${KAFKA_BROKERS:-localhost:9092}"
 export KAFKA_TOPIC="${KAFKA_TOPIC:-wide_events}"
 export INGEST_ADDR="${INGEST_ADDR:-:8080}"
+export HAPPY_SAMPLE_RATE_PCT="${HAPPY_SAMPLE_RATE_PCT:-100}"
 
 pids=()
 cleanup() {

@@ -8,6 +8,7 @@ export KAFKA_BROKERS="${KAFKA_BROKERS:-localhost:9092}"
 export KAFKA_TOPIC="${KAFKA_TOPIC:-wide_events}"
 export INGEST_ADDR="${INGEST_ADDR:-:8080}"
 export INGEST_URL="${INGEST_URL:-http://localhost:8080/v1/events}"
+export HAPPY_SAMPLE_RATE_PCT="${HAPPY_SAMPLE_RATE_PCT:-100}"
 
 CHECKOUT_URL="${CHECKOUT_URL:-http://localhost:9090/checkout}"
 TRAFFIC_INTERVAL_SEC="${TRAFFIC_INTERVAL_SEC:-0.5}"
