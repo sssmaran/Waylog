@@ -1,6 +1,7 @@
 package tracestory
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -132,7 +133,7 @@ func TestBuild_PaymentFail(t *testing.T) {
 	traceID := "22222222222222222222222222222222"
 	s := buildThreeHopGraph(t, traceID, true)
 
-	story, _, err := Build(s.Snapshot(), traceID)
+	story, ctx, err := Build(s.Snapshot(), traceID)
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
 	}
@@ -151,6 +152,9 @@ func TestBuild_PaymentFail(t *testing.T) {
 	}
 	if story.FirstFailHop.StatusCode != 502 {
 		t.Errorf("FirstFailHop.StatusCode = %d, want 502", story.FirstFailHop.StatusCode)
+	}
+	if !slices.Contains(ctx.ErrorCodes, "PMT_502") {
+		t.Errorf("Context.ErrorCodes should include PMT_502, got %v", ctx.ErrorCodes)
 	}
 }
 
@@ -268,5 +272,62 @@ func TestBuild_ToleratesSnapshotAttrTypes(t *testing.T) {
 	}
 	if story.Chain[0].Timestamp.IsZero() {
 		t.Error("Timestamp should parse from RFC3339 string")
+	}
+}
+
+func TestBuild_OrdersSiblingHopsByTimestamp(t *testing.T) {
+	traceID := "66666666666666666666666666666666"
+	s := store.NewStore()
+	b := build.NewBuilder()
+	base := time.Now().UTC()
+
+	gw := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("aaaaaaaaaaaaaaaa"),
+		testutil.WithParentSpanID(""),
+		testutil.WithService("api-gateway"),
+		testutil.WithFlow("purchase"),
+		testutil.WithTimestamp(base.Add(1*time.Millisecond)),
+	)
+	ck := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("bbbbbbbbbbbbbbbb"),
+		testutil.WithParentSpanID("aaaaaaaaaaaaaaaa"),
+		testutil.WithService("checkout-demo"),
+		testutil.WithTimestamp(base.Add(2*time.Millisecond)),
+	)
+	pm := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("dddddddddddddddd"),
+		testutil.WithParentSpanID("bbbbbbbbbbbbbbbb"),
+		testutil.WithService("payment-demo"),
+		testutil.WithTimestamp(base.Add(4*time.Millisecond)),
+	)
+	db := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("cccccccccccccccc"),
+		testutil.WithParentSpanID("bbbbbbbbbbbbbbbb"),
+		testutil.WithService("db-demo"),
+		testutil.WithTimestamp(base.Add(3*time.Millisecond)),
+	)
+
+	// Merge out-of-order on purpose (payment before db).
+	s.Merge(b.Build(gw))
+	s.Merge(b.Build(ck))
+	s.Merge(b.Build(pm))
+	s.Merge(b.Build(db))
+
+	story, _, err := Build(s.Snapshot(), traceID)
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+	if len(story.Chain) != 4 {
+		t.Fatalf("Chain length = %d, want 4", len(story.Chain))
+	}
+	want := []string{"api-gateway", "checkout-demo", "db-demo", "payment-demo"}
+	for i := range want {
+		if story.Chain[i].Service != want[i] {
+			t.Errorf("Chain[%d].Service = %s, want %s", i, story.Chain[i].Service, want[i])
+		}
 	}
 }

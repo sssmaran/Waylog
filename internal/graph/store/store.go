@@ -161,7 +161,7 @@ func mergeNodeTime(dst, src *core.Node) {
 
 // mergeRequestAttrs applies deterministic merge rules for request nodes.
 // - success: AND (any failure makes the request failed)
-// - If incoming is from root span (is_root=true): overwrite status_code, latency_ms, event_name
+// - If incoming is from root span (is_root=true): overwrite status_code, latency_ms, event_name, flow
 // - error_codes: accumulated as deduplicated []string
 func mergeRequestAttrs(dst, src *core.Node) {
 	if dst.Attr == nil {
@@ -186,6 +186,9 @@ func mergeRequestAttrs(dst, src *core.Node) {
 		}
 		if v, ok := src.Attr["event_name"]; ok {
 			dst.Attr["event_name"] = v
+		}
+		if v, ok := src.Attr["flow"]; ok {
+			dst.Attr["flow"] = v
 		}
 		dst.Attr["is_root"] = true
 	}

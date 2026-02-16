@@ -73,11 +73,14 @@ type Hop struct {
 }
 
 type TraceContext struct {
-	UserID     string   `json:"user_id,omitempty"`
-	UserTier   string   `json:"user_tier,omitempty"`
-	UserRegion string   `json:"user_region,omitempty"`
-	Flow       string   `json:"flow,omitempty"`
-	Flags      []string `json:"flags,omitempty"`
+	RequestID    string   `json:"request_id,omitempty"`
+	RequestEvent string   `json:"request_event,omitempty"`
+	ErrorCodes   []string `json:"error_codes,omitempty"`
+	UserID       string   `json:"user_id,omitempty"`
+	UserTier     string   `json:"user_tier,omitempty"`
+	UserRegion   string   `json:"user_region,omitempty"`
+	Flow         string   `json:"flow,omitempty"`
+	Flags        []string `json:"flags,omitempty"`
 }
 
 // Message types for bubbletea.

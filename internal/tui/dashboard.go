@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // DashboardModel holds the dashboard view state.
@@ -154,8 +155,26 @@ func (d *DashboardModel) View(width, height int) string {
 
 func (d *DashboardModel) renderTraces(width, maxRows int) string {
 	var b strings.Builder
+	const (
+		traceColWidth   = 8
+		statusColWidth  = 6
+		codeColWidth    = 4
+		latencyColWidth = 7
+		nameColWidth    = 20
+	)
+
+	col := func(w int, s string) string {
+		return lipgloss.NewStyle().Width(w).Render(s)
+	}
+
 	b.WriteString(labelStyle.Render("Recent Traces") + "\n")
-	b.WriteString(statusBarStyle.Render("  ID        STATUS  CODE    LATENCY  NAME") + "\n")
+	header := "  " +
+		col(traceColWidth, "ID") + "  " +
+		col(statusColWidth, "STATUS") + "  " +
+		col(codeColWidth, "CODE") + "  " +
+		col(latencyColWidth, "LATENCY") + "  " +
+		col(nameColWidth, "NAME")
+	b.WriteString(statusBarStyle.Render(header) + "\n")
 
 	filtered := d.filteredTraces()
 	if len(filtered) == 0 {
@@ -173,22 +192,22 @@ func (d *DashboardModel) renderTraces(width, maxRows int) string {
 			traceShort = traceShort[:8]
 		}
 
-		status := successStyle.Render("OK  ")
+		status := successStyle.Render("OK")
 		if !t.Success {
 			status = failStyle.Render("FAIL")
 		}
 
 		name := t.EventName
-		if len(name) > 20 {
-			name = name[:20]
+		if len(name) > nameColWidth {
+			name = name[:nameColWidth]
 		}
 
-		line := fmt.Sprintf("  %-8s  %s  %s  %-7s  %s",
-			traceShort,
-			status,
-			StatusColor(t.StatusCode).Render(fmt.Sprintf("%-4d", t.StatusCode)),
-			fmt.Sprintf("%dms", t.LatencyMs),
-			name)
+		line := "  " +
+			col(traceColWidth, traceShort) + "  " +
+			col(statusColWidth, status) + "  " +
+			col(codeColWidth, StatusColor(t.StatusCode).Render(fmt.Sprintf("%d", t.StatusCode))) + "  " +
+			col(latencyColWidth, fmt.Sprintf("%dms", t.LatencyMs)) + "  " +
+			col(nameColWidth, name)
 
 		if i == d.selectedIdx {
 			line = selectedRowStyle.Render("▸" + line[1:])

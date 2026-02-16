@@ -19,6 +19,7 @@ func TestStore_Merge_RequestDeterministicMerge(t *testing.T) {
 		testutil.WithSpanID("cccccccccccccccc"),
 		testutil.WithParentSpanID("pppppppppppppppp"),
 		testutil.WithService("payment-demo"),
+		testutil.WithFlow("payment"),
 		testutil.WithStatusCode(502),
 		testutil.WithLatency(12),
 		testutil.WithError("PMT_502", "payment failed"),
@@ -32,6 +33,7 @@ func TestStore_Merge_RequestDeterministicMerge(t *testing.T) {
 		testutil.WithSpanID("pppppppppppppppp"),
 		testutil.WithParentSpanID(""),
 		testutil.WithService("api-gateway"),
+		testutil.WithFlow("purchase"),
 		testutil.WithStatusCode(200),
 		testutil.WithLatency(45),
 		testutil.WithEventName("api-gateway.request"),
@@ -55,6 +57,9 @@ func TestStore_Merge_RequestDeterministicMerge(t *testing.T) {
 	}
 	if got := req.Attr["event_name"]; got != "api-gateway.request" {
 		t.Errorf("event_name = %v, want api-gateway.request (from root)", got)
+	}
+	if got := req.Attr["flow"]; got != "purchase" {
+		t.Errorf("flow = %v, want purchase (from root)", got)
 	}
 
 	// success should be AND: child was false, so overall false

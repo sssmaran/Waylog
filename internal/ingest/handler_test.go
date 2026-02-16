@@ -221,6 +221,149 @@ func TestCORSWrap(t *testing.T) {
 	}
 }
 
+const successTrace = "bbbb0000cccc1111dddd2222eeee3333"
+
+func makeTestServerMixed() *Server {
+	st := graphstore.NewStore()
+	b := build.NewBuilder()
+
+	events := []event.WideEvent{
+		// Trace 1: 3-hop failure (gateway->checkout->payment fails)
+		testutil.MakeEvent(
+			testutil.WithTraceID(testTrace),
+			testutil.WithSpanID("1111111111111111"),
+			testutil.WithService("api-gateway"),
+			testutil.WithStatusCode(502),
+			testutil.WithLatency(45),
+			testutil.WithTimestamp(time.Now().Add(-2*time.Minute)),
+		),
+		testutil.MakeEvent(
+			testutil.WithTraceID(testTrace),
+			testutil.WithSpanID("2222222222222222"),
+			testutil.WithParentSpanID("1111111111111111"),
+			testutil.WithService("checkout"),
+			testutil.WithCallerService("api-gateway"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(32),
+			testutil.WithTimestamp(time.Now().Add(-2*time.Minute)),
+		),
+		testutil.MakeEvent(
+			testutil.WithTraceID(testTrace),
+			testutil.WithSpanID("3333333333333333"),
+			testutil.WithParentSpanID("2222222222222222"),
+			testutil.WithService("payment"),
+			testutil.WithCallerService("checkout"),
+			testutil.WithStatusCode(502),
+			testutil.WithError("PMT_502", "payment failed"),
+			testutil.WithLatency(12),
+			testutil.WithTimestamp(time.Now().Add(-2*time.Minute)),
+		),
+		// Trace 2: 3-hop success (all 200)
+		testutil.MakeEvent(
+			testutil.WithTraceID(successTrace),
+			testutil.WithSpanID("aaaaaaaaaaaaaaaa"),
+			testutil.WithService("api-gateway"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(40),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		),
+		testutil.MakeEvent(
+			testutil.WithTraceID(successTrace),
+			testutil.WithSpanID("bbbbbbbbbbbbbbbb"),
+			testutil.WithParentSpanID("aaaaaaaaaaaaaaaa"),
+			testutil.WithService("checkout"),
+			testutil.WithCallerService("api-gateway"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(25),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		),
+		testutil.MakeEvent(
+			testutil.WithTraceID(successTrace),
+			testutil.WithSpanID("cccccccccccccccc"),
+			testutil.WithParentSpanID("bbbbbbbbbbbbbbbb"),
+			testutil.WithService("payment"),
+			testutil.WithCallerService("checkout"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(10),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		),
+	}
+
+	for _, ev := range events {
+		st.Merge(b.Build(ev))
+	}
+
+	return &Server{store: st, builder: b}
+}
+
+func TestOverview_MixedSuccessAndFailure(t *testing.T) {
+	srv := makeTestServerMixed()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/overview?window=10m", nil)
+	w := httptest.NewRecorder()
+	srv.Overview(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	totalReqs := int(resp["total_requests"].(float64))
+	totalFails := int(resp["total_failures"].(float64))
+	errorRate := resp["error_rate"].(float64)
+
+	if totalReqs != 2 {
+		t.Errorf("total_requests = %d, want 2", totalReqs)
+	}
+	if totalFails != 1 {
+		t.Errorf("total_failures = %d, want 1", totalFails)
+	}
+	if errorRate != 50.0 {
+		t.Errorf("error_rate = %.1f, want 50.0", errorRate)
+	}
+}
+
+func TestTraceStory_SuccessTrace(t *testing.T) {
+	srv := makeTestServerMixed()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/traces/story?trace_id="+successTrace, nil)
+	w := httptest.NewRecorder()
+	srv.TraceStory(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Story struct {
+			TraceID      string `json:"trace_id"`
+			Success      bool   `json:"success"`
+			HopCount     int    `json:"hop_count"`
+			FirstFailHop *any   `json:"first_fail_hop"`
+		} `json:"story"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	if resp.Story.TraceID != successTrace {
+		t.Errorf("trace_id = %q, want %q", resp.Story.TraceID, successTrace)
+	}
+	if !resp.Story.Success {
+		t.Error("expected success=true for all-200 trace")
+	}
+	if resp.Story.HopCount != 3 {
+		t.Errorf("hop_count = %d, want 3", resp.Story.HopCount)
+	}
+	if resp.Story.FirstFailHop != nil {
+		t.Error("expected first_fail_hop to be nil for success trace")
+	}
+}
+
 func TestReadEndpoints_NoStore(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 

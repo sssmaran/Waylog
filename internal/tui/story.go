@@ -64,12 +64,15 @@ func (s StoryModel) View(width, height int) string {
 	status := successStyle.Render("SUCCESS")
 	if !s.story.Success {
 		label := "FAILED"
-		if s.story.FirstFailHop != nil {
-			label += fmt.Sprintf(" (first fail: %s)", s.story.FirstFailHop.Service)
+		if s.story.FirstFailHop != nil && s.story.FirstFailHop.Service != "" {
+			label += fmt.Sprintf(" (first observed fail: %s)", s.story.FirstFailHop.Service)
 		}
 		status = failStyle.Render(label)
 	}
 	b.WriteString(fmt.Sprintf("Overall: %s  Hops: %d\n", status, s.story.HopCount))
+	if summary := s.rootCauseSummary(); summary != "" {
+		b.WriteString(summary + "\n")
+	}
 	b.WriteString(helpBarStyle.Render("esc: back  q: dashboard  ?: help"))
 
 	return b.String()
@@ -77,7 +80,7 @@ func (s StoryModel) View(width, height int) string {
 
 func (s StoryModel) renderHopChain() string {
 	var b strings.Builder
-	b.WriteString(labelStyle.Render("Hop Chain") + "\n\n")
+	b.WriteString(labelStyle.Render("Hop Chain (timestamp-ordered)") + "\n\n")
 
 	for i, hop := range s.story.Chain {
 		icon := successStyle.Render("✓")
@@ -109,6 +112,18 @@ func (s StoryModel) renderContext() string {
 	b.WriteString(labelStyle.Render("Context") + "\n\n")
 
 	ctx := s.context
+	if s.story.TraceID != "" {
+		b.WriteString("Trace ID: " + s.story.TraceID + "\n")
+	}
+	if ctx.RequestID != "" {
+		b.WriteString("Request Node: " + ctx.RequestID + "\n")
+	}
+	if ctx.RequestEvent != "" {
+		b.WriteString("Event: " + ctx.RequestEvent + "\n")
+	}
+	if len(ctx.ErrorCodes) > 0 {
+		b.WriteString("Error Codes: " + strings.Join(ctx.ErrorCodes, ", ") + "\n")
+	}
 	if ctx.UserID != "" {
 		line := "User: " + ctx.UserID
 		if ctx.UserTier != "" {
@@ -126,10 +141,50 @@ func (s StoryModel) renderContext() string {
 		b.WriteString("Flags: " + strings.Join(ctx.Flags, ", ") + "\n")
 	}
 
-	b.WriteString("\n" + labelStyle.Render("Commands") + "\n")
+	b.WriteString("\n" + labelStyle.Render("Commands (trace_id)") + "\n")
 	cmdStyle := helpBarStyle
 	b.WriteString(cmdStyle.Render(fmt.Sprintf("waylog \"trace summary %s\"", s.story.TraceID)) + "\n")
 	b.WriteString(cmdStyle.Render(fmt.Sprintf("waylog \"explain request %s\"", s.story.TraceID)) + "\n")
 
 	return b.String()
+}
+
+func (s StoryModel) rootCauseSummary() string {
+	if s.story.Success {
+		return ""
+	}
+	root, rootIdx := s.likelyRootCause()
+	if root == nil {
+		return ""
+	}
+	code := root.ErrorCode
+	if code == "" {
+		code = fmt.Sprintf("HTTP_%d", root.StatusCode)
+	}
+
+	var propagated []string
+	for i := rootIdx - 1; i >= 0; i-- {
+		hop := s.story.Chain[i]
+		if hop.Service == "" || hop.Service == root.Service {
+			continue
+		}
+		if hop.StatusCode >= 500 {
+			propagated = append(propagated, hop.Service)
+		}
+	}
+	if len(propagated) == 0 {
+		return failStyle.Render(fmt.Sprintf("Root Cause: %s at %s", code, root.Service))
+	}
+	return failStyle.Render(fmt.Sprintf("Root Cause: %s at %s (propagated via %s)", code, root.Service, strings.Join(propagated, " -> ")))
+}
+
+func (s StoryModel) likelyRootCause() (*Hop, int) {
+	for i := len(s.story.Chain) - 1; i >= 0; i-- {
+		hop := s.story.Chain[i]
+		if hop.Success {
+			continue
+		}
+		return &hop, i
+	}
+	return nil, -1
 }

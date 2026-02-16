@@ -2,6 +2,7 @@ package tracestory
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -31,11 +32,14 @@ type Story struct {
 
 // Context provides user and request metadata for the trace.
 type Context struct {
-	UserID     string   `json:"user_id,omitempty"`
-	UserTier   string   `json:"user_tier,omitempty"`
-	UserRegion string   `json:"user_region,omitempty"`
-	Flow       string   `json:"flow,omitempty"`
-	Flags      []string `json:"flags,omitempty"`
+	RequestID    string   `json:"request_id,omitempty"`
+	RequestEvent string   `json:"request_event,omitempty"`
+	ErrorCodes   []string `json:"error_codes,omitempty"`
+	UserID       string   `json:"user_id,omitempty"`
+	UserTier     string   `json:"user_tier,omitempty"`
+	UserRegion   string   `json:"user_region,omitempty"`
+	Flow         string   `json:"flow,omitempty"`
+	Flags        []string `json:"flags,omitempty"`
 }
 
 // Build constructs a Story and Context from a graph for the given traceID.
@@ -60,6 +64,10 @@ func Build(g *core.Graph, traceID string) (Story, Context, error) {
 			// e.From = child, e.To = parent
 			children[e.To] = append(children[e.To], e.From)
 		}
+	}
+	sortSpanIDsByTime(g, roots)
+	for parentID := range children {
+		sortSpanIDsByTime(g, children[parentID])
 	}
 
 	// DFS from roots to build the hop chain in root-first order
@@ -159,11 +167,16 @@ func hopFromNode(n core.Node) Hop {
 
 // buildContext extracts user and request metadata for a trace.
 func buildContext(g *core.Graph, reqID string, reqNode core.Node) Context {
-	ctx := Context{}
+	ctx := Context{RequestID: reqID}
 
 	// Flow from request node
 	if reqNode.Attr != nil {
+		ctx.RequestEvent = stringAttr(reqNode.Attr["event_name"])
 		ctx.Flow = stringAttr(reqNode.Attr["flow"])
+		ctx.ErrorCodes = append(ctx.ErrorCodes, stringSliceAttr(reqNode.Attr["error_codes"])...)
+		if code := stringAttr(reqNode.Attr["error_code"]); code != "" && len(ctx.ErrorCodes) == 0 {
+			ctx.ErrorCodes = append(ctx.ErrorCodes, code)
+		}
 	}
 
 	// Find user node via request_by edge
@@ -194,6 +207,54 @@ func buildContext(g *core.Graph, reqID string, reqNode core.Node) Context {
 	}
 
 	return ctx
+}
+
+func sortSpanIDsByTime(g *core.Graph, spanIDs []string) {
+	sort.Slice(spanIDs, func(i, j int) bool {
+		leftTime := spanSortTime(g, spanIDs[i])
+		rightTime := spanSortTime(g, spanIDs[j])
+		if !leftTime.Equal(rightTime) {
+			if leftTime.IsZero() {
+				return false
+			}
+			if rightTime.IsZero() {
+				return true
+			}
+			return leftTime.Before(rightTime)
+		}
+		return spanIDs[i] < spanIDs[j]
+	})
+}
+
+func spanSortTime(g *core.Graph, spanID string) time.Time {
+	n, ok := g.Nodes[spanID]
+	if !ok {
+		return time.Time{}
+	}
+	if ts, ok := timeAttr(n.Attr["timestamp"]); ok && !ts.IsZero() {
+		return ts
+	}
+	if !n.FirstSeen.IsZero() {
+		return n.FirstSeen
+	}
+	return n.LastSeen
+}
+
+func stringSliceAttr(v any) []string {
+	switch values := v.(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, item := range values {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func stringAttr(v any) string {
