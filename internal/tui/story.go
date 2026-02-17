@@ -141,10 +141,12 @@ func (s StoryModel) renderContext() string {
 		b.WriteString("Flags: " + strings.Join(ctx.Flags, ", ") + "\n")
 	}
 
-	b.WriteString("\n" + labelStyle.Render("Commands (trace_id)") + "\n")
+	b.WriteString("\n" + labelStyle.Render("Commands") + "\n")
 	cmdStyle := helpBarStyle
 	b.WriteString(cmdStyle.Render(fmt.Sprintf("waylog \"trace summary %s\"", s.story.TraceID)) + "\n")
-	b.WriteString(cmdStyle.Render(fmt.Sprintf("waylog \"explain request %s\"", s.story.TraceID)) + "\n")
+	if ctx.RequestID != "" {
+		b.WriteString(cmdStyle.Render(fmt.Sprintf("waylog \"explain request %s\"", ctx.RequestID)) + "\n")
+	}
 
 	return b.String()
 }
