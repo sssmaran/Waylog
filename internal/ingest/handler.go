@@ -2,10 +2,12 @@ package ingest
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -19,24 +21,31 @@ import (
 
 // Server handles HTTP requests for the ingest service.
 type Server struct {
-	store    *store.Store
-	builder  *build.Builder
-	sampler  *sampler.Sampler
-	accepted atomic.Uint64
+	store        *store.Store
+	builder      *build.Builder
+	sampler      *sampler.Sampler
+	accepted     atomic.Uint64
+	maxBodyBytes int64
 }
 
 // ServerConfig holds configuration for creating a new Server.
 type ServerConfig struct {
-	Store   *store.Store
-	Sampler *sampler.Sampler
+	Store        *store.Store
+	Sampler      *sampler.Sampler
+	MaxBodyBytes int64
 }
 
 // NewServer creates a new ingest server with the given configuration.
 func NewServer(cfg ServerConfig) *Server {
+	maxBody := cfg.MaxBodyBytes
+	if maxBody == 0 {
+		maxBody = 1 << 20
+	}
 	s := &Server{
-		store:   cfg.Store,
-		builder: build.NewBuilder(),
-		sampler: cfg.Sampler,
+		store:        cfg.Store,
+		builder:      build.NewBuilder(),
+		sampler:      cfg.Sampler,
+		maxBodyBytes: maxBody,
 	}
 	if s.sampler == nil {
 		s.sampler = sampler.New(sampler.LoadConfigFromEnv())
@@ -57,12 +66,19 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
+
 	var ev event.WideEvent
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 
 	if err := dec.Decode(&ev); err != nil {
-		log.Println("INGEST: json decode failed:", err) // logging the error
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		log.Println("INGEST: json decode failed:", err)
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
@@ -301,6 +317,24 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 		"top_errors":     topErrors,
 		"recent_traces":  recent,
 	})
+}
+
+// APIKeyMiddleware rejects requests that don't provide a valid API key
+// via Authorization: Bearer <key> or X-API-Key header.
+func APIKeyMiddleware(key string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			if strings.TrimPrefix(auth, "Bearer ") == key {
+				next(w, r)
+				return
+			}
+		}
+		if r.Header.Get("X-API-Key") == key {
+			next(w, r)
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}
 }
 
 // CORSWrap wraps a handler with CORS headers scoped to read endpoints.

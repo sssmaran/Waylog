@@ -58,9 +58,13 @@ func main() {
 		log.Printf("SNAPSHOT: no snapshot loaded (%v)", err)
 	}
 
+	apiKey := config.Getenv("WAYLOG_API_KEY", "")
+	maxBody := int64(config.GetenvInt("MAX_BODY_BYTES", 1<<20))
+
 	// Create ingest server with the store
 	ingestServer := ingest.NewServer(ingest.ServerConfig{
-		Store: graphStore,
+		Store:        graphStore,
+		MaxBodyBytes: maxBody,
 	})
 
 	// Set default store for CLI
@@ -75,7 +79,11 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", ingestServer.Health)
-	mux.HandleFunc("/v1/events", ingestServer.Events)
+	if apiKey != "" {
+		mux.HandleFunc("/v1/events", ingest.APIKeyMiddleware(apiKey, ingestServer.Events))
+	} else {
+		mux.HandleFunc("/v1/events", ingestServer.Events)
+	}
 
 	// Read APIs with CORS
 	corsOrigin := config.Getenv("CORS_ORIGIN", "*")
@@ -84,8 +92,12 @@ func main() {
 	mux.HandleFunc("/v1/overview", ingest.CORSWrap(corsOrigin, ingestServer.Overview))
 
 	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: config.GetenvDuration("READ_HEADER_TIMEOUT", 5*time.Second),
+		ReadTimeout:       config.GetenvDuration("READ_TIMEOUT", 10*time.Second),
+		WriteTimeout:      config.GetenvDuration("WRITE_TIMEOUT", 10*time.Second),
+		IdleTimeout:       config.GetenvDuration("IDLE_TIMEOUT", 120*time.Second),
 	}
 
 	ctx, stop := signal.NotifyContext(

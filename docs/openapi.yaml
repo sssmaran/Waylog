@@ -1,15 +1,24 @@
 openapi: 3.0.3
 info:
   title: Waylog API
+  description: |
+    HTTP API for the Waylog ingest server.
+
+    Write endpoints require authentication via API key.
+    Read endpoints are open (protected by CORS only).
   version: 0.1.0
 servers:
   - url: /
 paths:
   /v1/events:
     post:
-      summary: Emit an event
+      summary: Ingest a WideEvent
+      description: |
+        Accepts a WideEvent JSON payload, validates it against the schema,
+        and ingests it into the graph.
       security:
-        - ApiKeyAuth: []
+        - ApiKeyHeader: []
+        - BearerAuth: []
       requestBody:
         required: true
         content:
@@ -20,352 +29,135 @@ paths:
         '202':
           description: Accepted
         '400':
-          description: Invalid request
+          description: Invalid request (validation failure)
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
         '401':
-          description: Unauthorized
+          description: Unauthorized (missing or invalid API key)
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
-  /v1/graph/stats:
+        '405':
+          description: Method Not Allowed
+        '413':
+          description: Request Entity Too Large
+
+  /v1/traces/story:
     get:
-      summary: Graph statistics
-      security:
-        - ApiKeyAuth: []
-      responses:
-        '200':
-          description: Stats
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/requests/explain:
-    post:
-      summary: Explain a request or trace
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                request_id:
-                  type: string
-                trace_id:
-                  type: string
-      responses:
-        '200':
-          description: Explanation
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: Invalid request
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/trace/{trace_id}/summary:
-    get:
-      summary: Trace summary
-      security:
-        - ApiKeyAuth: []
+      summary: Trace story narrative
+      description: |
+        Returns a human-readable story narrative for the given trace,
+        built from the graph's span and service data.
       parameters:
-        - in: path
+        - in: query
           name: trace_id
           required: true
           schema:
             type: string
+          description: The trace ID to build a story for
       responses:
         '200':
-          description: Trace summary
+          description: Trace story
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: true
-        '401':
-          description: Unauthorized
+        '400':
+          description: Missing trace_id query parameter
           content:
-            application/problem+json:
+            application/json:
               schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/trace/{trace_id}/graph:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '404':
+          description: Trace not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '503':
+          description: Service Unavailable (graph not ready)
+
+  /v1/traces/recent:
     get:
-      summary: Trace graph
-      security:
-        - ApiKeyAuth: []
+      summary: Recent traces
+      description: Returns a list of recent trace summaries, ordered by time.
       parameters:
-        - in: path
-          name: trace_id
-          required: true
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+          description: Maximum number of traces to return (default 20, max 100)
+      responses:
+        '200':
+          description: Array of recent trace summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+        '503':
+          description: Service Unavailable (graph not ready)
+
+  /v1/overview:
+    get:
+      summary: System overview
+      description: |
+        Returns an overview of the system including service counts,
+        request rates, error rates, and top errors within the given window.
+      parameters:
+        - in: query
+          name: window
+          required: false
           schema:
             type: string
+            default: 5m
+          description: Time window as a Go duration string (e.g. "5m", "1h")
       responses:
         '200':
-          description: Trace graph
+          description: System overview stats
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: true
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/failures:
-    post:
-      summary: Failed requests
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
+        '503':
+          description: Service Unavailable (graph not ready)
+
+  /healthz:
+    get:
+      summary: Health check
+      description: Returns 200 OK when the server is running.
       responses:
         '200':
-          description: Failures
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: Invalid request
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/patterns:
-    post:
-      summary: Failure patterns
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-      responses:
-        '200':
-          description: Patterns
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: Invalid request
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/blast-radius:
-    post:
-      summary: Blast radius
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-      responses:
-        '200':
-          description: Blast radius
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: Invalid request
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/failure-chain:
-    post:
-      summary: Failure chain
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-      responses:
-        '200':
-          description: Failure chain
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: Invalid request
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/query:
-    post:
-      summary: Graph query
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-      responses:
-        '200':
-          description: Query result
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: Invalid request
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/compare-windows:
-    post:
-      summary: Compare windows
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-      responses:
-        '200':
-          description: Comparison result
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: Invalid request
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/insights:
-    post:
-      summary: Insights
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-      responses:
-        '200':
-          description: Insights
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        '400':
-          description: Invalid request
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '401':
-          description: Unauthorized
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
+          description: OK
+
 components:
   securitySchemes:
-    ApiKeyAuth:
+    ApiKeyHeader:
       type: apiKey
       in: header
       name: X-API-Key
+      description: API key passed via the X-API-Key header
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API key passed via the Authorization header as a Bearer token
   schemas:
     Problem:
       type: object

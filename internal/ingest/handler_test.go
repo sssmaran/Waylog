@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -393,4 +394,75 @@ func TestReadEndpoints_NoStore(t *testing.T) {
 			t.Errorf("expected 503, got %d", w.Code)
 		}
 	})
+}
+
+func TestAPIKeyMiddleware(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := APIKeyMiddleware("test-secret", inner)
+
+	t.Run("valid Bearer token", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/events", nil)
+		req.Header.Set("Authorization", "Bearer test-secret")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("valid X-API-Key", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/events", nil)
+		req.Header.Set("X-API-Key", "test-secret")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("missing key", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/events", nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("wrong key", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/events", nil)
+		req.Header.Set("Authorization", "Bearer wrong-key")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", w.Code)
+		}
+	})
+}
+
+func TestEvents_BodyTooLarge(t *testing.T) {
+	srv := NewServer(ServerConfig{
+		Store:        graphstore.NewStore(),
+		MaxBodyBytes: 64,
+	})
+
+	largeJSON := `{"schema_version":"1.0","event_name":"test.request","padding":"` + strings.Repeat("a", 100) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(largeJSON))
+	w := httptest.NewRecorder()
+	srv.Events(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected 413, got %d", w.Code)
+	}
+}
+
+func TestEvents_DefaultMaxBody(t *testing.T) {
+	srv := NewServer(ServerConfig{
+		Store: graphstore.NewStore(),
+	})
+	if srv.maxBodyBytes != 1<<20 {
+		t.Errorf("expected default 1MB, got %d", srv.maxBodyBytes)
+	}
 }

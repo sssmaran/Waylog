@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race lint ci fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop
 
 help:
 	@echo "Targets:"
@@ -58,6 +58,15 @@ fmt:
 
 vet:
 	go vet ./...
+
+test-race:
+	go test -race ./...
+
+lint:
+	@which golangci-lint > /dev/null 2>&1 && golangci-lint run ./... || echo "golangci-lint not installed, skipping"
+
+ci: fmt vet test-race
+	@echo "CI checks passed"
 
 clean:
 	rm -f ingest checkout waylog bridge api-gateway checkout-demo db-demo payment-demo waylog-live
