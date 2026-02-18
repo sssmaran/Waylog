@@ -14,6 +14,7 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/internal/cli"
 	"github.com/sssmaran/WaylogCLI/internal/config"
+	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
@@ -66,6 +67,17 @@ func main() {
 		Store:        graphStore,
 		MaxBodyBytes: maxBody,
 	})
+
+	// Optional append-only event log
+	if dir := config.Getenv("EVENT_LOG_DIR", ""); dir != "" {
+		el, err := eventlog.New(dir)
+		if err != nil {
+			log.Fatalf("eventlog init failed: %v", err)
+		}
+		defer el.Close()
+		ingestServer.EventLog = el
+		log.Printf("EVENTLOG: writing to %s", dir)
+	}
 
 	// Set default store for CLI
 	cli.SetDefaultStore(graphStore)

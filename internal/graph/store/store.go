@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -108,20 +109,25 @@ func (s *Store) Merge(g *core.Graph) {
 		if n.Type != core.NodeRequest {
 			continue
 		}
-		if _, seen := s.seenRequests[id]; seen {
-			continue
-		}
 
-		facts, ok := extractRequestFactsFromGraph(g, id)
+		// Always extract from the merged graph (not the delta)
+		facts, ok := extractRequestFactsFromGraph(s.graph, id)
 		if !ok {
 			continue
 		}
 
-		// Mark seen + store facts
+		if _, seen := s.seenRequests[id]; seen {
+			oldFacts := s.requestFacts[id]
+			if !factsEqual(oldFacts, facts) {
+				s.reverseFactsFromCountersLocked(oldFacts)
+				s.applyFactsToCountersLocked(facts)
+				s.requestFacts[id] = facts
+			}
+			continue
+		}
+
 		s.seenRequests[id] = struct{}{}
 		s.requestFacts[id] = facts
-
-		// Update all-time counters (optional but cheap)
 		s.applyFactsToCountersLocked(facts)
 	}
 }
@@ -150,6 +156,63 @@ func (s *Store) applyFactsToCountersLocked(f RequestFacts) {
 		}
 	}
 
+}
+
+func (s *Store) reverseFactsFromCountersLocked(f RequestFacts) {
+	for _, errID := range f.Errors {
+		s.counters.ErrorCount[errID]--
+		if s.counters.ErrorCount[errID] <= 0 {
+			delete(s.counters.ErrorCount, errID)
+		}
+		for _, svcID := range f.Services {
+			m := s.counters.ServiceErrorCount[svcID]
+			if m != nil {
+				m[errID]--
+				if m[errID] <= 0 {
+					delete(m, errID)
+				}
+				if len(m) == 0 {
+					delete(s.counters.ServiceErrorCount, svcID)
+				}
+			}
+		}
+		for _, flagID := range f.Flags {
+			m := s.counters.FlagErrorCount[flagID]
+			if m != nil {
+				m[errID]--
+				if m[errID] <= 0 {
+					delete(m, errID)
+				}
+				if len(m) == 0 {
+					delete(s.counters.FlagErrorCount, flagID)
+				}
+			}
+		}
+	}
+}
+
+func factsEqual(a, b RequestFacts) bool {
+	return sortedEqual(a.Services, b.Services) &&
+		sortedEqual(a.Errors, b.Errors) &&
+		sortedEqual(a.Flags, b.Flags)
+}
+
+func sortedEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ac := make([]string, len(a))
+	copy(ac, a)
+	bc := make([]string, len(b))
+	copy(bc, b)
+	sort.Strings(ac)
+	sort.Strings(bc)
+	for i := range ac {
+		if ac[i] != bc[i] {
+			return false
+		}
+	}
+	return true
 }
 
 //helper for time-window commands

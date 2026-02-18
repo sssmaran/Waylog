@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	"github.com/sssmaran/WaylogCLI/internal/graph/store"
@@ -24,6 +25,7 @@ type Server struct {
 	store        *store.Store
 	builder      *build.Builder
 	sampler      *sampler.Sampler
+	EventLog     *eventlog.Writer
 	accepted     atomic.Uint64
 	maxBodyBytes int64
 }
@@ -93,6 +95,12 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 		log.Println("INGEST: event validation failed:", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	if s.EventLog != nil {
+		if err := s.EventLog.Write(&ev); err != nil {
+			log.Printf("EVENTLOG: write failed: %v", err)
+		}
 	}
 
 	if !s.sampler.ShouldKeep(ev) {

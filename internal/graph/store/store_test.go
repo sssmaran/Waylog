@@ -266,6 +266,48 @@ func TestStore_Index_SpanIDsForTrace_ReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestStore_Merge_RecomputesFacts(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa02"
+
+	// First event: checkout service, no error
+	ev1 := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("1111111111111111"),
+		testutil.WithParentSpanID(""),
+		testutil.WithService("checkout"),
+		testutil.WithStatusCode(200),
+		testutil.WithEventName("checkout.request"),
+	)
+	s.Merge(b.Build(ev1))
+
+	// Verify no errors in counters yet
+	if len(s.counters.ErrorCount) != 0 {
+		t.Fatalf("expected 0 errors after first merge, got %v", s.counters.ErrorCount)
+	}
+
+	// Second event: same trace, child span with an error
+	ev2 := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("2222222222222222"),
+		testutil.WithParentSpanID("1111111111111111"),
+		testutil.WithService("payment"),
+		testutil.WithStatusCode(500),
+		testutil.WithError("ERR_PAYMENT", "payment failed"),
+		testutil.WithEventName("payment.error"),
+	)
+	s.Merge(b.Build(ev2))
+
+	// The error node should now be counted
+	errNodeID := core.ID("error", "ERR_PAYMENT")
+	count, ok := s.counters.ErrorCount[errNodeID]
+	if !ok || count < 1 {
+		t.Errorf("expected ErrorCount[%s] >= 1, got %d (ok=%v); full counters: %v",
+			errNodeID, count, ok, s.counters.ErrorCount)
+	}
+}
+
 func TestStore_Index_Restore_Rebuilds(t *testing.T) {
 	s := NewStore()
 	b := build.NewBuilder()
