@@ -3,7 +3,7 @@ package ingest
 import (
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -80,7 +80,7 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		log.Println("INGEST: json decode failed:", err)
+		slog.Warn("json decode failed", "err", err)
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
@@ -92,14 +92,14 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := ev.Validate(); err != nil {
-		log.Println("INGEST: event validation failed:", err)
+		slog.Warn("event validation failed", "err", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if s.EventLog != nil {
 		if err := s.EventLog.Write(&ev); err != nil {
-			log.Printf("EVENTLOG: write failed: %v", err)
+			slog.Error("eventlog write failed", "err", err)
 		}
 	}
 
@@ -109,12 +109,11 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf(
-		"EVENT trace=%s status=%d success=%v error=%v",
-		ev.Request.TraceID,
-		ev.Outcome.StatusCode,
-		ev.Outcome.Success,
-		ev.Error,
+	slog.Info("event accepted",
+		"trace_id", ev.Request.TraceID,
+		"status_code", ev.Outcome.StatusCode,
+		"success", ev.Outcome.Success,
+		"error_code", errorCode(&ev),
 	)
 
 	// Build graph from event and merge into store
@@ -425,6 +424,13 @@ func attrToInt64(v any) int64 {
 		}
 	}
 	return 0
+}
+
+func errorCode(ev *event.WideEvent) string {
+	if ev.Error != nil {
+		return ev.Error.Code
+	}
+	return ""
 }
 
 func (s *Server) snapshotOrServiceUnavailable(w http.ResponseWriter) (*core.Graph, bool) {

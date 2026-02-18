@@ -2,7 +2,7 @@ package main
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -20,20 +20,19 @@ func main() {
 
 	if snap, source, err := persist.LoadWithSource(snapshotPath); err == nil {
 		store.Restore(snap.Graph)
-		log.Printf(
-			"SNAPSHOT: loaded %s (nodes=%d edges=%d saved_at=%s)",
-			snapshotPath,
-			snap.NodeCount,
-			snap.EdgeCount,
-			snap.SavedAt.Format(time.RFC3339),
+		slog.Info("snapshot loaded",
+			"path", snapshotPath,
+			"nodes", snap.NodeCount,
+			"edges", snap.EdgeCount,
+			"saved_at", snap.SavedAt.Format(time.RFC3339),
 		)
 		if source == "backup" {
-			log.Printf("SNAPSHOT: loaded from backup %s.bak", snapshotPath)
+			slog.Info("snapshot loaded from backup", "path", snapshotPath+".bak")
 		}
 	} else if errors.Is(err, persist.ErrSnapshotMissing) {
-		log.Printf("SNAPSHOT: none found, starting fresh")
+		slog.Info("no snapshot found, starting fresh")
 	} else {
-		log.Printf("SNAPSHOT: no snapshot loaded (%v)", err)
+		slog.Warn("no snapshot loaded", "err", err)
 	}
 
 	cli.SetDefaultStore(store)

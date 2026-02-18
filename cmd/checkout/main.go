@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -45,7 +45,8 @@ func main() {
 
 	err := waylog.Init(cfg)
 	if err != nil {
-		log.Fatalf("waylog init failed: %v", err)
+		slog.Error("waylog init failed", "err", err)
+		os.Exit(1)
 	}
 
 	svc := checkout.NewService()
@@ -66,22 +67,23 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Println("checkout service listening on :9090")
+		slog.Info("checkout service listening", "addr", ":9090")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("checkout server error: %v", err)
+			slog.Error("checkout server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("checkout shutdown signal received")
+	slog.Info("checkout shutdown signal received")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("checkout graceful shutdown failed: %v", err)
+		slog.Error("checkout graceful shutdown failed", "err", err)
 	}
 	if err := waylog.Shutdown(shutdownCtx); err != nil {
-		log.Printf("waylog shutdown failed: %v", err)
+		slog.Error("waylog shutdown failed", "err", err)
 	}
-	log.Println("checkout shutdown complete")
+	slog.Info("checkout shutdown complete")
 }

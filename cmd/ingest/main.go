@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,7 +25,9 @@ import (
 var graphStore *graphstore.Store
 
 func main() {
-	log.SetOutput(os.Stderr)
+	level := parseSlogLevel(config.Getenv("LOG_LEVEL", "info"))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
 	addr := config.Getenv("INGEST_ADDR", ":8080")
 
 	// ---------------- Graph persistence config ----------------
@@ -42,21 +44,20 @@ func main() {
 	if snap, source, err := persist.LoadWithSource(snapshotPath); err == nil {
 		graphStore.Restore(snap.Graph)
 		snapshotLoaded = true
-		log.Printf(
-			"SNAPSHOT: loaded %s (nodes=%d edges=%d saved_at=%s)",
-			snapshotPath,
-			snap.NodeCount,
-			snap.EdgeCount,
-			snap.SavedAt.Format(time.RFC3339),
+		slog.Info("snapshot loaded",
+			"path", snapshotPath,
+			"nodes", snap.NodeCount,
+			"edges", snap.EdgeCount,
+			"saved_at", snap.SavedAt.Format(time.RFC3339),
 		)
 		if source == "backup" {
-			log.Printf("SNAPSHOT: loaded from backup %s.bak", snapshotPath)
+			slog.Info("snapshot loaded from backup", "path", snapshotPath+".bak")
 		}
 	} else if errors.Is(err, persist.ErrSnapshotMissing) {
 		snapshotLoaded = true
-		log.Printf("SNAPSHOT: none found, starting fresh")
+		slog.Info("no snapshot found, starting fresh")
 	} else {
-		log.Printf("SNAPSHOT: no snapshot loaded (%v)", err)
+		slog.Warn("no snapshot loaded", "err", err)
 	}
 
 	apiKey := config.Getenv("WAYLOG_API_KEY", "")
@@ -72,11 +73,12 @@ func main() {
 	if dir := config.Getenv("EVENT_LOG_DIR", ""); dir != "" {
 		el, err := eventlog.New(dir)
 		if err != nil {
-			log.Fatalf("eventlog init failed: %v", err)
+			slog.Error("eventlog init failed", "err", err)
+			os.Exit(1)
 		}
 		defer el.Close()
 		ingestServer.EventLog = el
-		log.Printf("EVENTLOG: writing to %s", dir)
+		slog.Info("eventlog enabled", "dir", dir)
 	}
 
 	// Set default store for CLI
@@ -84,7 +86,8 @@ func main() {
 
 	reg := tools.NewRegistry()
 	if err := tools.RegisterGraphTools(reg); err != nil {
-		log.Fatalf("mcp tools init failed: %v", err)
+		slog.Error("mcp tools init failed", "err", err)
+		os.Exit(1)
 	}
 
 	// ---------------- HTTP server ----------------
@@ -122,9 +125,10 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Printf("ingest listening on %s", addr)
+		slog.Info("ingest listening", "addr", addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("ingest server error: %v", err)
+			slog.Error("ingest server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -132,12 +136,12 @@ func main() {
 
 	if mcpStdio {
 		go func() {
-			log.Printf("MCP stdio ready (protocol %s)", "2024-11-05")
+			slog.Info("MCP stdio ready", "protocol", "2024-11-05")
 			if err := stdio.Serve(ctx, os.Stdin, os.Stdout, reg, graphStore, stdio.ServerInfo{
 				Name:    "waylog",
 				Version: "0.1.0",
 			}); err != nil && err != context.Canceled {
-				log.Printf("mcp stdio error: %v", err)
+				slog.Error("mcp stdio error", "err", err)
 			}
 		}()
 	} else {
@@ -160,25 +164,24 @@ func main() {
 				g := graphStore.Snapshot()
 				if !snapshotLoaded {
 					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
-						log.Println("SNAPSHOT: skipped (last load failed)")
+						slog.Warn("snapshot skipped, last load failed")
 					}
 					continue
 				}
 				if len(g.Nodes) == 0 {
 					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
-						log.Println("SNAPSHOT: skipped (graph empty)")
+						slog.Debug("snapshot skipped, graph empty")
 					}
 					continue
 				}
 
 				if err := persist.Save(snapshotPath, g); err != nil {
-					log.Printf("SNAPSHOT: save failed: %v", err)
+					slog.Error("snapshot save failed", "err", err, "path", snapshotPath)
 				} else if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
-					log.Printf(
-						"SNAPSHOT: saved (nodes=%d edges=%d) -> %s",
-						len(g.Nodes),
-						len(g.Edges),
-						snapshotPath,
+					slog.Info("snapshot saved",
+						"nodes", len(g.Nodes),
+						"edges", len(g.Edges),
+						"path", snapshotPath,
 					)
 				}
 			}
@@ -188,30 +191,29 @@ func main() {
 	// ---------------- Shutdown ----------------
 
 	<-ctx.Done()
-	log.Println("ingest shutdown signal received")
+	slog.Info("ingest shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("ingest graceful shutdown failed: %v", err)
+		slog.Error("ingest graceful shutdown failed", "err", err)
 	} else {
-		log.Println("ingest shutdown complete")
+		slog.Info("ingest shutdown complete")
 	}
 
 	// Final snapshot on shutdown
 	g := graphStore.Snapshot()
 	if !snapshotLoaded {
-		log.Println("SNAPSHOT: final save skipped (last load failed)")
+		slog.Warn("final snapshot skipped, last load failed")
 	} else if len(g.Nodes) == 0 {
-		log.Println("SNAPSHOT: final save skipped (graph empty)")
+		slog.Info("final snapshot skipped, graph empty")
 	} else if err := persist.Save(snapshotPath, g); err != nil {
-		log.Printf("SNAPSHOT: final save failed: %v", err)
+		slog.Error("final snapshot save failed", "err", err)
 	} else {
-		log.Printf(
-			"SNAPSHOT: final save ok (nodes=%d edges=%d)",
-			len(g.Nodes),
-			len(g.Edges),
+		slog.Info("final snapshot saved",
+			"nodes", len(g.Nodes),
+			"edges", len(g.Edges),
 		)
 	}
 }
@@ -258,4 +260,17 @@ func printHelp() {
 	os.Stdout.WriteString("  waylog \"\033[33msummarize trace <trace-id>\033[0m\"\n")
 	os.Stdout.WriteString("  waylog \"\033[33mexplain request <request-id>\033[0m\"\n")
 	os.Stdout.WriteString("\n\033[2mnotes: MCP stdio: run with MCP_STDIO=1\033[0m\n")
+}
+
+func parseSlogLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
