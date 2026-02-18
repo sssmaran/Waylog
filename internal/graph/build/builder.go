@@ -185,7 +185,7 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 	// Service-to-service call edge
 	// --------------------
 	if ev.System.CallerService != "" {
-		callerID := core.ID("service", ev.System.CallerService)
+		callerID := core.ID("service", ev.System.CallerService, ev.System.Env)
 
 		// Ensure caller service node exists
 		caller := core.Node{
@@ -209,7 +209,7 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 	// Downstream service dependency
 	// --------------------
 	if ev.System.DownstreamService != "" {
-		downID := core.ID("service", ev.System.DownstreamService)
+		downID := core.ID("service", ev.System.DownstreamService, ev.System.Env)
 
 		down := core.Node{
 			ID:   downID,

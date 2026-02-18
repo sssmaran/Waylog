@@ -53,8 +53,8 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 		}
 
 		// request -> user
-		for _, ed := range g.Edges {
-			if ed.From == req.ID && ed.Type == core.EdgeRequestBy {
+		for _, ed := range g.OutEdges[req.ID] {
+			if ed.Type == core.EdgeRequestBy {
 				user, ok := g.Nodes[ed.To]
 				if ok && user.Attr != nil {
 					userTier, _ = user.Attr["tier"].(string)
@@ -64,8 +64,8 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 		}
 
 		// request -> flags
-		for _, ed := range g.Edges {
-			if ed.From == req.ID && ed.Type == core.EdgeUsedFlag {
+		for _, ed := range g.OutEdges[req.ID] {
+			if ed.Type == core.EdgeUsedFlag {
 				flag, ok := g.Nodes[ed.To]
 				if ok && flag.Attr != nil {
 					if name, ok := flag.Attr["name"].(string); ok {

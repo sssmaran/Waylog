@@ -254,7 +254,7 @@ func TestBuilder_Build_CallerService(t *testing.T) {
 
 	g := builder.Build(ev)
 
-	callerID := core.ID("service", ev.System.CallerService)
+	callerID := core.ID("service", ev.System.CallerService, ev.System.Env)
 	if _, ok := g.Nodes[callerID]; !ok {
 		t.Fatalf("expected caller service node %s to exist", callerID)
 	}
@@ -282,7 +282,7 @@ func TestBuilder_Build_DownstreamService(t *testing.T) {
 
 	g := builder.Build(ev)
 
-	downID := core.ID("service", ev.System.DownstreamService)
+	downID := core.ID("service", ev.System.DownstreamService, ev.System.Env)
 	if _, ok := g.Nodes[downID]; !ok {
 		t.Fatalf("expected downstream service node %s to exist", downID)
 	}

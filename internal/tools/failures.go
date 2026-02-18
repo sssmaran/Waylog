@@ -48,8 +48,8 @@ func handleFailures(ctx context.Context, store Store, params json.RawMessage) (a
 		}
 
 		var userTier string
-		for _, ed := range g.Edges {
-			if ed.From == req.ID && ed.Type == core.EdgeRequestBy {
+		for _, ed := range g.OutEdges[req.ID] {
+			if ed.Type == core.EdgeRequestBy {
 				user, ok := g.Nodes[ed.To]
 				if ok && user.Attr != nil {
 					userTier, _ = user.Attr["tier"].(string)
@@ -205,11 +205,7 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 		}
 		requests[reqID] = true
 
-		for _, ed := range g.Edges {
-			if ed.From != reqID {
-				continue
-			}
-
+		for _, ed := range g.OutEdges[reqID] {
 			switch ed.Type {
 			case core.EdgeRequestBy:
 				u := g.Nodes[ed.To]
@@ -270,8 +266,8 @@ func handleFailureChain(ctx context.Context, store Store, params json.RawMessage
 
 	g := store.Snapshot()
 	var serviceID string
-	for _, e := range g.Edges {
-		if e.From == input.RequestID && e.Type == core.EdgeHandledBy {
+	for _, e := range g.OutEdges[input.RequestID] {
+		if e.Type == core.EdgeHandledBy {
 			serviceID = e.To
 			break
 		}
@@ -297,8 +293,8 @@ func handleFailureChain(ctx context.Context, store Store, params json.RawMessage
 		services = append(services, serviceNameForNode(svc))
 
 		next := ""
-		for _, e := range g.Edges {
-			if e.From == curr && e.Type == core.EdgeCalls {
+		for _, e := range g.OutEdges[curr] {
+			if e.Type == core.EdgeCalls {
 				next = e.To
 				break
 			}

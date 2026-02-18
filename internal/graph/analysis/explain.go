@@ -48,50 +48,46 @@ func ExplainRequest(g *core.Graph, requestID string) (Explanation, error) {
 		ex.Flow = req.Attr["flow"]
 	}
 
-	// ---- span -> error (preferred) ----
-	for _, e := range g.Edges {
-		if e.Type != core.EdgeFailedWith {
+	// ---- span -> error (preferred) — check all spans via outEdges ----
+	for _, e := range g.OutEdges[requestID] {
+		if e.Type != core.EdgeRequestHasSpan {
 			continue
 		}
-
-		// span -> error
-		spanNode, ok := g.Nodes[e.From]
+		spanNode, ok := g.Nodes[e.To]
 		if !ok || spanNode.Type != core.NodeSpan {
 			continue
 		}
-
-		errNode := g.Nodes[e.To]
-		if errNode.Attr != nil {
-			ex.ErrorCode = errNode.Attr["code"]
-			ex.ErrorMsg = errNode.Attr["message"]
-		}
-
-		ex.SpanID = spanNode.ID
-
-		// determine span depth
-		if parent := spanNode.Attr["parent_span_id"]; parent != nil && parent != "" {
-			ex.SpanDepth = "child"
-		} else {
-			ex.SpanDepth = "root"
-		}
-
-		// span -> service
-		for _, se := range g.Edges {
-			if se.From == spanNode.ID && se.Type == core.EdgeSpanOnService {
-				svc := g.Nodes[se.To]
-				if svc.Attr != nil {
-					ex.SpanService = svc.Attr["name"]
-				}
-				break
+		for _, se := range g.OutEdges[spanNode.ID] {
+			if se.Type != core.EdgeFailedWith {
+				continue
 			}
+			errNode := g.Nodes[se.To]
+			if errNode.Attr != nil {
+				ex.ErrorCode = errNode.Attr["code"]
+				ex.ErrorMsg = errNode.Attr["message"]
+			}
+			ex.SpanID = spanNode.ID
+			if parent := spanNode.Attr["parent_span_id"]; parent != nil && parent != "" {
+				ex.SpanDepth = "child"
+			} else {
+				ex.SpanDepth = "root"
+			}
+			for _, svcE := range g.OutEdges[spanNode.ID] {
+				if svcE.Type == core.EdgeSpanOnService {
+					svc := g.Nodes[svcE.To]
+					if svc.Attr != nil {
+						ex.SpanService = svc.Attr["name"]
+					}
+					break
+				}
+			}
+			return ex, nil
 		}
-
-		return ex, nil
 	}
 
 	// ---- request -> error ----
-	for _, e := range g.Edges {
-		if e.From == requestID && e.Type == core.EdgeFailedWith {
+	for _, e := range g.OutEdges[requestID] {
+		if e.Type == core.EdgeFailedWith {
 			errNode := g.Nodes[e.To]
 			if errNode.Attr != nil {
 				ex.ErrorCode = errNode.Attr["code"]
@@ -102,8 +98,8 @@ func ExplainRequest(g *core.Graph, requestID string) (Explanation, error) {
 	}
 
 	// ---- request -> user ----
-	for _, e := range g.Edges {
-		if e.From == requestID && e.Type == core.EdgeRequestBy {
+	for _, e := range g.OutEdges[requestID] {
+		if e.Type == core.EdgeRequestBy {
 			u := g.Nodes[e.To]
 			ex.UserID = u.ID
 			if u.Attr != nil {
@@ -114,8 +110,8 @@ func ExplainRequest(g *core.Graph, requestID string) (Explanation, error) {
 	}
 
 	// ---- request -> feature flags ----
-	for _, e := range g.Edges {
-		if e.From == requestID && e.Type == core.EdgeUsedFlag {
+	for _, e := range g.OutEdges[requestID] {
+		if e.Type == core.EdgeUsedFlag {
 			flagNode := g.Nodes[e.To]
 			if flagNode.Attr != nil {
 				if name, ok := flagNode.Attr["name"].(string); ok {
@@ -125,9 +121,9 @@ func ExplainRequest(g *core.Graph, requestID string) (Explanation, error) {
 		}
 	}
 
-	// ---- request -> service (optional but supported) ----
-	for _, e := range g.Edges {
-		if e.From == requestID && e.Type == core.EdgeHandledBy {
+	// ---- request -> service ----
+	for _, e := range g.OutEdges[requestID] {
+		if e.Type == core.EdgeHandledBy {
 			svcNode := g.Nodes[e.To]
 			if svcNode.Attr != nil {
 				ex.Service = svcNode.Attr["name"]

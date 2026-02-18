@@ -168,8 +168,8 @@ func handleInsights(ctx context.Context, store Store, params json.RawMessage) (a
 		errorCounts[code]++
 		total++
 
-		for _, ed := range g.Edges {
-			if ed.From == reqID && ed.Type == core.EdgeHandledBy {
+		for _, ed := range g.OutEdges[reqID] {
+			if ed.Type == core.EdgeHandledBy {
 				serviceCounts[serviceNameForID(g, ed.To)]++
 			}
 		}

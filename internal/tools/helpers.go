@@ -18,8 +18,8 @@ func rootSpanIDsForTrace(g *core.Graph, reqID string) []string {
 	}
 	var roots []string
 	seen := map[string]bool{}
-	for _, e := range g.Edges {
-		if e.Type != core.EdgeRequestHasSpan || e.From != reqID {
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type != core.EdgeRequestHasSpan {
 			continue
 		}
 		if seen[e.To] {
@@ -41,6 +41,7 @@ func spanPathsForRoots(g *core.Graph, roots []string) [][]string {
 	children := map[string][]string{}
 	for _, e := range g.Edges {
 		if e.Type == core.EdgeSpanChildOf {
+			// e.From = child, e.To = parent
 			children[e.To] = append(children[e.To], e.From)
 		}
 	}
@@ -80,8 +81,8 @@ func dfsSpanPaths(g *core.Graph, spanID string, children map[string][]string, pr
 // serviceChainForRequest returns the chain of services for a request.
 func serviceChainForRequest(g *core.Graph, reqID string) []string {
 	serviceID := ""
-	for _, e := range g.Edges {
-		if e.From == reqID && e.Type == core.EdgeHandledBy {
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type == core.EdgeHandledBy {
 			serviceID = e.To
 			break
 		}
@@ -103,8 +104,8 @@ func serviceChainForRequest(g *core.Graph, reqID string) []string {
 		}
 		services = append(services, serviceNameForNode(svc))
 		next := ""
-		for _, e := range g.Edges {
-			if e.From == curr && e.Type == core.EdgeCalls {
+		for _, e := range g.OutEdges[curr] {
+			if e.Type == core.EdgeCalls {
 				next = e.To
 				break
 			}
@@ -119,9 +120,14 @@ func serviceChainForRequest(g *core.Graph, reqID string) []string {
 
 func spanToRequestIndex(g *core.Graph) map[string]string {
 	index := map[string]string{}
-	for _, e := range g.Edges {
-		if e.Type == core.EdgeRequestHasSpan {
-			index[e.To] = e.From
+	for id, n := range g.Nodes {
+		if n.Type != core.NodeRequest {
+			continue
+		}
+		for _, e := range g.OutEdges[id] {
+			if e.Type == core.EdgeRequestHasSpan {
+				index[e.To] = id
+			}
 		}
 	}
 	return index

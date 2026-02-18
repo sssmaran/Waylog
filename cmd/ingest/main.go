@@ -85,6 +85,8 @@ func main() {
 		mux.HandleFunc("/v1/events", ingestServer.Events)
 	}
 
+	mux.HandleFunc("/v1/events/validate", ingestServer.Validate)
+
 	// Read APIs with CORS
 	corsOrigin := config.Getenv("CORS_ORIGIN", "*")
 	mux.HandleFunc("/v1/traces/story", ingest.CORSWrap(corsOrigin, ingestServer.TraceStory))

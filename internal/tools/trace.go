@@ -65,8 +65,8 @@ func buildTraceSpan(g *core.Graph, spanID string, visited map[string]bool) trace
 		out.SpanID = fmt.Sprintf("%v", span)
 	}
 
-	for _, e := range g.Edges {
-		if e.Type == core.EdgeSpanChildOf && e.To == spanID {
+	for _, e := range g.InEdges[spanID] {
+		if e.Type == core.EdgeSpanChildOf {
 			out.Children = append(out.Children, buildTraceSpan(g, e.From, visited))
 		}
 	}

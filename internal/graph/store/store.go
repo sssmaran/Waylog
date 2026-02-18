@@ -80,6 +80,14 @@ func (s *Store) Merge(g *core.Graph) {
 		}
 		s.edgeSet[key] = struct{}{}
 		s.graph.Edges = append(s.graph.Edges, e)
+		if s.graph.OutEdges == nil {
+			s.graph.OutEdges = make(map[string][]core.Edge)
+		}
+		if s.graph.InEdges == nil {
+			s.graph.InEdges = make(map[string][]core.Edge)
+		}
+		s.graph.OutEdges[e.From] = append(s.graph.OutEdges[e.From], e)
+		s.graph.InEdges[e.To] = append(s.graph.InEdges[e.To], e)
 	}
 
 	// Update trace indexes
@@ -316,10 +324,12 @@ func (s *Store) Snapshot() *core.Graph {
 	edges := make([]core.Edge, len(s.graph.Edges))
 	copy(edges, s.graph.Edges)
 
-	return &core.Graph{
+	snap := &core.Graph{
 		Nodes: nodes,
 		Edges: edges,
 	}
+	snap.RebuildIndexes()
+	return snap
 }
 
 // RequestIDForTrace returns the request node ID for a given trace ID.
@@ -402,11 +412,12 @@ func (s *Store) rebuildDerivedIndexesLocked() {
 	s.traceToRequest = map[string]string{}
 	s.traceToSpans = map[string][]string{}
 
-	// Rebuild edge set
+	// Rebuild edge set and adjacency indexes
 	for _, e := range s.graph.Edges {
 		key := e.From + ":" + e.To + ":" + string(e.Type)
 		s.edgeSet[key] = struct{}{}
 	}
+	s.graph.RebuildIndexes()
 
 	// Rebuild trace indexes
 	for id, n := range s.graph.Nodes {
@@ -500,29 +511,29 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 		SeenAt:    reqNode.LastSeen,
 	}
 
-	// Gather neighbors from edges (1-hop around request)
-	for _, e := range g.Edges {
-		var otherID string
-		if e.From == reqID {
-			otherID = e.To
-		} else if e.To == reqID {
-			otherID = e.From
-		} else {
-			continue
+	// Gather neighbors via adjacency indexes
+	for _, e := range g.OutEdges[reqID] {
+		if n, ok := g.Nodes[e.To]; ok {
+			switch n.Type {
+			case core.NodeService:
+				f.Services = append(f.Services, n.ID)
+			case core.NodeError:
+				f.Errors = append(f.Errors, n.ID)
+			case core.NodeFlag:
+				f.Flags = append(f.Flags, n.ID)
+			}
 		}
-
-		n, ok := g.Nodes[otherID]
-		if !ok {
-			continue
-		}
-
-		switch n.Type {
-		case core.NodeService:
-			f.Services = append(f.Services, n.ID)
-		case core.NodeError:
-			f.Errors = append(f.Errors, n.ID)
-		case core.NodeFlag:
-			f.Flags = append(f.Flags, n.ID)
+	}
+	for _, e := range g.InEdges[reqID] {
+		if n, ok := g.Nodes[e.From]; ok {
+			switch n.Type {
+			case core.NodeService:
+				f.Services = append(f.Services, n.ID)
+			case core.NodeError:
+				f.Errors = append(f.Errors, n.ID)
+			case core.NodeFlag:
+				f.Flags = append(f.Flags, n.ID)
+			}
 		}
 	}
 
