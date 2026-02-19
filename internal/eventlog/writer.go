@@ -44,5 +44,6 @@ func (w *Writer) Write(ev *event.WideEvent) error {
 func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	_ = w.f.Sync()
 	return w.f.Close()
 }

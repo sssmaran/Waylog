@@ -26,6 +26,7 @@ type Server struct {
 	builder      *build.Builder
 	sampler      *sampler.Sampler
 	EventLog     *eventlog.Writer
+	EventLogDir  string
 	accepted     atomic.Uint64
 	maxBodyBytes int64
 }
@@ -35,6 +36,7 @@ type ServerConfig struct {
 	Store        *store.Store
 	Sampler      *sampler.Sampler
 	MaxBodyBytes int64
+	EventLogDir  string
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -48,6 +50,7 @@ func NewServer(cfg ServerConfig) *Server {
 		builder:      build.NewBuilder(),
 		sampler:      cfg.Sampler,
 		maxBodyBytes: maxBody,
+		EventLogDir:  cfg.EventLogDir,
 	}
 	if s.sampler == nil {
 		s.sampler = sampler.New(sampler.LoadConfigFromEnv())
@@ -97,16 +100,16 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.EventLog != nil {
-		if err := s.EventLog.Write(&ev); err != nil {
-			slog.Error("eventlog write failed", "err", err)
-		}
-	}
-
 	if !s.sampler.ShouldKeep(ev) {
 		// Dropped by design — still return 202 so producers never retry
 		w.WriteHeader(http.StatusAccepted)
 		return
+	}
+
+	if s.EventLog != nil {
+		if err := s.EventLog.Write(&ev); err != nil {
+			slog.Error("eventlog write failed", "err", err)
+		}
 	}
 
 	slog.Info("event accepted",
@@ -170,6 +173,75 @@ func (s *Server) Store() *store.Store {
 // AcceptedCount returns the number of accepted events.
 func (s *Server) AcceptedCount() uint64 {
 	return s.accepted.Load()
+}
+
+// Builder returns the server's graph builder.
+func (s *Server) Builder() *build.Builder {
+	return s.builder
+}
+
+// EventSearch handles GET /v1/events/search.
+func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.EventLogDir == "" {
+		http.Error(w, "event log not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	q := r.URL.Query()
+	traceID := q.Get("trace_id")
+	userID := q.Get("user_id")
+	service := q.Get("service")
+	errorCode := q.Get("error_code")
+
+	if traceID == "" && userID == "" && service == "" && errorCode == "" {
+		http.Error(w, "at least one filter required (trace_id, user_id, service, error_code)", http.StatusBadRequest)
+		return
+	}
+
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	f := eventlog.SearchFilter{
+		TraceID:   traceID,
+		UserID:    userID,
+		Service:   service,
+		ErrorCode: errorCode,
+		Limit:     limit,
+	}
+	if v := q.Get("start"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.Start = t
+		}
+	}
+	if v := q.Get("end"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.End = t
+		}
+	}
+
+	events, err := eventlog.Search(s.EventLogDir, f)
+	if err != nil {
+		slog.Error("event search failed", "err", err)
+		http.Error(w, "search failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"events": events,
+		"count":  len(events),
+	})
 }
 
 // TraceStory handles GET /v1/traces/story?trace_id=<id>.

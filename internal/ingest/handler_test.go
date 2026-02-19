@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/testutil"
@@ -497,6 +498,77 @@ func TestValidate_InvalidEvent(t *testing.T) {
 	if resp["valid"] != false {
 		t.Errorf("expected valid=false, got %v", resp["valid"])
 	}
+}
+
+func TestEventSearch_NoFilter(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore(), EventLogDir: t.TempDir()})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/events/search", nil)
+	w := httptest.NewRecorder()
+	srv.EventSearch(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for no filters, got %d", w.Code)
+	}
+}
+
+func TestEventSearch_NoEventLog(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/events/search?service=x", nil)
+	w := httptest.NewRecorder()
+	srv.EventSearch(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestEventSearch_WithResults(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write test events directly
+	w2, err := newTestEventLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := testutil.MakeEvent(
+		testutil.WithTraceID(testTrace),
+		testutil.WithService("checkout"),
+		testutil.WithStatusCode(200),
+	)
+	if err := w2.Write(&ev); err != nil {
+		t.Fatal(err)
+	}
+	w2.Close()
+
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore(), EventLogDir: dir})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/events/search?service=checkout&limit=5", nil)
+	rec := httptest.NewRecorder()
+	srv.EventSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Events []event.WideEvent `json:"events"`
+		Count  int               `json:"count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp.Count != 1 {
+		t.Errorf("expected count=1, got %d", resp.Count)
+	}
+	if len(resp.Events) != 1 {
+		t.Errorf("expected 1 event, got %d", len(resp.Events))
+	}
+}
+
+func newTestEventLog(dir string) (*eventlog.Writer, error) {
+	return eventlog.New(dir)
 }
 
 func TestValidate_BadJSON(t *testing.T) {

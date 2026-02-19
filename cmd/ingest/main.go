@@ -39,11 +39,13 @@ func main() {
 
 	graphStore = graphstore.NewStore()
 	snapshotLoaded := false
+	var snapshotSavedAt time.Time
 
 	// Restore snapshot (non-fatal)
 	if snap, source, err := persist.LoadWithSource(snapshotPath); err == nil {
 		graphStore.Restore(snap.Graph)
 		snapshotLoaded = true
+		snapshotSavedAt = snap.SavedAt
 		slog.Info("snapshot loaded",
 			"path", snapshotPath,
 			"nodes", snap.NodeCount,
@@ -62,23 +64,37 @@ func main() {
 
 	apiKey := config.Getenv("WAYLOG_API_KEY", "")
 	maxBody := int64(config.GetenvInt("MAX_BODY_BYTES", 1<<20))
+	eventLogDir := config.Getenv("EVENT_LOG_DIR", "")
 
 	// Create ingest server with the store
 	ingestServer := ingest.NewServer(ingest.ServerConfig{
 		Store:        graphStore,
 		MaxBodyBytes: maxBody,
+		EventLogDir:  eventLogDir,
 	})
 
 	// Optional append-only event log
-	if dir := config.Getenv("EVENT_LOG_DIR", ""); dir != "" {
-		el, err := eventlog.New(dir)
+	if eventLogDir != "" {
+		el, err := eventlog.New(eventLogDir)
 		if err != nil {
 			slog.Error("eventlog init failed", "err", err)
 			os.Exit(1)
 		}
 		defer el.Close()
 		ingestServer.EventLog = el
-		slog.Info("eventlog enabled", "dir", dir)
+		slog.Info("eventlog enabled", "dir", eventLogDir)
+
+		// Replay events newer than last snapshot (or all if no snapshot)
+		events, err := eventlog.ReadDir(eventLogDir, snapshotSavedAt)
+		if err != nil {
+			slog.Warn("event log replay failed", "err", err)
+		} else if len(events) > 0 {
+			for i := range events {
+				g := ingestServer.Builder().Build(events[i])
+				graphStore.Merge(g)
+			}
+			slog.Info("event log replay complete", "events", len(events))
+		}
 	}
 
 	// Set default store for CLI
@@ -107,6 +123,7 @@ func main() {
 	mux.HandleFunc("/v1/traces/story", ingest.CORSWrap(corsOrigin, ingestServer.TraceStory))
 	mux.HandleFunc("/v1/traces/recent", ingest.CORSWrap(corsOrigin, ingestServer.RecentTraces))
 	mux.HandleFunc("/v1/overview", ingest.CORSWrap(corsOrigin, ingestServer.Overview))
+	mux.HandleFunc("/v1/events/search", ingest.CORSWrap(corsOrigin, ingestServer.EventSearch))
 
 	server := &http.Server{
 		Addr:              addr,
