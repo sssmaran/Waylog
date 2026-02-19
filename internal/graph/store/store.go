@@ -574,6 +574,18 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 		SeenAt:    reqNode.LastSeen,
 	}
 
+	// Extract latency from request node attributes
+	if reqNode.Attr != nil {
+		switch v := reqNode.Attr["latency_ms"].(type) {
+		case int64:
+			f.LatencyMs = v
+		case int:
+			f.LatencyMs = int64(v)
+		case float64:
+			f.LatencyMs = int64(v)
+		}
+	}
+
 	// Gather neighbors via adjacency indexes
 	for _, e := range g.OutEdges[reqID] {
 		if n, ok := g.Nodes[e.To]; ok {

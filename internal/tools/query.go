@@ -73,6 +73,17 @@ type diffOutput struct {
 	Removed   []diffEntry `json:"removed,omitempty"`
 	Increased []diffEntry `json:"increased,omitempty"`
 	Decreased []diffEntry `json:"decreased,omitempty"`
+
+	TotalRequestsBefore int   `json:"total_requests_before"`
+	TotalRequestsAfter  int   `json:"total_requests_after"`
+	TotalFailuresBefore int   `json:"total_failures_before"`
+	TotalFailuresAfter  int   `json:"total_failures_after"`
+	LatencyP50Before    int64 `json:"latency_p50_before"`
+	LatencyP50After     int64 `json:"latency_p50_after"`
+	LatencyP95Before    int64 `json:"latency_p95_before"`
+	LatencyP95After     int64 `json:"latency_p95_after"`
+	LatencyP99Before    int64 `json:"latency_p99_before"`
+	LatencyP99After     int64 `json:"latency_p99_after"`
 }
 
 func handleCompareWindows(ctx context.Context, store Store, params json.RawMessage) (any, error) {
@@ -110,9 +121,19 @@ func handleCompareWindows(ctx context.Context, store Store, params json.RawMessa
 	g := store.Snapshot()
 
 	return diffOutput{
-		New:       mapDiffEntries(g, diff.New),
-		Removed:   mapDiffEntries(g, diff.Removed),
-		Increased: mapDiffEntries(g, diff.Increased),
-		Decreased: mapDiffEntries(g, diff.Decreased),
+		New:                 mapDiffEntries(g, diff.New),
+		Removed:             mapDiffEntries(g, diff.Removed),
+		Increased:           mapDiffEntries(g, diff.Increased),
+		Decreased:           mapDiffEntries(g, diff.Decreased),
+		TotalRequestsBefore: diff.TotalRequestsBefore,
+		TotalRequestsAfter:  diff.TotalRequestsAfter,
+		TotalFailuresBefore: diff.TotalFailuresBefore,
+		TotalFailuresAfter:  diff.TotalFailuresAfter,
+		LatencyP50Before:    diff.LatencyP50Before,
+		LatencyP50After:     diff.LatencyP50After,
+		LatencyP95Before:    diff.LatencyP95Before,
+		LatencyP95After:     diff.LatencyP95After,
+		LatencyP99Before:    diff.LatencyP99Before,
+		LatencyP99After:     diff.LatencyP99After,
 	}, nil
 }

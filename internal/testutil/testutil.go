@@ -149,6 +149,11 @@ func WithTimestamp(t time.Time) EventOption {
 	}
 }
 
+// WithVIP sets the VIP flag on the user.
+func WithVIP(vip bool) EventOption {
+	return func(ev *event.WideEvent) { ev.User.VIP = vip }
+}
+
 // WithEventName sets the event name directly.
 func WithEventName(name string) EventOption {
 	return func(ev *event.WideEvent) {

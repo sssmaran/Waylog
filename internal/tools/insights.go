@@ -16,18 +16,19 @@ type explainRequestInput struct {
 }
 
 type explainRequestOutput struct {
-	RequestID    string   `json:"request_id"`
-	LatencyMs    any      `json:"latency_ms,omitempty"`
-	Flow         any      `json:"flow,omitempty"`
-	UserID       string   `json:"user_id,omitempty"`
-	UserTier     any      `json:"user_tier,omitempty"`
-	FeatureFlags []string `json:"feature_flags,omitempty"`
-	SpanID       string   `json:"span_id,omitempty"`
-	SpanService  any      `json:"span_service,omitempty"`
-	SpanDepth    string   `json:"span_depth,omitempty"`
-	Service      any      `json:"service,omitempty"`
-	ErrorCode    any      `json:"error_code,omitempty"`
-	ErrorMsg     any      `json:"error_msg,omitempty"`
+	RequestID    string                 `json:"request_id"`
+	LatencyMs    any                    `json:"latency_ms,omitempty"`
+	Flow         any                    `json:"flow,omitempty"`
+	UserID       string                 `json:"user_id,omitempty"`
+	UserTier     any                    `json:"user_tier,omitempty"`
+	FeatureFlags []string               `json:"feature_flags,omitempty"`
+	SpanID       string                 `json:"span_id,omitempty"`
+	SpanService  any                    `json:"span_service,omitempty"`
+	SpanDepth    string                 `json:"span_depth,omitempty"`
+	Service      any                    `json:"service,omitempty"`
+	ErrorCode    any                    `json:"error_code,omitempty"`
+	ErrorMsg     any                    `json:"error_msg,omitempty"`
+	SpanChain    []analysis.SpanSummary `json:"span_chain,omitempty"`
 }
 
 func handleExplainRequest(ctx context.Context, store Store, params json.RawMessage) (any, error) {
@@ -61,6 +62,7 @@ func handleExplainRequest(ctx context.Context, store Store, params json.RawMessa
 		Service:      ex.Service,
 		ErrorCode:    ex.ErrorCode,
 		ErrorMsg:     ex.ErrorMsg,
+		SpanChain:    ex.SpanChain,
 	}, nil
 }
 

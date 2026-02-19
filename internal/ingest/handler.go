@@ -397,21 +397,8 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	recent := recentTracesFromGraph(snap, limit)
 
-	// Count total requests and failures in window
-	totalRequests := 0
-	totalFailures := 0
-	for _, n := range snap.Nodes {
-		if n.Type != core.NodeRequest {
-			continue
-		}
-		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
-			continue
-		}
-		totalRequests++
-		if success, ok := n.Attr["success"].(bool); ok && !success {
-			totalFailures++
-		}
-	}
+	totalRequests := summary.TotalRequests
+	totalFailures := summary.TotalFailures
 
 	errorRate := 0.0
 	if totalRequests > 0 {

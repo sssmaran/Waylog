@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 )
@@ -156,6 +157,8 @@ type blastOutput struct {
 	ErrorCode        string         `json:"error_code"`
 	AffectedRequests int            `json:"affected_requests"`
 	AffectedUsers    int            `json:"affected_users"`
+	VIPUsers         int            `json:"vip_users"`
+	SeverityScore    float64        `json:"severity_score"`
 	Services         []blastService `json:"services,omitempty"`
 	Tiers            []blastTier    `json:"tiers,omitempty"`
 	TopUsers         []blastUser    `json:"top_users,omitempty"`
@@ -175,11 +178,18 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 	g := store.Snapshot()
 	spanToRequest := spanToRequestIndex(g)
 
+	weightRequest := config.GetenvFloat("BLAST_WEIGHT_REQUEST", 1.0)
+	weightVIP := config.GetenvFloat("BLAST_WEIGHT_VIP", 10.0)
+	weightPremium := config.GetenvFloat("BLAST_WEIGHT_PREMIUM", 3.0)
+	weightService := config.GetenvFloat("BLAST_WEIGHT_SERVICE", 5.0)
+
 	requests := map[string]bool{}
 	users := map[string]int{}
 	services := map[string]int{}
 	tiers := map[string]int{}
 	flags := map[string]bool{}
+	vipUsers := map[string]bool{}
+	premiumUsers := map[string]bool{}
 
 	for _, e := range g.Edges {
 		if e.Type != core.EdgeFailedWith {
@@ -212,6 +222,12 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 				users[u.ID]++
 				if t, ok := u.Attr["tier"].(string); ok {
 					tiers[t]++
+					if t == "premium" {
+						premiumUsers[u.ID] = true
+					}
+				}
+				if vip, ok := u.Attr["vip"].(bool); ok && vip {
+					vipUsers[u.ID] = true
 				}
 			case core.EdgeHandledBy:
 				s := g.Nodes[ed.To]
@@ -229,8 +245,13 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 		ErrorCode:        input.ErrorCode,
 		AffectedRequests: len(requests),
 		AffectedUsers:    len(users),
+		VIPUsers:         len(vipUsers),
 		FeatureFlags:     sortedKeys(flags),
 	}
+	out.SeverityScore = float64(out.AffectedRequests)*weightRequest +
+		float64(out.VIPUsers)*weightVIP +
+		float64(len(premiumUsers))*weightPremium +
+		float64(len(services))*weightService
 
 	if input.IncludeServices {
 		out.Services = mapCountToSortedServices(services)
