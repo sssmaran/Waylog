@@ -10,10 +10,10 @@ import (
 func TestSearch_ByService(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	writeTestEvents(t, dir, "events-20260101-000000.jsonl", []event.WideEvent{
-		makeTestEvent("checkout", now.Add(-3*time.Second)),
-		makeTestEvent("payment", now.Add(-2*time.Second)),
-		makeTestEvent("checkout", now.Add(-1*time.Second)),
+	writeTestEntries(t, dir, "events-20260101-000000.jsonl", []LogEntry{
+		makeTestEntry("checkout", now.Add(-3*time.Second), now.Add(-3*time.Second), true),
+		makeTestEntry("payment", now.Add(-2*time.Second), now.Add(-2*time.Second), true),
+		makeTestEntry("checkout", now.Add(-1*time.Second), now.Add(-1*time.Second), true),
 	})
 
 	got, err := Search(dir, SearchFilter{Service: "checkout"})
@@ -33,11 +33,12 @@ func TestSearch_ByService(t *testing.T) {
 func TestSearch_Limit(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	var events []event.WideEvent
+	var entries []LogEntry
 	for i := 0; i < 10; i++ {
-		events = append(events, makeTestEvent("svc", now.Add(time.Duration(-i)*time.Second)))
+		ts := now.Add(time.Duration(-i) * time.Second)
+		entries = append(entries, makeTestEntry("svc", ts, ts, true))
 	}
-	writeTestEvents(t, dir, "events-20260101-000000.jsonl", events)
+	writeTestEntries(t, dir, "events-20260101-000000.jsonl", entries)
 
 	got, err := Search(dir, SearchFilter{Service: "svc", Limit: 5})
 	if err != nil {
@@ -48,15 +49,46 @@ func TestSearch_Limit(t *testing.T) {
 	}
 }
 
+func TestSearch_ReturnsNewestFirst(t *testing.T) {
+	dir := t.TempDir()
+	t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := t1.Add(1 * time.Hour)
+	t3 := t1.Add(2 * time.Hour)
+
+	// Spread across two files — oldest file first
+	writeTestEntries(t, dir, "events-20260101-000000.jsonl", []LogEntry{
+		makeTestEntry("svc", t1, t1, true),
+	})
+	writeTestEntries(t, dir, "events-20260101-010000.jsonl", []LogEntry{
+		makeTestEntry("svc", t2, t2, true),
+		makeTestEntry("svc", t3, t3, true),
+	})
+
+	got, err := Search(dir, SearchFilter{Service: "svc", Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(got))
+	}
+	// Should get t3, t2 (newest), NOT t1, t2 (oldest)
+	if !got[0].Timestamp.Equal(t3) {
+		t.Errorf("first result timestamp = %v, want %v (newest)", got[0].Timestamp, t3)
+	}
+	if !got[1].Timestamp.Equal(t2) {
+		t.Errorf("second result timestamp = %v, want %v", got[1].Timestamp, t2)
+	}
+}
+
 func TestSearch_SortedDesc(t *testing.T) {
 	dir := t.TempDir()
 	t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	t2 := t1.Add(1 * time.Hour)
 	t3 := t1.Add(2 * time.Hour)
-	writeTestEvents(t, dir, "events-20260101-000000.jsonl", []event.WideEvent{
-		makeTestEvent("svc", t1),
-		makeTestEvent("svc", t3),
-		makeTestEvent("svc", t2),
+	writeTestEntries(t, dir, "events-20260101-000000.jsonl", []LogEntry{
+		makeTestEntry("svc", t1, t1, true),
+		makeTestEntry("svc", t3, t3, true),
+		makeTestEntry("svc", t2, t2, true),
 	})
 
 	got, err := Search(dir, SearchFilter{Service: "svc"})
@@ -78,9 +110,9 @@ func TestSearch_ByErrorCode(t *testing.T) {
 	errEv.Error = &event.ErrorContext{Code: "PMT_502", Message: "failed"}
 	errEv.EventName = "payment.error"
 
-	writeTestEvents(t, dir, "events-20260101-000000.jsonl", []event.WideEvent{
-		makeTestEvent("checkout", now.Add(-1*time.Second)),
-		errEv,
+	writeTestEntries(t, dir, "events-20260101-000000.jsonl", []LogEntry{
+		makeTestEntry("checkout", now.Add(-1*time.Second), now.Add(-1*time.Second), true),
+		{LoggedAt: now, Event: errEv, SampledInGraph: true},
 	})
 
 	got, err := Search(dir, SearchFilter{ErrorCode: "PMT_502"})
@@ -102,11 +134,11 @@ func TestSearch_TimeWindow(t *testing.T) {
 	t2 := t0.Add(2 * time.Hour)
 	t3 := t0.Add(3 * time.Hour)
 
-	writeTestEvents(t, dir, "events-20260101-000000.jsonl", []event.WideEvent{
-		makeTestEvent("svc", t0),
-		makeTestEvent("svc", t1),
-		makeTestEvent("svc", t2),
-		makeTestEvent("svc", t3),
+	writeTestEntries(t, dir, "events-20260101-000000.jsonl", []LogEntry{
+		makeTestEntry("svc", t0, t0, true),
+		makeTestEntry("svc", t1, t1, true),
+		makeTestEntry("svc", t2, t2, true),
+		makeTestEntry("svc", t3, t3, true),
 	})
 
 	got, err := Search(dir, SearchFilter{
@@ -125,8 +157,8 @@ func TestSearch_TimeWindow(t *testing.T) {
 func TestSearch_MaxLimit(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()
-	writeTestEvents(t, dir, "events-20260101-000000.jsonl", []event.WideEvent{
-		makeTestEvent("svc", now),
+	writeTestEntries(t, dir, "events-20260101-000000.jsonl", []LogEntry{
+		makeTestEntry("svc", now, now, true),
 	})
 
 	got, err := Search(dir, SearchFilter{Service: "svc", Limit: 999})

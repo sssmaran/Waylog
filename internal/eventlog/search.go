@@ -46,8 +46,7 @@ func (f *SearchFilter) Matches(ev *event.WideEvent) bool {
 }
 
 // Search reads .jsonl files in dir and returns events matching the filter,
-// sorted by timestamp descending. Files are streamed; scanning stops once
-// the limit is reached per file.
+// sorted by timestamp descending. Scans all files, then truncates to limit.
 func Search(dir string, f SearchFilter) ([]event.WideEvent, error) {
 	if f.Limit <= 0 {
 		f.Limit = 50
@@ -71,27 +70,24 @@ func Search(dir string, f SearchFilter) ([]event.WideEvent, error) {
 
 	var result []event.WideEvent
 	for _, path := range files {
-		events, err := ReadFile(path)
+		logEntries, err := ReadFile(path)
 		if err != nil {
 			continue
 		}
-		for i := range events {
-			if f.Matches(&events[i]) {
-				result = append(result, events[i])
-				if len(result) >= f.Limit {
-					break
-				}
+		for i := range logEntries {
+			if f.Matches(&logEntries[i].Event) {
+				result = append(result, logEntries[i].Event)
 			}
-		}
-		if len(result) >= f.Limit {
-			break
 		}
 	}
 
-	// Sort by timestamp descending
+	// Sort by timestamp descending, then truncate to limit
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Timestamp.After(result[j].Timestamp)
 	})
+	if len(result) > f.Limit {
+		result = result[:f.Limit]
+	}
 
 	return result, nil
 }

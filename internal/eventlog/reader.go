@@ -13,15 +13,16 @@ import (
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
-// ReadFile reads all WideEvents from a single JSONL file.
-func ReadFile(path string) ([]event.WideEvent, error) {
+// ReadFile reads all LogEntries from a single JSONL file.
+// Handles both new LogEntry format and legacy bare WideEvent lines.
+func ReadFile(path string) ([]LogEntry, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	var events []event.WideEvent
+	var entries []LogEntry
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024) // up to 1MB per line
 	lineNum := 0
@@ -31,19 +32,35 @@ func ReadFile(path string) ([]event.WideEvent, error) {
 		if len(strings.TrimSpace(string(line))) == 0 {
 			continue
 		}
-		var ev event.WideEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
+
+		var entry LogEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
 			slog.Warn("eventlog: skipping malformed line", "file", path, "line", lineNum, "err", err)
 			continue
 		}
-		events = append(events, ev)
+
+		// Backward compat: if logged_at is zero, this is a legacy bare WideEvent line.
+		if entry.LoggedAt.IsZero() {
+			var ev event.WideEvent
+			if err := json.Unmarshal(line, &ev); err != nil {
+				slog.Warn("eventlog: skipping malformed legacy line", "file", path, "line", lineNum, "err", err)
+				continue
+			}
+			entry = LogEntry{
+				LoggedAt:       ev.Timestamp,
+				Event:          ev,
+				SampledInGraph: true, // old logs were written post-sampler
+			}
+		}
+
+		entries = append(entries, entry)
 	}
-	return events, sc.Err()
+	return entries, sc.Err()
 }
 
 // ReadDir reads all .jsonl files in dir, sorted by filename (chronological),
-// and returns events whose Timestamp is strictly after `after`.
-func ReadDir(dir string, after time.Time) ([]event.WideEvent, error) {
+// and returns LogEntries whose LoggedAt is strictly after `after`.
+func ReadDir(dir string, after time.Time) ([]LogEntry, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -57,16 +74,16 @@ func ReadDir(dir string, after time.Time) ([]event.WideEvent, error) {
 	}
 	sort.Strings(files)
 
-	var result []event.WideEvent
+	var result []LogEntry
 	for _, path := range files {
-		events, err := ReadFile(path)
+		fileEntries, err := ReadFile(path)
 		if err != nil {
 			slog.Warn("eventlog: error reading file", "path", path, "err", err)
 			continue
 		}
-		for _, ev := range events {
-			if ev.Timestamp.After(after) {
-				result = append(result, ev)
+		for _, entry := range fileEntries {
+			if entry.LoggedAt.After(after) {
+				result = append(result, entry)
 			}
 		}
 	}

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/sssmaran/WaylogCLI/internal/testutil"
-	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
 func TestWriter_Write(t *testing.T) {
@@ -22,12 +21,12 @@ func TestWriter_Write(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		ev := testutil.MakeEvent()
-		if err := w.Write(&ev); err != nil {
+		if err := w.Write(&ev, true); err != nil {
 			t.Fatalf("Write: %v", err)
 		}
 	}
 
-	// Read back and verify 3 valid JSON lines
+	// Read back and verify 3 valid LogEntry JSON lines
 	entries, err := filepath.Glob(filepath.Join(dir, "events-*.jsonl"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("expected 1 file, got %d (err=%v)", len(entries), err)
@@ -42,14 +41,48 @@ func TestWriter_Write(t *testing.T) {
 	scanner := bufio.NewScanner(f)
 	count := 0
 	for scanner.Scan() {
-		var ev event.WideEvent
-		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+		var entry LogEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			t.Fatalf("line %d: invalid JSON: %v", count, err)
+		}
+		if entry.LoggedAt.IsZero() {
+			t.Fatalf("line %d: logged_at is zero", count)
+		}
+		if entry.Event.SchemaVersion == "" {
+			t.Fatalf("line %d: event missing schema_version", count)
 		}
 		count++
 	}
 	if count != 3 {
 		t.Fatalf("expected 3 lines, got %d", count)
+	}
+}
+
+func TestWriter_SampledInGraphFlag(t *testing.T) {
+	dir := t.TempDir()
+	w, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer w.Close()
+
+	ev := testutil.MakeEvent()
+	w.Write(&ev, true)
+	w.Write(&ev, false)
+
+	files, _ := filepath.Glob(filepath.Join(dir, "events-*.jsonl"))
+	f, _ := os.Open(files[0])
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	var flags []bool
+	for scanner.Scan() {
+		var entry LogEntry
+		json.Unmarshal(scanner.Bytes(), &entry)
+		flags = append(flags, entry.SampledInGraph)
+	}
+	if len(flags) != 2 || flags[0] != true || flags[1] != false {
+		t.Fatalf("expected [true, false], got %v", flags)
 	}
 }
 
@@ -67,7 +100,7 @@ func TestWriter_ConcurrentWrite(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			ev := testutil.MakeEvent()
-			if err := w.Write(&ev); err != nil {
+			if err := w.Write(&ev, true); err != nil {
 				t.Errorf("Write: %v", err)
 			}
 		}()
@@ -88,8 +121,8 @@ func TestWriter_ConcurrentWrite(t *testing.T) {
 	scanner := bufio.NewScanner(f)
 	count := 0
 	for scanner.Scan() {
-		var ev event.WideEvent
-		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+		var entry LogEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			t.Fatalf("line %d: invalid JSON: %v", count, err)
 		}
 		count++

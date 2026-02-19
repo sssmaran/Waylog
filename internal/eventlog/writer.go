@@ -11,6 +11,13 @@ import (
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
+// LogEntry wraps a WideEvent with ingest-time metadata for reliable replay.
+type LogEntry struct {
+	LoggedAt       time.Time       `json:"logged_at"`
+	Event          event.WideEvent `json:"event"`
+	SampledInGraph bool            `json:"sampled_in_graph"`
+}
+
 // Writer appends WideEvents as JSONL to a file.
 type Writer struct {
 	mu  sync.Mutex
@@ -33,17 +40,25 @@ func New(dir string) (*Writer, error) {
 	return &Writer{f: f, enc: json.NewEncoder(f)}, nil
 }
 
-// Write appends a single event as a JSON line. Safe for concurrent use.
-func (w *Writer) Write(ev *event.WideEvent) error {
+// Write appends a single event wrapped in a LogEntry. Safe for concurrent use.
+func (w *Writer) Write(ev *event.WideEvent, sampledInGraph bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.enc.Encode(ev)
+	return w.enc.Encode(LogEntry{
+		LoggedAt:       time.Now().UTC(),
+		Event:          *ev,
+		SampledInGraph: sampledInGraph,
+	})
 }
 
 // Close flushes and closes the underlying file.
 func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_ = w.f.Sync()
-	return w.f.Close()
+	syncErr := w.f.Sync()
+	closeErr := w.f.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }

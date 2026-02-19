@@ -537,7 +537,7 @@ func TestEventSearch_WithResults(t *testing.T) {
 		testutil.WithService("checkout"),
 		testutil.WithStatusCode(200),
 	)
-	if err := w2.Write(&ev); err != nil {
+	if err := w2.Write(&ev, true); err != nil {
 		t.Fatal(err)
 	}
 	w2.Close()
@@ -588,5 +588,29 @@ func TestValidate_MethodNotAllowed(t *testing.T) {
 	srv.Validate(w, req)
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestEventSearch_BadStartReturns400(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore(), EventLogDir: t.TempDir()})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/events/search?service=x&start=garbage", nil)
+	w := httptest.NewRecorder()
+	srv.EventSearch(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad start, got %d", w.Code)
+	}
+}
+
+func TestEventSearch_BadEndReturns400(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore(), EventLogDir: t.TempDir()})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/events/search?service=x&end=not-a-date", nil)
+	w := httptest.NewRecorder()
+	srv.EventSearch(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad end, got %d", w.Code)
 	}
 }

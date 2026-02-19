@@ -100,16 +100,18 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.sampler.ShouldKeep(ev) {
-		// Dropped by design — still return 202 so producers never retry
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
+	sampled := s.sampler.ShouldKeep(ev)
 
+	// Log all validated events before sampling — the log is the source of truth.
 	if s.EventLog != nil {
-		if err := s.EventLog.Write(&ev); err != nil {
+		if err := s.EventLog.Write(&ev, sampled); err != nil {
 			slog.Error("eventlog write failed", "err", err)
 		}
+	}
+
+	if !sampled {
+		w.WriteHeader(http.StatusAccepted)
+		return
 	}
 
 	slog.Info("event accepted",
@@ -220,14 +222,20 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 		Limit:     limit,
 	}
 	if v := q.Get("start"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			f.Start = t
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			http.Error(w, "invalid start: must be RFC3339", http.StatusBadRequest)
+			return
 		}
+		f.Start = t
 	}
 	if v := q.Get("end"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			f.End = t
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			http.Error(w, "invalid end: must be RFC3339", http.StatusBadRequest)
+			return
 		}
+		f.End = t
 	}
 
 	events, err := eventlog.Search(s.EventLogDir, f)

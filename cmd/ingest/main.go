@@ -85,15 +85,20 @@ func main() {
 		slog.Info("eventlog enabled", "dir", eventLogDir)
 
 		// Replay events newer than last snapshot (or all if no snapshot)
-		events, err := eventlog.ReadDir(eventLogDir, snapshotSavedAt)
+		entries, err := eventlog.ReadDir(eventLogDir, snapshotSavedAt)
 		if err != nil {
 			slog.Warn("event log replay failed", "err", err)
-		} else if len(events) > 0 {
-			for i := range events {
-				g := ingestServer.Builder().Build(events[i])
+		} else if len(entries) > 0 {
+			replayed := 0
+			for i := range entries {
+				if !entries[i].SampledInGraph {
+					continue
+				}
+				g := ingestServer.Builder().Build(entries[i].Event)
 				graphStore.Merge(g)
+				replayed++
 			}
-			slog.Info("event log replay complete", "events", len(events))
+			slog.Info("event log replay complete", "total", len(entries), "replayed", replayed)
 		}
 	}
 
