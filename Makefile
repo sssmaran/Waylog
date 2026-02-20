@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race lint ci fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race lint ci fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset
 
 help:
 	@echo "Targets:"
@@ -21,6 +21,10 @@ help:
 	@echo "  micro-demo - start 4-service micro-demo (gateway+checkout+db+payment)"
 	@echo "  micro-demo-stop - stop micro-demo processes"
 	@echo "  waylog-live - run TUI dashboard (connects to ingest server)"
+	@echo "  docker-build - build all Docker images"
+	@echo "  docker-up   - start full stack via docker compose"
+	@echo "  docker-down - stop stack (preserve volumes)"
+	@echo "  docker-reset - stop stack and delete volumes"
 
 build:
 	go build ./cmd/ingest
@@ -88,3 +92,15 @@ micro-demo:
 
 micro-demo-stop:
 	./scripts/micro-demo-stop.sh
+
+docker-build:
+	docker compose build
+
+docker-up:
+	docker compose up -d --build
+
+docker-down:
+	docker compose down
+
+docker-reset:
+	docker compose down -v

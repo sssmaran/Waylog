@@ -36,6 +36,8 @@ type Server struct {
 	EventLog     *eventlog.Writer
 	EventLogDir  string
 	accepted     atomic.Uint64
+	totalEvents  atomic.Uint64 // pre-sampling: all valid events received
+	totalErrors  atomic.Uint64 // pre-sampling: all error events received
 	ready        atomic.Bool
 	startTime    time.Time
 	maxBodyBytes int64
@@ -217,6 +219,12 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// Pre-sampling counters for accurate error rate (unaffected by sampling).
+	s.totalEvents.Add(1)
+	if !ev.Outcome.Success {
+		s.totalErrors.Add(1)
 	}
 
 	sampled := s.sampler.ShouldKeep(ev)
@@ -534,21 +542,46 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 	totalRequests := summary.TotalRequests
 	totalFailures := summary.TotalFailures
 
+	// Error rate: prefer pre-sampling counters (not skewed by sampling).
+	// Fall back to graph-based counts when counters are zero (e.g. after restart
+	// before new traffic arrives).
 	errorRate := 0.0
-	if totalRequests > 0 {
+	if unsampledTotal := s.totalEvents.Load(); unsampledTotal > 0 {
+		errorRate = float64(s.totalErrors.Load()) / float64(unsampledTotal) * 100
+	} else if totalRequests > 0 {
 		errorRate = float64(totalFailures) / float64(totalRequests) * 100
 	}
 
-	// Top errors sorted by count
+	// Top errors: count one primary error per failed request.
+	// This avoids fan-out inflation where one failed request emits multiple
+	// downstream error events across services.
 	type errorEntry struct {
 		Code  string `json:"code"`
 		Count int    `json:"count"`
 	}
+	errorCountByCode := map[string]int{}
+	for reqID, n := range snap.Nodes {
+		if n.Type != core.NodeRequest {
+			continue
+		}
+		if n.LastSeen.IsZero() || n.LastSeen.Before(start) || n.LastSeen.After(now) {
+			continue
+		}
+		code, ok := primaryRequestErrorCode(snap, reqID, n)
+		if !ok {
+			continue
+		}
+		errorCountByCode[code]++
+	}
+
 	var topErrors []errorEntry
-	for code, count := range summary.ErrorCount {
+	for code, count := range errorCountByCode {
 		topErrors = append(topErrors, errorEntry{Code: code, Count: count})
 	}
 	sort.Slice(topErrors, func(i, j int) bool {
+		if topErrors[i].Count == topErrors[j].Count {
+			return topErrors[i].Code < topErrors[j].Code
+		}
 		return topErrors[i].Count > topErrors[j].Count
 	})
 
@@ -609,6 +642,68 @@ func attrToInt(v any) int {
 		}
 	}
 	return 0
+}
+
+func primaryRequestErrorCode(g *core.Graph, reqID string, req core.Node) (string, bool) {
+	if req.Attr != nil {
+		// Prefer singular request-level code (typically first failure encountered).
+		if code, ok := req.Attr["error_code"].(string); ok && code != "" {
+			return code, true
+		}
+	}
+
+	codeSet := map[string]struct{}{}
+	if req.Attr != nil {
+		for _, c := range anyToStringSlice(req.Attr["error_codes"]) {
+			if c != "" {
+				codeSet[c] = struct{}{}
+			}
+		}
+	}
+
+	// Fallback: derive from request->error edges in case attrs are missing.
+	if len(codeSet) == 0 {
+		for _, e := range g.OutEdges[reqID] {
+			if e.Type != core.EdgeFailedWith {
+				continue
+			}
+			n, ok := g.Nodes[e.To]
+			if !ok || n.Type != core.NodeError || n.Attr == nil {
+				continue
+			}
+			if code, ok := n.Attr["code"].(string); ok && code != "" {
+				codeSet[code] = struct{}{}
+			}
+		}
+	}
+
+	if len(codeSet) == 0 {
+		return "", false
+	}
+
+	codes := make([]string, 0, len(codeSet))
+	for c := range codeSet {
+		codes = append(codes, c)
+	}
+	sort.Strings(codes)
+	return codes[0], true
+}
+
+func anyToStringSlice(v any) []string {
+	switch values := v.(type) {
+	case []string:
+		return values
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, item := range values {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func attrToInt64(v any) int64 {

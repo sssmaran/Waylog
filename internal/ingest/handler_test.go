@@ -334,6 +334,70 @@ func TestOverview_MixedSuccessAndFailure(t *testing.T) {
 	}
 }
 
+func TestOverview_TopErrors_UniquePerFailedRequest(t *testing.T) {
+	st := graphstore.NewStore()
+	b := build.NewBuilder()
+	traceID := "cccc0000dddd1111eeee2222ffff3333"
+
+	events := []event.WideEvent{
+		// First failure in request lifecycle.
+		testutil.MakeEvent(
+			testutil.WithTraceID(traceID),
+			testutil.WithSpanID("1111111111111111"),
+			testutil.WithService("payment"),
+			testutil.WithStatusCode(502),
+			testutil.WithError("PMT_502", "payment failed"),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		),
+		// Later propagated failure on gateway for the same request.
+		testutil.MakeEvent(
+			testutil.WithTraceID(traceID),
+			testutil.WithSpanID("2222222222222222"),
+			testutil.WithParentSpanID("1111111111111111"),
+			testutil.WithService("api-gateway"),
+			testutil.WithStatusCode(502),
+			testutil.WithError("GW_DOWNSTREAM", "downstream checkout failed"),
+			testutil.WithTimestamp(time.Now().Add(-30*time.Second)),
+		),
+	}
+
+	for _, ev := range events {
+		st.Merge(b.Build(ev))
+	}
+
+	srv := &Server{store: st, builder: b}
+	req := httptest.NewRequest(http.MethodGet, "/v1/overview?window=10m", nil)
+	w := httptest.NewRecorder()
+	srv.Overview(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		TotalFailures int `json:"total_failures"`
+		TopErrors     []struct {
+			Code  string `json:"code"`
+			Count int    `json:"count"`
+		} `json:"top_errors"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp.TotalFailures != 1 {
+		t.Fatalf("total_failures = %d, want 1", resp.TotalFailures)
+	}
+	if len(resp.TopErrors) != 1 {
+		t.Fatalf("top_errors len = %d, want 1 (one primary code per failed request)", len(resp.TopErrors))
+	}
+	if resp.TopErrors[0].Code != "PMT_502" {
+		t.Fatalf("top_errors[0].code = %q, want PMT_502", resp.TopErrors[0].Code)
+	}
+	if resp.TopErrors[0].Count != 1 {
+		t.Fatalf("top_errors[0].count = %d, want 1", resp.TopErrors[0].Count)
+	}
+}
+
 func TestTraceStory_SuccessTrace(t *testing.T) {
 	srv := makeTestServerMixed()
 
@@ -778,6 +842,62 @@ func TestHealth_ReplayFailed(t *testing.T) {
 	}
 	if _, ok := replay["last_success"]; ok {
 		t.Error("replay.last_success should not be present on failure")
+	}
+}
+
+func TestOverview_ErrorRateFromPresamplingCounters(t *testing.T) {
+	srv := NewServer(ServerConfig{
+		Store:   graphstore.NewStore(),
+		Sampler: keepAllSampler(),
+	})
+
+	// Send 4 events through the handler: 3 success + 1 error.
+	makeBody := func(traceID string, success bool, code int, errCode string) string {
+		ev := testutil.MakeEvent(
+			testutil.WithTraceID(traceID),
+			testutil.WithService("svc"),
+			testutil.WithStatusCode(code),
+		)
+		if !success {
+			ev.Outcome.Success = false
+			ev.Error = &event.ErrorContext{Code: errCode, Message: "fail"}
+			ev.EventName = "svc.error"
+		}
+		b, _ := json.Marshal(ev)
+		return string(b)
+	}
+
+	for _, body := range []string{
+		makeBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", true, 200, ""),
+		makeBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2", true, 200, ""),
+		makeBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3", true, 200, ""),
+		makeBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa4", false, 500, "ERR_X"),
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.Events(w, req)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+
+	// Overview should use pre-sampling counters: 1/4 = 25%.
+	req := httptest.NewRequest(http.MethodGet, "/v1/overview?window=10m", nil)
+	w := httptest.NewRecorder()
+	srv.Overview(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	errorRate := resp["error_rate"].(float64)
+	if errorRate != 25.0 {
+		t.Errorf("error_rate = %.1f, want 25.0 (from pre-sampling counters)", errorRate)
 	}
 }
 

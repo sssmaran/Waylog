@@ -1,0 +1,7 @@
+data/
+*.log
+.env
+.git/
+.gitignore
+docs/
+scripts/
