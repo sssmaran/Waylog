@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race lint ci fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race lint ci fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod
 
 help:
 	@echo "Targets:"
@@ -25,6 +25,8 @@ help:
 	@echo "  docker-up   - start full stack via docker compose"
 	@echo "  docker-down - stop stack (preserve volumes)"
 	@echo "  docker-reset - stop stack and delete volumes"
+	@echo "  docker-dev  - start stack with dev profile (100% sampling)"
+	@echo "  docker-prod - start stack with prod profile (5% sampling)"
 
 build:
 	go build ./cmd/ingest
@@ -104,3 +106,9 @@ docker-down:
 
 docker-reset:
 	docker compose down -v
+
+docker-dev:
+	ENV_FILE=deploy/dev.env docker compose up -d --build
+
+docker-prod:
+	ENV_FILE=deploy/prod.env docker compose up -d --build

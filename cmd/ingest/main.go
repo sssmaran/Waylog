@@ -88,21 +88,31 @@ func main() {
 
 	// Optional append-only event log
 	eventLogSync := config.GetenvBool("EVENT_LOG_SYNC", true)
+	eventLogMaxMB := int64(config.GetenvInt("EVENT_LOG_MAX_FILE_MB", 50))
+	eventLogRetention := config.GetenvDuration("EVENT_LOG_RETENTION", 72*time.Hour)
+	if eventLogRetention <= 0 {
+		slog.Error("EVENT_LOG_RETENTION must be positive", "value", eventLogRetention)
+		os.Exit(1)
+	}
+	var el *eventlog.Writer
 	if eventLogDir != "" {
-		var el *eventlog.Writer
 		var err error
-		if eventLogSync {
-			el, err = eventlog.NewWithSync(eventLogDir)
-		} else {
-			el, err = eventlog.New(eventLogDir)
-		}
+		el, err = eventlog.NewWithConfig(eventLogDir, eventlog.WriterConfig{
+			SyncOnWrite:  eventLogSync,
+			MaxFileBytes: eventLogMaxMB * 1024 * 1024,
+		})
 		if err != nil {
 			slog.Error("eventlog init failed", "err", err)
 			os.Exit(1)
 		}
 		defer el.Close()
 		ingestServer.EventLog = el
-		slog.Info("eventlog enabled", "dir", eventLogDir, "sync_per_write", eventLogSync)
+		slog.Info("eventlog enabled",
+			"dir", eventLogDir,
+			"sync_per_write", eventLogSync,
+			"max_file_mb", eventLogMaxMB,
+			"retention", eventLogRetention,
+		)
 
 		// Replay events newer than last snapshot (or all if no snapshot)
 		m.ReplayInProgress.Set(1)
@@ -248,6 +258,28 @@ func main() {
 			}
 		}
 	}()
+
+	// ---------------- Event log retention ----------------
+
+	if el != nil {
+		go func() {
+			retTicker := time.NewTicker(5 * time.Minute)
+			defer retTicker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-retTicker.C:
+					n, err := eventlog.PruneOlderThan(eventLogDir, eventLogRetention, el.ActivePath())
+					if err != nil {
+						slog.Warn("eventlog retention cleanup error", "err", err)
+					} else if n > 0 {
+						slog.Info("eventlog retention cleanup", "deleted", n)
+					}
+				}
+			}
+		}()
+	}
 
 	// ---------------- Shutdown ----------------
 

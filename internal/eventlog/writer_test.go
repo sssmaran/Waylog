@@ -182,3 +182,69 @@ func TestWriter_CreatesDirIfMissing(t *testing.T) {
 		t.Fatal("expected directory")
 	}
 }
+
+func TestWriter_RotatesOnSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewWithConfig(dir, WriterConfig{MaxFileBytes: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	firstFile := w.ActivePath()
+
+	for i := 0; i < 20; i++ {
+		ev := testutil.MakeEvent()
+		if err := w.Write(&ev, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	secondFile := w.ActivePath()
+	if firstFile == secondFile {
+		t.Error("expected rotation to create a new file")
+	}
+
+	for _, p := range []string{firstFile, secondFile} {
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Errorf("file %s does not exist after rotation", p)
+		}
+	}
+}
+
+func TestWriter_NoRotationWhenUnlimited(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewWithConfig(dir, WriterConfig{MaxFileBytes: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	firstFile := w.ActivePath()
+	for i := 0; i < 5; i++ {
+		ev := testutil.MakeEvent()
+		if err := w.Write(&ev, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w.ActivePath() != firstFile {
+		t.Error("expected no rotation when MaxFileBytes=0")
+	}
+}
+
+func TestWriter_ActivePath(t *testing.T) {
+	dir := t.TempDir()
+	w, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	path := w.ActivePath()
+	if filepath.Dir(path) != dir {
+		t.Errorf("active path dir = %q, want %q", filepath.Dir(path), dir)
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Errorf("active path %q does not exist", path)
+	}
+}

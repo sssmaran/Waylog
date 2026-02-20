@@ -3,6 +3,8 @@ package event
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -66,8 +68,8 @@ func (e WideEvent) Validate() error {
 	if e.SchemaVersion == "" {
 		return errors.New("schema_version is required")
 	}
-	if e.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("unsupported schema_version: %s", e.SchemaVersion)
+	if err := supportedSchema(e.SchemaVersion); err != nil {
+		return err
 	}
 	if e.EventName == "" {
 		return errors.New("event_name is required")
@@ -112,4 +114,22 @@ func (e WideEvent) Validate() error {
 
 func (e WideEvent) IsError() bool {
 	return !e.Outcome.Success || e.Outcome.StatusCode >= 500 || e.Error != nil
+}
+
+func supportedSchema(v string) error {
+	parts := strings.Split(v, ".")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid schema_version format: %s (expected major.minor)", v)
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid schema_version major: %s", v)
+	}
+	if _, err := strconv.Atoi(parts[1]); err != nil {
+		return fmt.Errorf("invalid schema_version minor: %s", v)
+	}
+	if major != 1 {
+		return fmt.Errorf("unsupported schema_version: %s (supported: 1.x)", v)
+	}
+	return nil
 }

@@ -30,6 +30,7 @@ type OverviewResponse struct {
 	TotalRequests int          `json:"total_requests"`
 	TotalFailures int          `json:"total_failures"`
 	ErrorRate     float64      `json:"error_rate"`
+	Sampled       bool         `json:"sampled"`
 	TopErrors     []ErrorCount `json:"top_errors"`
 	RecentTraces  []TraceEntry `json:"recent_traces"`
 }

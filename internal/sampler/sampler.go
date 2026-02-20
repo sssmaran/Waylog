@@ -45,6 +45,9 @@ func New(cfg Config) *Sampler {
 	return &Sampler{cfg: cfg}
 }
 
+// HappySampleRatePct returns the configured happy-path sample rate percentage.
+func (s *Sampler) HappySampleRatePct() int { return s.cfg.HappySampleRatePct }
+
 func (s *Sampler) ShouldKeep(ev event.WideEvent) bool {
 	// 1) Always keep errors
 	if !ev.Outcome.Success {

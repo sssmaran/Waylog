@@ -18,6 +18,12 @@ type LogEntry struct {
 	SampledInGraph bool            `json:"sampled_in_graph"`
 }
 
+// WriterConfig holds configuration for event log writer.
+type WriterConfig struct {
+	SyncOnWrite  bool
+	MaxFileBytes int64 // 0 = no rotation
+}
+
 // Writer appends WideEvents as JSONL to a file.
 //
 // When syncOnWrite is true, every Write call fsyncs to disk before returning,
@@ -26,36 +32,61 @@ type LogEntry struct {
 // data on a hard crash, but process-level failures are safe because the handler
 // rejects events whose Write fails.
 type Writer struct {
-	mu          sync.Mutex
-	f           *os.File
-	enc         *json.Encoder
-	syncOnWrite bool
+	mu           sync.Mutex
+	dir          string
+	f            *os.File
+	enc          *json.Encoder
+	syncOnWrite  bool
+	maxFileBytes int64
+	bytesWritten int64
+	seq          int // disambiguator for same-second rotation
 }
 
 // New creates a Writer that appends to a new JSONL file in dir.
 // Writes are buffered in the OS page cache (no per-write fsync).
 func New(dir string) (*Writer, error) {
-	return newWriter(dir, false)
+	return NewWithConfig(dir, WriterConfig{})
 }
 
 // NewWithSync creates a Writer with per-write fsync for strict WAL durability.
-// Each Write call fsyncs to disk before returning, which is slower but
-// survives host/power crashes.
 func NewWithSync(dir string) (*Writer, error) {
-	return newWriter(dir, true)
+	return NewWithConfig(dir, WriterConfig{SyncOnWrite: true})
 }
 
-func newWriter(dir string, syncOnWrite bool) (*Writer, error) {
+// NewWithConfig creates a Writer with the given configuration.
+func NewWithConfig(dir string, cfg WriterConfig) (*Writer, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("eventlog: mkdir %s: %w", dir, err)
 	}
-	name := fmt.Sprintf("events-%s.jsonl", time.Now().UTC().Format("20060102-150405"))
-	path := filepath.Join(dir, name)
+	w := &Writer{
+		dir:          dir,
+		syncOnWrite:  cfg.SyncOnWrite,
+		maxFileBytes: cfg.MaxFileBytes,
+	}
+	if err := w.openNewFile(); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func (w *Writer) openNewFile() error {
+	ts := time.Now().UTC().Format("20060102-150405")
+	name := fmt.Sprintf("events-%s.jsonl", ts)
+	path := filepath.Join(w.dir, name)
+	// If file already exists (same-second rotation), add sequence suffix.
+	if _, err := os.Stat(path); err == nil {
+		w.seq++
+		name = fmt.Sprintf("events-%s-%d.jsonl", ts, w.seq)
+		path = filepath.Join(w.dir, name)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("eventlog: open %s: %w", path, err)
+		return fmt.Errorf("eventlog: open %s: %w", path, err)
 	}
-	return &Writer{f: f, enc: json.NewEncoder(f), syncOnWrite: syncOnWrite}, nil
+	w.f = f
+	w.enc = json.NewEncoder(f)
+	w.bytesWritten = 0
+	return nil
 }
 
 // Write appends a single event wrapped in a LogEntry. Safe for concurrent use.
@@ -71,9 +102,30 @@ func (w *Writer) Write(ev *event.WideEvent, sampledInGraph bool) error {
 		return err
 	}
 	if w.syncOnWrite {
-		return w.f.Sync()
+		if err := w.f.Sync(); err != nil {
+			return err
+		}
+	}
+	// Track bytes written for rotation decisions.
+	if info, err := w.f.Stat(); err == nil {
+		w.bytesWritten = info.Size()
+	}
+	// Rotate if file exceeds size limit.
+	if w.maxFileBytes > 0 && w.bytesWritten >= w.maxFileBytes {
+		_ = w.f.Sync()
+		_ = w.f.Close()
+		if err := w.openNewFile(); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// ActivePath returns the path of the currently active log file.
+func (w *Writer) ActivePath() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.f.Name()
 }
 
 // Close flushes and closes the underlying file.

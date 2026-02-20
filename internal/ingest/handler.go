@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,56 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/tracestory"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
+
+// unsampledCounters tracks event counts in per-minute buckets for windowed
+// error rate calculations. All counters are incremented after successful WAL
+// write (or after validation if no WAL), so they reflect only durably accepted events.
+type unsampledCounters struct {
+	mu      sync.Mutex
+	buckets [120]minuteBucket // 2-hour ring buffer
+}
+
+type minuteBucket struct {
+	minute int64 // unix minute (time.Now().Unix() / 60)
+	total  uint64
+	errors uint64
+}
+
+func (c *unsampledCounters) Inc(isError bool) {
+	now := time.Now().Unix() / 60
+	c.mu.Lock()
+	idx := int(now % int64(len(c.buckets)))
+	b := &c.buckets[idx]
+	if b.minute != now {
+		b.minute = now
+		b.total = 0
+		b.errors = 0
+	}
+	b.total++
+	if isError {
+		b.errors++
+	}
+	c.mu.Unlock()
+}
+
+func (c *unsampledCounters) Sum(window time.Duration) (total, errs uint64) {
+	// Buffer only holds 120 minutes; for larger windows return 0 so caller
+	// falls back to graph-based rate (avoids partial/misleading counts).
+	if window > 120*time.Minute {
+		return 0, 0
+	}
+	cutoff := time.Now().Add(-window).Unix() / 60
+	c.mu.Lock()
+	for i := range c.buckets {
+		b := &c.buckets[i]
+		if b.minute >= cutoff && b.total > 0 {
+			total += b.total
+			errs += b.errors
+		}
+	}
+	c.mu.Unlock()
+	return
+}
 
 // Server handles HTTP requests for the ingest service.
 //
@@ -35,10 +86,10 @@ type Server struct {
 	metrics      *metrics.Metrics
 	EventLog     *eventlog.Writer
 	EventLogDir  string
-	accepted     atomic.Uint64
-	totalEvents  atomic.Uint64 // pre-sampling: all valid events received
-	totalErrors  atomic.Uint64 // pre-sampling: all error events received
-	ready        atomic.Bool
+	accepted       atomic.Uint64
+	counters       unsampledCounters
+	sampleRatePct  int
+	ready          atomic.Bool
 	startTime    time.Time
 	maxBodyBytes int64
 
@@ -51,12 +102,13 @@ type Server struct {
 
 // ServerConfig holds configuration for creating a new Server.
 type ServerConfig struct {
-	Store        *store.Store
-	Sampler      *sampler.Sampler
-	Metrics      *metrics.Metrics
-	MaxBodyBytes int64
-	EventLogDir  string
-	StartTime    time.Time
+	Store         *store.Store
+	Sampler       *sampler.Sampler
+	Metrics       *metrics.Metrics
+	MaxBodyBytes  int64
+	EventLogDir   string
+	StartTime     time.Time
+	SampleRatePct int // 0 means use sampler's default from env
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -70,17 +122,21 @@ func NewServer(cfg ServerConfig) *Server {
 		startTime = time.Now()
 	}
 	s := &Server{
-		store:        cfg.Store,
-		builder:      build.NewBuilder(),
-		sampler:      cfg.Sampler,
-		metrics:      cfg.Metrics,
-		maxBodyBytes: maxBody,
-		startTime:    startTime,
-		EventLogDir:  cfg.EventLogDir,
-		replayStatus: "none",
+		store:         cfg.Store,
+		builder:       build.NewBuilder(),
+		sampler:       cfg.Sampler,
+		metrics:       cfg.Metrics,
+		maxBodyBytes:  maxBody,
+		startTime:     startTime,
+		EventLogDir:   cfg.EventLogDir,
+		sampleRatePct: cfg.SampleRatePct,
+		replayStatus:  "none",
 	}
 	if s.sampler == nil {
 		s.sampler = sampler.New(sampler.LoadConfigFromEnv())
+	}
+	if s.sampleRatePct == 0 {
+		s.sampleRatePct = s.sampler.HappySampleRatePct()
 	}
 	return s
 }
@@ -221,12 +277,6 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pre-sampling counters for accurate error rate (unaffected by sampling).
-	s.totalEvents.Add(1)
-	if !ev.Outcome.Success {
-		s.totalErrors.Add(1)
-	}
-
 	sampled := s.sampler.ShouldKeep(ev)
 
 	// Write-ahead: the eventlog is the durable source of truth. If it's
@@ -242,6 +292,10 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Windowed unsampled counters — incremented after successful WAL write
+	// so rejected events (WAL failure → 503) are never counted.
+	s.counters.Inc(!ev.Outcome.Success)
 
 	if !sampled {
 		if s.metrics != nil {
@@ -542,12 +596,12 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 	totalRequests := summary.TotalRequests
 	totalFailures := summary.TotalFailures
 
-	// Error rate: prefer pre-sampling counters (not skewed by sampling).
-	// Fall back to graph-based counts when counters are zero (e.g. after restart
-	// before new traffic arrives).
+	// Error rate from windowed unsampled counters (not skewed by sampling).
+	// Falls back to graph-based counts when counters are zero (e.g. after
+	// restart before new traffic arrives).
 	errorRate := 0.0
-	if unsampledTotal := s.totalEvents.Load(); unsampledTotal > 0 {
-		errorRate = float64(s.totalErrors.Load()) / float64(unsampledTotal) * 100
+	if unsampledTotal, unsampledErrors := s.counters.Sum(dur); unsampledTotal > 0 {
+		errorRate = float64(unsampledErrors) / float64(unsampledTotal) * 100
 	} else if totalRequests > 0 {
 		errorRate = float64(totalFailures) / float64(totalRequests) * 100
 	}
@@ -591,6 +645,7 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 		"total_requests": totalRequests,
 		"total_failures": totalFailures,
 		"error_rate":     errorRate,
+		"sampled":        s.sampleRatePct < 100,
 		"top_errors":     topErrors,
 		"recent_traces":  recent,
 	})

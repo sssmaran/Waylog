@@ -36,12 +36,12 @@ services:
       target: ingest
     ports:
       - "8080:8080"
+    env_file:
+      - ${ENV_FILE:-deploy/dev.env}
     environment:
       INGEST_ADDR: ":8080"
       SNAPSHOT_PATH: /data/graph_snapshot.json
       EVENT_LOG_DIR: /data/eventlog
-      EVENT_LOG_SYNC: "true"
-      GRAPH_RETENTION: 24h
       LOG_LEVEL: info
       CORS_ORIGIN: "*"
       WAYLOG_API_KEY: ${WAYLOG_API_KEY:-}

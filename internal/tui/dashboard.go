@@ -126,9 +126,12 @@ func (d *DashboardModel) View(width, height int) string {
 
 	// Header
 	b.WriteString(renderBanner(width))
-	b.WriteString(liveIndicator + "  " +
-		statusBarStyle.Render(fmt.Sprintf("Requests: %d  Failures: %d  Error Rate: %.1f%%",
-			d.overview.TotalRequests, d.overview.TotalFailures, d.overview.ErrorRate)))
+	stats := fmt.Sprintf("Requests: %d  Failures: %d  Error Rate: %.1f%%",
+		d.overview.TotalRequests, d.overview.TotalFailures, d.overview.ErrorRate)
+	if d.overview.Sampled {
+		stats += "  (sampled)"
+	}
+	b.WriteString(liveIndicator + "  " + statusBarStyle.Render(stats))
 	b.WriteString("\n" + separator(width) + "\n")
 
 	// Two-column layout

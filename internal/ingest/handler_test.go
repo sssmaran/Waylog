@@ -186,7 +186,7 @@ func TestOverview_Stats(t *testing.T) {
 		t.Fatalf("invalid json: %v", err)
 	}
 
-	for _, key := range []string{"window", "total_requests", "total_failures", "error_rate", "top_errors", "recent_traces"} {
+	for _, key := range []string{"window", "total_requests", "total_failures", "error_rate", "sampled", "top_errors", "recent_traces"} {
 		if _, ok := resp[key]; !ok {
 			t.Errorf("missing key %q in overview response", key)
 		}
@@ -1010,6 +1010,11 @@ func TestEvents_EventlogWriteFailRejects(t *testing.T) {
 	// Event should NOT have been merged into the store.
 	if srv.AcceptedCount() != 0 {
 		t.Errorf("accepted = %d, want 0 (event should be rejected)", srv.AcceptedCount())
+	}
+	// Unsampled counters should NOT have been incremented.
+	total, errs := srv.counters.Sum(time.Hour)
+	if total != 0 || errs != 0 {
+		t.Errorf("counters = (%d, %d), want (0, 0) after WAL failure", total, errs)
 	}
 }
 
