@@ -15,28 +15,46 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	"github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/sampler"
 	"github.com/sssmaran/WaylogCLI/internal/tracestory"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
 // Server handles HTTP requests for the ingest service.
+//
+// Readiness semantics: /readyz gates on ingest availability, not replay
+// completeness. When replay fails the server becomes ready in degraded mode —
+// new events ingest correctly but historical reads (trace story, overview,
+// recent traces) may return partial results until the graph is rebuilt from
+// incoming traffic.
 type Server struct {
 	store        *store.Store
 	builder      *build.Builder
 	sampler      *sampler.Sampler
+	metrics      *metrics.Metrics
 	EventLog     *eventlog.Writer
 	EventLogDir  string
 	accepted     atomic.Uint64
+	ready        atomic.Bool
+	startTime    time.Time
 	maxBodyBytes int64
+
+	// Replay state — set once during startup, read by /healthz.
+	replayStatus       string // "none", "ok", "failed"
+	replayError        string
+	lastReplayAttempt  time.Time
+	lastReplaySuccess  time.Time
 }
 
 // ServerConfig holds configuration for creating a new Server.
 type ServerConfig struct {
 	Store        *store.Store
 	Sampler      *sampler.Sampler
+	Metrics      *metrics.Metrics
 	MaxBodyBytes int64
 	EventLogDir  string
+	StartTime    time.Time
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -45,12 +63,19 @@ func NewServer(cfg ServerConfig) *Server {
 	if maxBody == 0 {
 		maxBody = 1 << 20
 	}
+	startTime := cfg.StartTime
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
 	s := &Server{
 		store:        cfg.Store,
 		builder:      build.NewBuilder(),
 		sampler:      cfg.Sampler,
+		metrics:      cfg.Metrics,
 		maxBodyBytes: maxBody,
+		startTime:    startTime,
 		EventLogDir:  cfg.EventLogDir,
+		replayStatus: "none",
 	}
 	if s.sampler == nil {
 		s.sampler = sampler.New(sampler.LoadConfigFromEnv())
@@ -58,14 +83,96 @@ func NewServer(cfg ServerConfig) *Server {
 	return s
 }
 
-// Health handles health check requests.
+// Health handles health check requests with a JSON status summary.
+// Always returns HTTP 200 — this is a status summary, not a gate.
+// Use /readyz for traffic gating, /livez for liveness.
 func (s *Server) Health(w http.ResponseWriter, r *http.Request) {
+	status := "ok"
+	if s.store == nil || s.replayStatus == "failed" {
+		status = "degraded"
+	}
+
+	resp := map[string]any{
+		"status": status,
+		"uptime": time.Since(s.startTime).Round(time.Second).String(),
+		"ready":  s.ready.Load(),
+	}
+
+	if s.store != nil {
+		snap := s.store.Snapshot()
+		resp["store"] = map[string]any{
+			"configured": true,
+			"nodes":      len(snap.Nodes),
+			"edges":      len(snap.Edges),
+		}
+	} else {
+		resp["store"] = map[string]any{"configured": false}
+	}
+
+	resp["event_log"] = map[string]any{"enabled": s.EventLogDir != ""}
+
+	replay := map[string]any{"status": s.replayStatus}
+	if s.replayError != "" {
+		replay["error"] = s.replayError
+	}
+	if !s.lastReplayAttempt.IsZero() {
+		replay["last_attempt"] = s.lastReplayAttempt.Format(time.RFC3339)
+	}
+	if !s.lastReplaySuccess.IsZero() {
+		replay["last_success"] = s.lastReplaySuccess.Format(time.RFC3339)
+	}
+	resp["replay"] = replay
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// Livez handles liveness probe requests.
+func (s *Server) Livez(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
 
+// Readyz handles readiness probe requests.
+func (s *Server) Readyz(w http.ResponseWriter, r *http.Request) {
+	if !s.ready.Load() {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
+}
+
+// SetReady marks the server as ready to accept traffic.
+func (s *Server) SetReady() {
+	s.ready.Store(true)
+	if s.metrics != nil {
+		s.metrics.Ready.Set(1)
+	}
+}
+
+// SetReplayResult records the outcome of startup replay for /healthz.
+// Called once during startup after replay completes or fails.
+func (s *Server) SetReplayResult(err error) {
+	s.lastReplayAttempt = time.Now()
+	if err != nil {
+		s.replayStatus = "failed"
+		s.replayError = err.Error()
+	} else {
+		s.replayStatus = "ok"
+		s.lastReplaySuccess = s.lastReplayAttempt
+	}
+}
+
 // Events handles event ingestion requests.
 func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	if s.metrics != nil {
+		s.metrics.InFlightRequests.Inc()
+		defer s.metrics.InFlightRequests.Dec()
+		defer func() { s.metrics.IngestLatency.Observe(time.Since(start).Seconds()) }()
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -80,36 +187,58 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 	if err := dec.Decode(&ev); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
+			if s.metrics != nil {
+				s.metrics.EventsRejected.WithLabelValues("validation").Inc()
+			}
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		slog.Warn("json decode failed", "err", err)
+		if s.metrics != nil {
+			s.metrics.EventsRejected.WithLabelValues("validation").Inc()
+		}
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 
 	// Ensure server-side timestamp sanity
 	if ev.Timestamp.After(time.Now().Add(5 * time.Minute)) {
+		if s.metrics != nil {
+			s.metrics.EventsRejected.WithLabelValues("validation").Inc()
+		}
 		http.Error(w, "timestamp too far in future", http.StatusBadRequest)
 		return
 	}
 
 	if err := ev.Validate(); err != nil {
 		slog.Warn("event validation failed", "err", err)
+		if s.metrics != nil {
+			s.metrics.EventsRejected.WithLabelValues("validation").Inc()
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	sampled := s.sampler.ShouldKeep(ev)
 
-	// Log all validated events before sampling — the log is the source of truth.
+	// Write-ahead: the eventlog is the durable source of truth. If it's
+	// configured and the write fails, reject the event so the client retries.
+	// Nothing enters the graph without being logged first.
 	if s.EventLog != nil {
 		if err := s.EventLog.Write(&ev, sampled); err != nil {
 			slog.Error("eventlog write failed", "err", err)
+			if s.metrics != nil {
+				s.metrics.EventlogFails.Inc()
+			}
+			http.Error(w, "event log unavailable", http.StatusServiceUnavailable)
+			return
 		}
 	}
 
 	if !sampled {
+		if s.metrics != nil {
+			s.metrics.EventsRejected.WithLabelValues("sampling").Inc()
+		}
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -122,9 +251,14 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Build graph from event and merge into store
+	mergeStart := time.Now()
 	g := s.builder.Build(ev)
 	if s.store != nil {
 		s.store.Merge(g)
+	}
+	if s.metrics != nil {
+		s.metrics.MergeLatency.Observe(time.Since(mergeStart).Seconds())
+		s.metrics.EventsAccepted.Inc()
 	}
 
 	s.accepted.Add(1)

@@ -132,6 +132,40 @@ func TestWriter_ConcurrentWrite(t *testing.T) {
 	}
 }
 
+func TestWriterWithSync(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewWithSync(dir)
+	if err != nil {
+		t.Fatalf("NewWithSync: %v", err)
+	}
+	defer w.Close()
+
+	ev := testutil.MakeEvent()
+	if err := w.Write(&ev, true); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Verify the file was written (fsync'd) — read it back immediately.
+	files, _ := filepath.Glob(filepath.Join(dir, "events-*.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	f, _ := os.Open(files[0])
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	if !scanner.Scan() {
+		t.Fatal("expected 1 line after sync write")
+	}
+	var entry LogEntry
+	if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if entry.Event.SchemaVersion == "" {
+		t.Error("missing schema_version in synced entry")
+	}
+}
+
 func TestWriter_CreatesDirIfMissing(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sub", "deep")
 	w, err := New(dir)

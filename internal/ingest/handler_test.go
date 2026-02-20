@@ -2,15 +2,20 @@ package ingest
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/metrics"
+	"github.com/sssmaran/WaylogCLI/internal/sampler"
 	"github.com/sssmaran/WaylogCLI/internal/testutil"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
@@ -613,4 +618,305 @@ func TestEventSearch_BadEndReturns400(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for bad end, got %d", w.Code)
 	}
+}
+
+func TestLivez(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
+	req := httptest.NewRequest(http.MethodGet, "/livez", nil)
+	w := httptest.NewRecorder()
+	srv.Livez(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if w.Body.String() != "ok" {
+		t.Errorf("expected body 'ok', got %q", w.Body.String())
+	}
+}
+
+func TestReadyz_NotReady(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	srv.Readyz(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestReadyz_Ready(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
+	srv.SetReady()
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	srv.Readyz(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if w.Body.String() != "ok" {
+		t.Errorf("expected body 'ok', got %q", w.Body.String())
+	}
+}
+
+func TestHealth_JSON(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
+	srv.SetReady()
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	srv.Health(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want 'ok'", resp["status"])
+	}
+	if resp["ready"] != true {
+		t.Errorf("ready = %v, want true", resp["ready"])
+	}
+	for _, key := range []string{"status", "uptime", "ready", "store", "event_log", "replay"} {
+		if _, ok := resp[key]; !ok {
+			t.Errorf("missing key %q", key)
+		}
+	}
+	storeInfo := resp["store"].(map[string]any)
+	if storeInfo["configured"] != true {
+		t.Errorf("store.configured = %v, want true", storeInfo["configured"])
+	}
+	replayInfo := resp["replay"].(map[string]any)
+	if replayInfo["status"] != "none" {
+		t.Errorf("replay.status = %q, want 'none'", replayInfo["status"])
+	}
+}
+
+func TestHealth_Degraded(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	srv.Health(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp["status"] != "degraded" {
+		t.Errorf("status = %q, want 'degraded'", resp["status"])
+	}
+}
+
+func TestHealth_ReplaySuccess(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
+	srv.SetReplayResult(nil)
+	srv.SetReady()
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	srv.Health(w, req)
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	if resp["status"] != "ok" {
+		t.Errorf("status = %q, want 'ok'", resp["status"])
+	}
+	replay := resp["replay"].(map[string]any)
+	if replay["status"] != "ok" {
+		t.Errorf("replay.status = %q, want 'ok'", replay["status"])
+	}
+	if _, ok := replay["error"]; ok {
+		t.Error("replay.error should not be present on success")
+	}
+	if _, ok := replay["last_attempt"]; !ok {
+		t.Error("missing replay.last_attempt")
+	}
+	if _, ok := replay["last_success"]; !ok {
+		t.Error("missing replay.last_success")
+	}
+}
+
+func TestHealth_ReplayFailed(t *testing.T) {
+	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
+	srv.SetReplayResult(errors.New("corrupt eventlog"))
+	srv.SetReady()
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	srv.Health(w, req)
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	if resp["status"] != "degraded" {
+		t.Errorf("status = %q, want 'degraded'", resp["status"])
+	}
+	if resp["ready"] != true {
+		t.Errorf("ready = %v, want true (fail-open)", resp["ready"])
+	}
+	replay := resp["replay"].(map[string]any)
+	if replay["status"] != "failed" {
+		t.Errorf("replay.status = %q, want 'failed'", replay["status"])
+	}
+	if replay["error"] != "corrupt eventlog" {
+		t.Errorf("replay.error = %q, want 'corrupt eventlog'", replay["error"])
+	}
+	if _, ok := replay["last_attempt"]; !ok {
+		t.Error("missing replay.last_attempt")
+	}
+	if _, ok := replay["last_success"]; ok {
+		t.Error("replay.last_success should not be present on failure")
+	}
+}
+
+func keepAllSampler() *sampler.Sampler {
+	return sampler.New(sampler.Config{HappySampleRatePct: 100})
+}
+
+func TestEvents_MetricsIncremented(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+
+	srv := NewServer(ServerConfig{
+		Store:   graphstore.NewStore(),
+		Metrics: m,
+		Sampler: keepAllSampler(),
+	})
+
+	body := `{"schema_version":"1.0","event_name":"test.request","timestamp":"` + time.Now().UTC().Format(time.RFC3339) + `","user":{"id":"u1"},"request":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"},"system":{"service":"test","env":"prod"},"outcome":{"success":true,"status_code":200,"kind":"http"},"metrics":{"latency_ms":10}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Events(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm := gatherMap(families)
+
+	if v := counterValue(fm["waylog_events_accepted_total"]); v < 1 {
+		t.Errorf("events_accepted_total = %v, want >= 1", v)
+	}
+	if v := histogramCount(fm["waylog_ingest_latency_seconds"]); v < 1 {
+		t.Errorf("ingest_latency count = %v, want >= 1", v)
+	}
+	if v := histogramCount(fm["waylog_merge_latency_seconds"]); v < 1 {
+		t.Errorf("merge_latency count = %v, want >= 1", v)
+	}
+}
+
+func TestEvents_RejectedMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+
+	srv := NewServer(ServerConfig{
+		Store:   graphstore.NewStore(),
+		Metrics: m,
+	})
+
+	// Invalid JSON
+	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader("{bad"))
+	w := httptest.NewRecorder()
+	srv.Events(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm := gatherMap(families)
+
+	mf := fm["waylog_events_rejected_total"]
+	if mf == nil {
+		t.Fatal("waylog_events_rejected_total not found")
+	}
+	found := false
+	for _, m := range mf.GetMetric() {
+		for _, lp := range m.GetLabel() {
+			if lp.GetName() == "reason" && lp.GetValue() == "validation" {
+				if m.GetCounter().GetValue() >= 1 {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("events_rejected_total{reason=validation} not >= 1")
+	}
+}
+
+func TestEvents_EventlogWriteFailRejects(t *testing.T) {
+	dir := t.TempDir()
+	el, err := eventlog.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Close the writer so subsequent writes fail.
+	el.Close()
+
+	srv := NewServer(ServerConfig{
+		Store:   graphstore.NewStore(),
+		Sampler: keepAllSampler(),
+	})
+	srv.EventLog = el
+
+	body := `{"schema_version":"1.0","event_name":"test.request","timestamp":"` + time.Now().UTC().Format(time.RFC3339) + `","user":{"id":"u1"},"request":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"},"system":{"service":"test","env":"prod"},"outcome":{"success":true,"status_code":200,"kind":"http"},"metrics":{"latency_ms":10}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Events(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when eventlog write fails, got %d", w.Code)
+	}
+	// Event should NOT have been merged into the store.
+	if srv.AcceptedCount() != 0 {
+		t.Errorf("accepted = %d, want 0 (event should be rejected)", srv.AcceptedCount())
+	}
+}
+
+func gatherMap(families []*dto.MetricFamily) map[string]*dto.MetricFamily {
+	m := make(map[string]*dto.MetricFamily, len(families))
+	for _, f := range families {
+		m[f.GetName()] = f
+	}
+	return m
+}
+
+func counterValue(mf *dto.MetricFamily) float64 {
+	if mf == nil {
+		return 0
+	}
+	for _, m := range mf.GetMetric() {
+		return m.GetCounter().GetValue()
+	}
+	return 0
+}
+
+func histogramCount(mf *dto.MetricFamily) uint64 {
+	if mf == nil {
+		return 0
+	}
+	for _, m := range mf.GetMetric() {
+		return m.GetHistogram().GetSampleCount()
+	}
+	return 0
 }

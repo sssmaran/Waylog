@@ -12,12 +12,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sssmaran/WaylogCLI/internal/cli"
 	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
+	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/persist"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 )
@@ -35,16 +37,22 @@ func main() {
 	snapshotPath := config.Getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
 	snapshotEvery := config.GetenvInt("SNAPSHOT_EVERY_SEC", 5)
 	snapshotLogEvery := config.GetenvInt("SNAPSHOT_LOG_EVERY", 1)
+	graphRetention := config.GetenvDuration("GRAPH_RETENTION", 24*time.Hour)
+	if graphRetention <= 0 {
+		slog.Error("GRAPH_RETENTION must be positive", "value", graphRetention)
+		os.Exit(1)
+	}
 	mcpStdio := config.GetenvBool("MCP_STDIO", false)
 
 	graphStore = graphstore.NewStore()
-	snapshotLoaded := false
 	var snapshotSavedAt time.Time
 
-	// Restore snapshot (non-fatal)
+	// Restore snapshot (non-fatal). On corrupt/missing snapshot the server
+	// starts with an empty graph and re-establishes persistence once it
+	// has data. persist.Save backs up the previous file as .bak before
+	// overwriting, so corrupt snapshots are never lost.
 	if snap, source, err := persist.LoadWithSource(snapshotPath); err == nil {
 		graphStore.Restore(snap.Graph)
-		snapshotLoaded = true
 		snapshotSavedAt = snap.SavedAt
 		slog.Info("snapshot loaded",
 			"path", snapshotPath,
@@ -56,41 +64,56 @@ func main() {
 			slog.Info("snapshot loaded from backup", "path", snapshotPath+".bak")
 		}
 	} else if errors.Is(err, persist.ErrSnapshotMissing) {
-		snapshotLoaded = true
 		slog.Info("no snapshot found, starting fresh")
 	} else {
-		slog.Warn("no snapshot loaded", "err", err)
+		slog.Warn("snapshot load failed, starting with empty graph", "err", err)
 	}
 
 	apiKey := config.Getenv("WAYLOG_API_KEY", "")
 	maxBody := int64(config.GetenvInt("MAX_BODY_BYTES", 1<<20))
 	eventLogDir := config.Getenv("EVENT_LOG_DIR", "")
 
+	// Prometheus metrics
+	promReg := prometheus.NewRegistry()
+	m := metrics.New(promReg)
+
 	// Create ingest server with the store
 	ingestServer := ingest.NewServer(ingest.ServerConfig{
 		Store:        graphStore,
 		MaxBodyBytes: maxBody,
 		EventLogDir:  eventLogDir,
+		Metrics:      m,
+		StartTime:    time.Now(),
 	})
 
 	// Optional append-only event log
+	eventLogSync := config.GetenvBool("EVENT_LOG_SYNC", true)
 	if eventLogDir != "" {
-		el, err := eventlog.New(eventLogDir)
+		var el *eventlog.Writer
+		var err error
+		if eventLogSync {
+			el, err = eventlog.NewWithSync(eventLogDir)
+		} else {
+			el, err = eventlog.New(eventLogDir)
+		}
 		if err != nil {
 			slog.Error("eventlog init failed", "err", err)
 			os.Exit(1)
 		}
 		defer el.Close()
 		ingestServer.EventLog = el
-		slog.Info("eventlog enabled", "dir", eventLogDir)
+		slog.Info("eventlog enabled", "dir", eventLogDir, "sync_per_write", eventLogSync)
 
 		// Replay events newer than last snapshot (or all if no snapshot)
-		entries, err := eventlog.ReadDir(eventLogDir, snapshotSavedAt)
-		if err != nil {
-			slog.Warn("event log replay failed", "err", err)
+		m.ReplayInProgress.Set(1)
+		entries, replayErr := eventlog.ReadDir(eventLogDir, snapshotSavedAt)
+		if replayErr != nil {
+			slog.Warn("event log replay failed", "err", replayErr)
+			m.ReplayFailuresTotal.Inc()
 		} else if len(entries) > 0 {
 			replayed := 0
 			for i := range entries {
+				m.ReplayLagSeconds.Set(time.Since(entries[i].LoggedAt).Seconds())
 				if !entries[i].SampledInGraph {
 					continue
 				}
@@ -100,6 +123,12 @@ func main() {
 			}
 			slog.Info("event log replay complete", "total", len(entries), "replayed", replayed)
 		}
+		m.ReplayLagSeconds.Set(0)
+		m.ReplayInProgress.Set(0)
+		ingestServer.SetReplayResult(replayErr)
+		ingestServer.SetReady()
+	} else {
+		ingestServer.SetReady()
 	}
 
 	// Set default store for CLI
@@ -115,6 +144,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", ingestServer.Health)
+	mux.HandleFunc("/livez", ingestServer.Livez)
+	mux.HandleFunc("/readyz", ingestServer.Readyz)
+	mux.Handle("/metrics", m.Handler())
 	if apiKey != "" {
 		mux.HandleFunc("/v1/events", ingest.APIKeyMiddleware(apiKey, ingestServer.Events))
 	} else {
@@ -147,7 +179,7 @@ func main() {
 	defer stop()
 
 	go func() {
-		slog.Info("ingest listening", "addr", addr)
+		slog.Info("ingest listening", "addr", addr, "graph_retention", graphRetention)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("ingest server error", "err", err)
 			os.Exit(1)
@@ -183,13 +215,16 @@ func main() {
 				return
 			case <-ticker.C:
 				snapshotCount++
+
+				// Enforce retention: prune nodes older than the retention window.
+				graphStore.PruneOlderThan(time.Now().Add(-graphRetention))
+				m.GraphPrunedTotal.Inc()
+
 				g := graphStore.Snapshot()
-				if !snapshotLoaded {
-					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
-						slog.Warn("snapshot skipped, last load failed")
-					}
-					continue
-				}
+
+				m.GraphNodes.Set(float64(len(g.Nodes)))
+				m.GraphEdges.Set(float64(len(g.Edges)))
+
 				if len(g.Nodes) == 0 {
 					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
 						slog.Debug("snapshot skipped, graph empty")
@@ -199,12 +234,16 @@ func main() {
 
 				if err := persist.Save(snapshotPath, g); err != nil {
 					slog.Error("snapshot save failed", "err", err, "path", snapshotPath)
-				} else if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
-					slog.Info("snapshot saved",
-						"nodes", len(g.Nodes),
-						"edges", len(g.Edges),
-						"path", snapshotPath,
-					)
+					m.SnapshotLastError.Set(float64(time.Now().Unix()))
+				} else {
+					m.SnapshotLastSuccess.Set(float64(time.Now().Unix()))
+					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
+						slog.Info("snapshot saved",
+							"nodes", len(g.Nodes),
+							"edges", len(g.Edges),
+							"path", snapshotPath,
+						)
+					}
 				}
 			}
 		}
@@ -226,9 +265,7 @@ func main() {
 
 	// Final snapshot on shutdown
 	g := graphStore.Snapshot()
-	if !snapshotLoaded {
-		slog.Warn("final snapshot skipped, last load failed")
-	} else if len(g.Nodes) == 0 {
+	if len(g.Nodes) == 0 {
 		slog.Info("final snapshot skipped, graph empty")
 	} else if err := persist.Save(snapshotPath, g); err != nil {
 		slog.Error("final snapshot save failed", "err", err)

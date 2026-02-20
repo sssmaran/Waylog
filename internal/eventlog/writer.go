@@ -19,15 +19,33 @@ type LogEntry struct {
 }
 
 // Writer appends WideEvents as JSONL to a file.
+//
+// When syncOnWrite is true, every Write call fsyncs to disk before returning,
+// giving true WAL durability across host/power crashes. When false (default),
+// writes are durable only at the process level — the OS page cache may lose
+// data on a hard crash, but process-level failures are safe because the handler
+// rejects events whose Write fails.
 type Writer struct {
-	mu  sync.Mutex
-	f   *os.File
-	enc *json.Encoder
+	mu          sync.Mutex
+	f           *os.File
+	enc         *json.Encoder
+	syncOnWrite bool
 }
 
 // New creates a Writer that appends to a new JSONL file in dir.
-// The directory is created if it does not exist.
+// Writes are buffered in the OS page cache (no per-write fsync).
 func New(dir string) (*Writer, error) {
+	return newWriter(dir, false)
+}
+
+// NewWithSync creates a Writer with per-write fsync for strict WAL durability.
+// Each Write call fsyncs to disk before returning, which is slower but
+// survives host/power crashes.
+func NewWithSync(dir string) (*Writer, error) {
+	return newWriter(dir, true)
+}
+
+func newWriter(dir string, syncOnWrite bool) (*Writer, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("eventlog: mkdir %s: %w", dir, err)
 	}
@@ -37,18 +55,25 @@ func New(dir string) (*Writer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("eventlog: open %s: %w", path, err)
 	}
-	return &Writer{f: f, enc: json.NewEncoder(f)}, nil
+	return &Writer{f: f, enc: json.NewEncoder(f), syncOnWrite: syncOnWrite}, nil
 }
 
 // Write appends a single event wrapped in a LogEntry. Safe for concurrent use.
+// If syncOnWrite is enabled, fsyncs to disk before returning.
 func (w *Writer) Write(ev *event.WideEvent, sampledInGraph bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.enc.Encode(LogEntry{
+	if err := w.enc.Encode(LogEntry{
 		LoggedAt:       time.Now().UTC(),
 		Event:          *ev,
 		SampledInGraph: sampledInGraph,
-	})
+	}); err != nil {
+		return err
+	}
+	if w.syncOnWrite {
+		return w.f.Sync()
+	}
+	return nil
 }
 
 // Close flushes and closes the underlying file.
