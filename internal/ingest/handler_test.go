@@ -1292,6 +1292,112 @@ func TestRoutes_RootServiceAttribution(t *testing.T) {
 	})
 }
 
+func TestRoutes_GroupByMethodAndRoute(t *testing.T) {
+	st := graphstore.NewStore()
+	b := build.NewBuilder()
+
+	now := time.Now().Add(-1 * time.Minute)
+	events := []event.WideEvent{
+		// Same service + same route template, different methods -> separate groups.
+		testutil.MakeEvent(
+			testutil.WithTraceID("11110000bbbb1111cccc2222dddd0001"),
+			testutil.WithSpanID("1111111111111111"),
+			testutil.WithService("api-gateway"),
+			testutil.WithEventName("api-gateway.request"),
+			testutil.WithHTTPMethod("GET"),
+			testutil.WithRouteTemplate("/users/{id}"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(20),
+			testutil.WithTimestamp(now),
+		),
+		testutil.MakeEvent(
+			testutil.WithTraceID("11110000bbbb1111cccc2222dddd0002"),
+			testutil.WithSpanID("2222222222222222"),
+			testutil.WithService("api-gateway"),
+			testutil.WithEventName("api-gateway.request"),
+			testutil.WithHTTPMethod("POST"),
+			testutil.WithRouteTemplate("/users/{id}"),
+			testutil.WithStatusCode(201),
+			testutil.WithLatency(35),
+			testutil.WithTimestamp(now),
+		),
+		// Same service + same method, different route template -> separate groups.
+		testutil.MakeEvent(
+			testutil.WithTraceID("11110000bbbb1111cccc2222dddd0003"),
+			testutil.WithSpanID("3333333333333333"),
+			testutil.WithService("api-gateway"),
+			testutil.WithEventName("api-gateway.request"),
+			testutil.WithHTTPMethod("GET"),
+			testutil.WithRouteTemplate("/orders/{id}"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(18),
+			testutil.WithTimestamp(now),
+		),
+		// Legacy event: no method/template -> UNKNOWN + event_name fallback.
+		testutil.MakeEvent(
+			testutil.WithTraceID("11110000bbbb1111cccc2222dddd0004"),
+			testutil.WithSpanID("4444444444444444"),
+			testutil.WithService("checkout"),
+			testutil.WithEventName("checkout.request"),
+			testutil.WithStatusCode(502),
+			testutil.WithError("CHK_502", "checkout failed"),
+			testutil.WithLatency(90),
+			testutil.WithTimestamp(now),
+		),
+	}
+
+	for _, ev := range events {
+		st.Merge(b.Build(ev))
+	}
+
+	srv := &Server{store: st, builder: b}
+	req := httptest.NewRequest(http.MethodGet, "/v1/routes?window=10m&limit=10", nil)
+	w := httptest.NewRecorder()
+	srv.Routes(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Routes []struct {
+			Service       string `json:"service"`
+			Method        string `json:"method"`
+			RouteTemplate string `json:"route_template"`
+			Route         string `json:"route"`
+			Invocations   int    `json:"invocations"`
+		} `json:"routes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(resp.Routes) < 4 {
+		t.Fatalf("expected at least 4 grouped routes, got %d", len(resp.Routes))
+	}
+
+	seen := map[string]bool{}
+	for _, r := range resp.Routes {
+		key := r.Service + "|" + r.Method + "|" + r.RouteTemplate
+		seen[key] = true
+		if r.Route != r.RouteTemplate {
+			t.Errorf("route alias mismatch: route=%q route_template=%q", r.Route, r.RouteTemplate)
+		}
+	}
+
+	if !seen["api-gateway|GET|/users/{id}"] {
+		t.Error("missing group api-gateway|GET|/users/{id}")
+	}
+	if !seen["api-gateway|POST|/users/{id}"] {
+		t.Error("missing group api-gateway|POST|/users/{id}")
+	}
+	if !seen["api-gateway|GET|/orders/{id}"] {
+		t.Error("missing group api-gateway|GET|/orders/{id}")
+	}
+	if !seen["checkout|UNKNOWN|checkout.error"] {
+		t.Error("missing legacy fallback group checkout|UNKNOWN|checkout.error")
+	}
+}
+
 func gatherMap(families []*dto.MetricFamily) map[string]*dto.MetricFamily {
 	m := make(map[string]*dto.MetricFamily, len(families))
 	for _, f := range families {

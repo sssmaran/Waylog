@@ -359,6 +359,94 @@ func TestWrapTransportNoStateNoHeaders(t *testing.T) {
 	}
 }
 
+func TestMiddlewareCapturesHTTPMethod(t *testing.T) {
+	client, mem := newTestClient(t)
+
+	h := wayloghttp.MiddlewareWithClient(client)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/users/123", nil)
+	h.ServeHTTP(rec, req)
+
+	events := flushAndEvents(t, client, mem)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Request.HTTPMethod != http.MethodPost {
+		t.Fatalf("http_method = %q, want %q", events[0].Request.HTTPMethod, http.MethodPost)
+	}
+}
+
+func TestWithRouteTemplateIsEmitted(t *testing.T) {
+	client, mem := newTestClient(t)
+
+	h := wayloghttp.MiddlewareWithClient(client)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := waylog.WithRouteTemplate(r.Context(), "/users/{id}")
+		r = r.WithContext(ctx)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/users/123", nil)
+	h.ServeHTTP(rec, req)
+
+	events := flushAndEvents(t, client, mem)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Request.RouteTemplate != "/users/{id}" {
+		t.Fatalf("route_template = %q, want %q", events[0].Request.RouteTemplate, "/users/{id}")
+	}
+}
+
+func TestExplicitRouteTemplateNotOverwrittenByPattern(t *testing.T) {
+	client, mem := newTestClient(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ctx := waylog.WithRouteTemplate(r.Context(), "/explicit/{id}")
+		r = r.WithContext(ctx)
+		w.WriteHeader(http.StatusOK)
+	})
+	h := wayloghttp.MiddlewareWithClient(client)(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/users/123", nil)
+	h.ServeHTTP(rec, req)
+
+	events := flushAndEvents(t, client, mem)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Request.RouteTemplate != "/explicit/{id}" {
+		t.Fatalf("route_template = %q, want %q", events[0].Request.RouteTemplate, "/explicit/{id}")
+	}
+}
+
+func TestPatternNotCapturedWithoutExplicitTemplate(t *testing.T) {
+	client, mem := newTestClient(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := wayloghttp.MiddlewareWithClient(client)(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+	h.ServeHTTP(rec, req)
+
+	events := flushAndEvents(t, client, mem)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Request.RouteTemplate != "" {
+		t.Fatalf("route_template = %q, want empty", events[0].Request.RouteTemplate)
+	}
+}
+
 type recordingRoundTripper struct {
 	mu      sync.Mutex
 	headers http.Header

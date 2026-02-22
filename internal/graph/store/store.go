@@ -264,6 +264,12 @@ func mergeRequestAttrs(dst, src *core.Node) {
 		if v, ok := src.Attr["service"]; ok {
 			dst.Attr["root_service"] = v
 		}
+		if v, ok := src.Attr["http_method"].(string); ok && v != "" {
+			dst.Attr["http_method"] = v
+		}
+		if v, ok := src.Attr["route_template"].(string); ok && v != "" {
+			dst.Attr["route_template"] = v
+		}
 		dst.Attr["is_root"] = true
 	}
 
@@ -336,7 +342,7 @@ func mergeSpanAttrs(dst, src *core.Node) {
 	enrichKeys := []string{
 		"event_name", "status_code", "success", "latency_ms",
 		"flow", "timestamp", "caller_service", "downstream_service",
-		"service", "error_code",
+		"service", "error_code", "http_method", "route_template",
 	}
 	for _, key := range enrichKeys {
 		if _, hasDst := dst.Attr[key]; !hasDst {

@@ -390,8 +390,16 @@ paths:
                       properties:
                         service:
                           type: string
+                        method:
+                          type: string
+                          description: HTTP method (e.g. GET, POST). UNKNOWN for legacy events.
+                        route_template:
+                          type: string
+                          description: Route template (e.g. /users/{id}). Falls back to event_name for legacy events.
                         route:
                           type: string
+                          description: "Deprecated: backward-compat alias for route_template."
+                          deprecated: true
                         invocations:
                           type: integer
                         errors:
@@ -573,6 +581,12 @@ components:
         trace_id: { type: string }
         span_id: { type: string }
         parent_span_id: { type: string }
+        http_method:
+          type: string
+          description: HTTP method (GET, POST, etc.). Optional; auto-captured by SDK middleware.
+        route_template:
+          type: string
+          description: Route template (e.g. /users/{id}). Optional; auto-captured from mux pattern or explicitly set.
         flow: { type: string }
         feature_flags:
           type: array

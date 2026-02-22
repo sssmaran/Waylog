@@ -36,6 +36,9 @@ type RequestContext struct {
 	SpanID       string `json:"span_id,omitempty"`
 	ParentSpanID string `json:"parent_span_id,omitempty"`
 
+	HTTPMethod    string `json:"http_method,omitempty"`
+	RouteTemplate string `json:"route_template,omitempty"`
+
 	Flow         string   `json:"flow"`
 	FeatureFlags []string `json:"feature_flags"`
 }
@@ -89,6 +92,13 @@ func (e WideEvent) Validate() error {
 		return errors.New("request.span_id is required when request.parent_span_id is set")
 	}
 
+	if e.Request.HTTPMethod != "" && !validHTTPMethod(e.Request.HTTPMethod) {
+		return fmt.Errorf("request.http_method %q is not a valid HTTP method", e.Request.HTTPMethod)
+	}
+	if e.Request.RouteTemplate != "" && e.Request.RouteTemplate[0] != '/' {
+		return errors.New("request.route_template must start with /")
+	}
+
 	if e.System.Service == "" {
 		return errors.New("system.service is required")
 	}
@@ -114,6 +124,14 @@ func (e WideEvent) Validate() error {
 
 func (e WideEvent) IsError() bool {
 	return !e.Outcome.Success || e.Outcome.StatusCode >= 500 || e.Error != nil
+}
+
+func validHTTPMethod(m string) bool {
+	switch m {
+	case "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH":
+		return true
+	}
+	return false
 }
 
 func supportedSchema(v string) error {

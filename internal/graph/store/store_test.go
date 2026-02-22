@@ -399,3 +399,51 @@ func TestStore_LateRootMerge_UpdatesRootService(t *testing.T) {
 		t.Error("counter-relevant fields changed unexpectedly")
 	}
 }
+
+func TestStore_Merge_RootOverwritesHTTPMethodAndRouteTemplate(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa04"
+	reqID := core.ID("request", traceID)
+
+	// Child arrives first with method/template.
+	child := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("2222222222222222"),
+		testutil.WithParentSpanID("1111111111111111"),
+		testutil.WithService("payment"),
+		testutil.WithEventName("payment.request"),
+		testutil.WithHTTPMethod("GET"),
+		testutil.WithRouteTemplate("/payments/{id}"),
+	)
+	s.Merge(b.Build(child))
+
+	snap := s.Snapshot()
+	req := snap.Nodes[reqID]
+	if got := req.Attr["http_method"]; got != "GET" {
+		t.Fatalf("http_method = %v, want GET before root merge", got)
+	}
+	if got := req.Attr["route_template"]; got != "/payments/{id}" {
+		t.Fatalf("route_template = %v, want /payments/{id} before root merge", got)
+	}
+
+	// Root arrives later with new method/template and should overwrite.
+	root := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("1111111111111111"),
+		testutil.WithService("api-gateway"),
+		testutil.WithEventName("api-gateway.request"),
+		testutil.WithHTTPMethod("POST"),
+		testutil.WithRouteTemplate("/checkout"),
+	)
+	s.Merge(b.Build(root))
+
+	snap = s.Snapshot()
+	req = snap.Nodes[reqID]
+	if got := req.Attr["http_method"]; got != "POST" {
+		t.Errorf("http_method = %v, want POST after root merge", got)
+	}
+	if got := req.Attr["route_template"]; got != "/checkout" {
+		t.Errorf("route_template = %v, want /checkout after root merge", got)
+	}
+}

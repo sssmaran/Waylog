@@ -142,6 +142,20 @@ func WithFeatureFlags(flags ...string) EventOption {
 	}
 }
 
+// WithHTTPMethod sets the HTTP method in request context.
+func WithHTTPMethod(method string) EventOption {
+	return func(ev *event.WideEvent) {
+		ev.Request.HTTPMethod = method
+	}
+}
+
+// WithRouteTemplate sets the route template in request context.
+func WithRouteTemplate(rt string) EventOption {
+	return func(ev *event.WideEvent) {
+		ev.Request.RouteTemplate = rt
+	}
+}
+
 // WithTimestamp sets the event timestamp.
 func WithTimestamp(t time.Time) EventOption {
 	return func(ev *event.WideEvent) {

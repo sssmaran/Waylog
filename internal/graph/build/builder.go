@@ -26,14 +26,16 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 		ID:   reqID,
 		Type: core.NodeRequest,
 		Attr: map[string]any{
-			"event_name":  ev.EventName,
-			"trace_id":    ev.Request.TraceID,
-			"flow":        ev.Request.Flow,
-			"latency_ms":  ev.Metrics.LatencyMs,
-			"success":     ev.Outcome.Success,
-			"status_code": ev.Outcome.StatusCode,
-			"service":     ev.System.Service,
-			"is_root":     isRoot,
+			"event_name":     ev.EventName,
+			"trace_id":       ev.Request.TraceID,
+			"flow":           ev.Request.Flow,
+			"latency_ms":     ev.Metrics.LatencyMs,
+			"success":        ev.Outcome.Success,
+			"status_code":    ev.Outcome.StatusCode,
+			"service":        ev.System.Service,
+			"is_root":        isRoot,
+			"http_method":    ev.Request.HTTPMethod,
+			"route_template": ev.Request.RouteTemplate,
 		},
 	}
 	if ev.Error != nil {
@@ -112,6 +114,8 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 			"timestamp":          ev.Timestamp,
 			"caller_service":     ev.System.CallerService,
 			"downstream_service": ev.System.DownstreamService,
+			"http_method":        ev.Request.HTTPMethod,
+			"route_template":     ev.Request.RouteTemplate,
 		}
 		if ev.Error != nil {
 			spanAttrs["error_code"] = ev.Error.Code

@@ -862,14 +862,15 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 	start := now.Add(-window)
 
 	type routeStats struct {
-		Service   string
-		Route     string
-		Total     int
-		Failures  int
-		Status2xx int
-		Status4xx int
-		Status5xx int
-		latencies []int64
+		Service       string
+		Method        string
+		RouteTemplate string
+		Total         int
+		Failures      int
+		Status2xx     int
+		Status4xx     int
+		Status5xx     int
+		latencies     []int64
 	}
 
 	groups := map[string]*routeStats{}
@@ -897,10 +898,19 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		key := svc + "\x00" + eventName
+		method, _ := n.Attr["http_method"].(string)
+		if method == "" {
+			method = "UNKNOWN"
+		}
+		routeTemplate, _ := n.Attr["route_template"].(string)
+		if routeTemplate == "" {
+			routeTemplate = eventName
+		}
+
+		key := svc + "\x00" + method + "\x00" + routeTemplate
 		rs := groups[key]
 		if rs == nil {
-			rs = &routeStats{Service: svc, Route: eventName}
+			rs = &routeStats{Service: svc, Method: method, RouteTemplate: routeTemplate}
 			groups[key] = rs
 		}
 
@@ -927,27 +937,31 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type routeEntry struct {
-		Service      string  `json:"service"`
-		Route        string  `json:"route"`
-		Invocations  int     `json:"invocations"`
-		Errors       int     `json:"errors"`
-		ErrorRate    float64 `json:"error_rate"`
-		Status2xx    int     `json:"status_2xx"`
-		Status4xx    int     `json:"status_4xx"`
-		Status5xx    int     `json:"status_5xx"`
-		P75LatencyMs int64   `json:"p75_latency_ms"`
+		Service       string  `json:"service"`
+		Method        string  `json:"method"`
+		RouteTemplate string  `json:"route_template"`
+		Route         string  `json:"route"` // deprecated: alias for route_template
+		Invocations   int     `json:"invocations"`
+		Errors        int     `json:"errors"`
+		ErrorRate     float64 `json:"error_rate"`
+		Status2xx     int     `json:"status_2xx"`
+		Status4xx     int     `json:"status_4xx"`
+		Status5xx     int     `json:"status_5xx"`
+		P75LatencyMs  int64   `json:"p75_latency_ms"`
 	}
 
 	routes := make([]routeEntry, 0, len(groups))
 	for _, rs := range groups {
 		re := routeEntry{
-			Service:     rs.Service,
-			Route:       rs.Route,
-			Invocations: rs.Total,
-			Errors:      rs.Failures,
-			Status2xx:   rs.Status2xx,
-			Status4xx:   rs.Status4xx,
-			Status5xx:   rs.Status5xx,
+			Service:       rs.Service,
+			Method:        rs.Method,
+			RouteTemplate: rs.RouteTemplate,
+			Route:         rs.RouteTemplate,
+			Invocations:   rs.Total,
+			Errors:        rs.Failures,
+			Status2xx:     rs.Status2xx,
+			Status4xx:     rs.Status4xx,
+			Status5xx:     rs.Status5xx,
 		}
 		if rs.Total > 0 {
 			re.ErrorRate = math.Round(float64(rs.Failures)/float64(rs.Total)*10000) / 100
@@ -963,7 +977,10 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 		if routes[i].Invocations != routes[j].Invocations {
 			return routes[i].Invocations > routes[j].Invocations
 		}
-		return routes[i].Route < routes[j].Route
+		if routes[i].Route != routes[j].Route {
+			return routes[i].Route < routes[j].Route
+		}
+		return routes[i].Method < routes[j].Method
 	})
 
 	if len(routes) > limit {

@@ -91,6 +91,40 @@
         margin-bottom: 16px;
         scroll-margin-top: 24px;
       }
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .section-head h2 {
+        margin-bottom: 0;
+      }
+      .window-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .window-btn {
+        background: var(--bg-elevated);
+        color: var(--fg-secondary);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 4px 10px;
+        font-size: 12px;
+        font-family: var(--font-mono);
+        cursor: pointer;
+      }
+      .window-btn:hover {
+        color: var(--fg);
+        border-color: var(--border-hover);
+      }
+      .window-btn.active {
+        color: var(--fg);
+        border-color: var(--blue);
+        background: rgba(0, 112, 243, 0.12);
+      }
       .header {
         display: flex;
         align-items: center;
@@ -438,7 +472,10 @@
     <main id="main">
       <!-- KPI Cards -->
       <section aria-label="Key metrics">
-        <h2 id="kpi-heading" style="scroll-margin-top: 24px">Overview</h2>
+        <h2 id="kpi-heading" style="scroll-margin-top: 24px">
+          Overview
+          <span style="font-weight: 400; color: var(--fg-muted)">(1h)</span>
+        </h2>
         <div class="kpi-row" id="kpi-row">
           <div
             class="kpi-card skeleton"
@@ -481,15 +518,33 @@
 
       <!-- Routes table -->
       <section aria-label="Routes">
-        <h2 style="scroll-margin-top: 24px">
-          Routes
-          <span style="font-weight: 400; color: var(--fg-muted)">(5m)</span>
-        </h2>
+        <div class="section-head">
+          <h2 id="routes-heading" style="scroll-margin-top: 24px">
+            Routes
+            <span
+              id="routes-window-label"
+              style="font-weight: 400; color: var(--fg-muted)"
+              >(1h)</span
+            >
+          </h2>
+          <div class="window-toggle" role="group" aria-label="Routes time window">
+            <button class="window-btn" data-route-window="5m" aria-pressed="false">
+              5m
+            </button>
+            <button class="window-btn" data-route-window="30m" aria-pressed="false">
+              30m
+            </button>
+            <button class="window-btn active" data-route-window="1h" aria-pressed="true">
+              1h
+            </button>
+          </div>
+        </div>
         <div class="table-wrap">
           <table id="routes-table">
             <thead>
               <tr>
                 <th>Service</th>
+                <th>Method</th>
                 <th>Route</th>
                 <th class="num">Invocations</th>
                 <th class="num">Errors</th>
@@ -502,7 +557,7 @@
             </thead>
             <tbody id="routes-body">
               <tr>
-                <td colspan="9" class="empty">Loading...</td>
+                <td colspan="10" class="empty">Loading...</td>
               </tr>
             </tbody>
           </table>
@@ -511,13 +566,23 @@
 
       <!-- Recent traces table -->
       <section aria-label="Recent traces">
-        <h2 style="scroll-margin-top: 24px">
-          Recent Traces
-          <span
-            id="traces-context"
-            style="font-weight: 400; color: var(--fg-muted)"
-          ></span>
-        </h2>
+        <div class="section-head">
+          <h2 style="scroll-margin-top: 24px">
+            Recent Traces
+            <span
+              id="traces-context"
+              style="font-weight: 400; color: var(--fg-muted)"
+            ></span>
+          </h2>
+          <button
+            id="traces-toggle-limit"
+            class="window-btn"
+            type="button"
+            aria-pressed="false"
+          >
+            See all
+          </button>
+        </div>
         <div class="table-wrap">
           <table id="traces-table">
             <thead>
@@ -608,6 +673,15 @@
 
         let tsChart = null;
         let lastTriggerEl = null;
+        let routeWindow = "1h";
+        let tracesShowAll = false;
+        const routeWindowText = {
+          "5m": "5 minutes",
+          "30m": "30 minutes",
+          "1h": "1 hour",
+        };
+        const traceLimitCollapsed = 10;
+        const traceLimitExpanded = 100;
 
         // --- Data fetching ---
 
@@ -626,13 +700,24 @@
         async function refreshKPIs() {
           try {
             const data = await fetchJSON(
-              "/v1/overview/timeseries?window=5m&step=5m",
+              "/v1/overview/timeseries?window=1h&step=5m",
             );
             showSampled(data.sampled);
-            const b = data.buckets;
-            const last = b.length > 0 ? b[b.length - 1] : null;
+            const b = Array.isArray(data.buckets) ? data.buckets : [];
+            const totalRequests = b.reduce(function (acc, bucket) {
+              return acc + (bucket.total || 0);
+            }, 0);
+            const totalFailures = b.reduce(function (acc, bucket) {
+              return acc + (bucket.failures || 0);
+            }, 0);
+            const latestWithData = b
+              .slice()
+              .reverse()
+              .find(function (bucket) {
+                return (bucket.total || 0) > 0;
+              });
             const row = document.getElementById("kpi-row");
-            if (!last || last.total === 0) {
+            if (totalRequests === 0) {
               row.innerHTML =
                 kpiCard("Requests", "0", "") +
                 kpiCard("Error Rate", "0", "%") +
@@ -641,12 +726,25 @@
                 kpiCard("P99", "—", "ms");
               return;
             }
+            const errorRate = (totalFailures / totalRequests) * 100;
             row.innerHTML =
-              kpiCard("Requests", nf.format(last.total), "") +
-              kpiCard("Error Rate", pf.format(last.error_rate), "%") +
-              kpiCard("P50", nf.format(last.p50), "ms") +
-              kpiCard("P95", nf.format(last.p95), "ms") +
-              kpiCard("P99", nf.format(last.p99), "ms");
+              kpiCard("Requests", nf.format(totalRequests), "") +
+              kpiCard("Error Rate", pf.format(errorRate), "%") +
+              kpiCard(
+                "P50",
+                latestWithData ? nf.format(latestWithData.p50 || 0) : "—",
+                "ms",
+              ) +
+              kpiCard(
+                "P95",
+                latestWithData ? nf.format(latestWithData.p95 || 0) : "—",
+                "ms",
+              ) +
+              kpiCard(
+                "P99",
+                latestWithData ? nf.format(latestWithData.p99 || 0) : "—",
+                "ms",
+              );
           } catch (e) {
             console.error("KPI fetch error:", e);
           }
@@ -797,11 +895,15 @@
 
         async function refreshRoutes() {
           try {
-            const data = await fetchJSON("/v1/routes?window=5m");
+            const data = await fetchJSON(
+              "/v1/routes?window=" + encodeURIComponent(routeWindow),
+            );
             const tbody = document.getElementById("routes-body");
             if (!data.routes || data.routes.length === 0) {
               tbody.innerHTML =
-                '<tr><td colspan="9" class="empty">No routes in the last 5 minutes</td></tr>';
+                '<tr><td colspan="10" class="empty">No routes in the last ' +
+                routeWindowText[routeWindow] +
+                "</td></tr>";
               return;
             }
             tbody.innerHTML = data.routes
@@ -810,6 +912,9 @@
                   "<tr>" +
                   '<td class="ellipsis">' +
                   esc(r.service) +
+                  "</td>" +
+                  "<td>" +
+                  esc(r.method || "UNKNOWN") +
                   "</td>" +
                   '<td class="ellipsis">' +
                   esc(r.route) +
@@ -844,13 +949,48 @@
           }
         }
 
+        function setRouteWindow(window, refreshNow) {
+          if (!routeWindowText[window]) return;
+          routeWindow = window;
+          var label = document.getElementById("routes-window-label");
+          if (label) {
+            label.textContent = "(" + window + ")";
+          }
+          document.querySelectorAll("[data-route-window]").forEach(function (btn) {
+            var active = btn.getAttribute("data-route-window") === routeWindow;
+            btn.classList.toggle("active", active);
+            btn.setAttribute("aria-pressed", active ? "true" : "false");
+          });
+          if (refreshNow !== false) {
+            refreshRoutes();
+          }
+        }
+
+        function currentTraceLimit() {
+          return tracesShowAll ? traceLimitExpanded : traceLimitCollapsed;
+        }
+
+        function updateTraceLimitToggle(rowsLoaded) {
+          const btn = document.getElementById("traces-toggle-limit");
+          if (!btn) return;
+          btn.textContent = tracesShowAll ? "Show less" : "See all";
+          btn.setAttribute("aria-pressed", tracesShowAll ? "true" : "false");
+
+          // Hide control when there is no data; otherwise keep it visible.
+          btn.style.display = rowsLoaded > 0 ? "inline-flex" : "none";
+        }
+
         async function refreshTraces() {
           try {
-            const data = await fetchJSON("/v1/traces/recent?limit=20");
+            const data = await fetchJSON(
+              "/v1/traces/recent?limit=" +
+                encodeURIComponent(String(currentTraceLimit())),
+            );
             const tbody = document.getElementById("traces-body");
             const serviceHeader = document.getElementById("traces-service-th");
             const tracesContext = document.getElementById("traces-context");
             const traces = Array.isArray(data) ? data : [];
+            updateTraceLimitToggle(traces.length);
             const uniqueServices = new Set();
             traces.forEach(function (t) {
               const svc = typeof t.service === "string" ? t.service.trim() : "";
@@ -1081,6 +1221,19 @@
             "Updated " + new Date().toLocaleTimeString();
         }
 
+        document.querySelectorAll("[data-route-window]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            setRouteWindow(btn.getAttribute("data-route-window"));
+          });
+        });
+        document
+          .getElementById("traces-toggle-limit")
+          .addEventListener("click", function () {
+            tracesShowAll = !tracesShowAll;
+            refreshTraces();
+          });
+
+        setRouteWindow(routeWindow, false);
         refreshAll();
         setInterval(refreshAll, 10000);
       })();

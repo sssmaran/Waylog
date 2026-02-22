@@ -39,6 +39,7 @@ func MiddlewareWithClient(client *waylog.Client) func(http.Handler) http.Handler
 			}
 
 			reqState := waylog.NewRequestState(time.Now(), http.StatusOK, caller, serviceName)
+			reqState.SetHTTPMethod(r.Method)
 			ctx := trace.WithContext(r.Context(), traceContext)
 			ctx = waylog.WithRequestState(ctx, reqState)
 
@@ -69,6 +70,13 @@ func MiddlewareWithClient(client *waylog.Client) func(http.Handler) http.Handler
 			}()
 
 			next.ServeHTTP(sw, r.WithContext(ctx))
+
+			// Capture route template from mux pattern if not explicitly set.
+			if _, alreadySet := reqState.RouteTemplate(); !alreadySet {
+				if pat := r.Pattern; pat != "" {
+					reqState.SetRouteTemplate(pat)
+				}
+			}
 		})
 	}
 }

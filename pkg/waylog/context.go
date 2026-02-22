@@ -16,6 +16,8 @@ type RequestState struct {
 	user              User
 	flow              string
 	flags             []string
+	httpMethod        string
+	routeTemplate     string
 	once              sync.Once
 	mu                sync.Mutex
 }
@@ -27,6 +29,10 @@ type userKey struct{}
 type flowKey struct{}
 
 type flagsKey struct{}
+
+type httpMethodKey struct{}
+
+type routeTemplateKey struct{}
 
 func WithRequestState(ctx context.Context, state *RequestState) context.Context {
 	return context.WithValue(ctx, requestStateKey{}, state)
@@ -191,4 +197,72 @@ func (s *RequestState) Flags() ([]string, bool) {
 	copied := make([]string, len(s.flags))
 	copy(copied, s.flags)
 	return copied, true
+}
+
+func (s *RequestState) SetHTTPMethod(method string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.httpMethod = method
+}
+
+func (s *RequestState) HTTPMethod() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.httpMethod, s.httpMethod != ""
+}
+
+func (s *RequestState) SetRouteTemplate(rt string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.routeTemplate = rt
+}
+
+func (s *RequestState) RouteTemplate() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.routeTemplate, s.routeTemplate != ""
+}
+
+func WithHTTPMethod(ctx context.Context, method string) context.Context {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		state.SetHTTPMethod(method)
+		return ctx
+	}
+	return context.WithValue(ctx, httpMethodKey{}, method)
+}
+
+func httpMethodFromContext(ctx context.Context) (string, bool) {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		return state.HTTPMethod()
+	}
+	m, ok := ctx.Value(httpMethodKey{}).(string)
+	return m, ok
+}
+
+func WithRouteTemplate(ctx context.Context, rt string) context.Context {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		state.SetRouteTemplate(rt)
+		return ctx
+	}
+	return context.WithValue(ctx, routeTemplateKey{}, rt)
+}
+
+func routeTemplateFromContext(ctx context.Context) (string, bool) {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		return state.RouteTemplate()
+	}
+	rt, ok := ctx.Value(routeTemplateKey{}).(string)
+	return rt, ok
 }

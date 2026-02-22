@@ -43,6 +43,8 @@ func (c *Client) assembleEvent(
 
 	flow, _ := flowFromContext(ctx)
 	flags, _ := flagsFromContext(ctx)
+	httpMethod, _ := httpMethodFromContext(ctx)
+	routeTemplate, _ := routeTemplateFromContext(ctx)
 
 	tc, _ := trace.FromContext(ctx)
 	traceID := tc.TraceID
@@ -90,11 +92,13 @@ func (c *Client) assembleEvent(
 
 		User: user,
 		Request: event.RequestContext{
-			TraceID:      traceID,
-			SpanID:       spanID,
-			ParentSpanID: parentSpanID,
-			Flow:         flow,
-			FeatureFlags: flags,
+			TraceID:       traceID,
+			SpanID:        spanID,
+			ParentSpanID:  parentSpanID,
+			HTTPMethod:    httpMethod,
+			RouteTemplate: routeTemplate,
+			Flow:          flow,
+			FeatureFlags:  flags,
 		},
 		System:  system,
 		Outcome: outcome,

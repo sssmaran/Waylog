@@ -117,3 +117,40 @@ func TestIsError(t *testing.T) {
 		t.Error("event with error context should be error")
 	}
 }
+
+func TestValidate_HTTPMethodAndRouteTemplate(t *testing.T) {
+	tests := []struct {
+		name    string
+		method  string
+		route   string
+		wantErr string
+	}{
+		{"valid GET", "GET", "/users/{id}", ""},
+		{"valid POST with route", "POST", "/users", ""},
+		{"both empty", "", "", ""},
+		{"method only", "GET", "", ""},
+		{"route only", "", "/health", ""},
+		{"invalid method", "INVALID", "", "not a valid HTTP method"},
+		{"lowercase method", "get", "", "not a valid HTTP method"},
+		{"missing leading slash", "GET", "users", "must start with /"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := validEvent()
+			ev.Request.HTTPMethod = tt.method
+			ev.Request.RouteTemplate = tt.route
+			err := ev.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.wantErr)
+				} else if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err, tt.wantErr)
+				}
+			}
+		})
+	}
+}
