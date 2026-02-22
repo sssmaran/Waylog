@@ -8,6 +8,9 @@ type RequestFacts struct {
 	RequestID string
 	SeenAt    time.Time // use Request.LastSeen as the request timestamp
 
+	// Canonical owner (root span's service). Empty until root merges.
+	RootService string
+
 	// Typically one service, but keep slice for future multi-service chains
 	Services []string // node IDs of service nodes (or service names if you prefer)
 	Errors   []string // node IDs of error nodes (or error codes if stored as labels/attrs)

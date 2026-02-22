@@ -32,6 +32,7 @@ func (b *Builder) Build(ev event.WideEvent) *core.Graph {
 			"latency_ms":  ev.Metrics.LatencyMs,
 			"success":     ev.Outcome.Success,
 			"status_code": ev.Outcome.StatusCode,
+			"service":     ev.System.Service,
 			"is_root":     isRoot,
 		},
 	}

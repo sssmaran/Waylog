@@ -1018,6 +1018,280 @@ func TestEvents_EventlogWriteFailRejects(t *testing.T) {
 	}
 }
 
+func TestOverviewTimeseries(t *testing.T) {
+	srv := makeTestServer()
+
+	t.Run("success", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/overview/timeseries?window=10m&step=5m", nil)
+		w := httptest.NewRecorder()
+		srv.OverviewTimeseries(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp struct {
+			Sampled bool `json:"sampled"`
+			Buckets []struct {
+				Start     string  `json:"start"`
+				End       string  `json:"end"`
+				Total     int     `json:"total"`
+				Failures  int     `json:"failures"`
+				ErrorRate float64 `json:"error_rate"`
+				Status2xx int     `json:"status_2xx"`
+				Status4xx int     `json:"status_4xx"`
+				Status5xx int     `json:"status_5xx"`
+				P50       int64   `json:"p50"`
+				P95       int64   `json:"p95"`
+				P99       int64   `json:"p99"`
+			} `json:"buckets"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid json: %v", err)
+		}
+		if len(resp.Buckets) != 2 {
+			t.Fatalf("expected 2 buckets, got %d", len(resp.Buckets))
+		}
+		// Should have at least one request across the buckets.
+		totalReqs := 0
+		for _, b := range resp.Buckets {
+			totalReqs += b.Total
+		}
+		if totalReqs < 1 {
+			t.Errorf("expected at least 1 request across buckets, got %d", totalReqs)
+		}
+	})
+
+	t.Run("guardrail_window_too_large", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/overview/timeseries?window=48h", nil)
+		w := httptest.NewRecorder()
+		srv.OverviewTimeseries(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("guardrail_step_too_small", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/overview/timeseries?step=5s", nil)
+		w := httptest.NewRecorder()
+		srv.OverviewTimeseries(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", w.Code)
+		}
+	})
+}
+
+func TestRoutes(t *testing.T) {
+	st := graphstore.NewStore()
+	b := build.NewBuilder()
+
+	events := []event.WideEvent{
+		testutil.MakeEvent(
+			testutil.WithTraceID("aaaa0000bbbb1111cccc2222dddd0001"),
+			testutil.WithSpanID("1111111111111111"),
+			testutil.WithService("api-gateway"),
+			testutil.WithEventName("api-gateway.request"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(40),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		),
+		testutil.MakeEvent(
+			testutil.WithTraceID("aaaa0000bbbb1111cccc2222dddd0002"),
+			testutil.WithSpanID("2222222222222222"),
+			testutil.WithService("api-gateway"),
+			testutil.WithEventName("api-gateway.request"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(60),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		),
+		testutil.MakeEvent(
+			testutil.WithTraceID("aaaa0000bbbb1111cccc2222dddd0003"),
+			testutil.WithSpanID("3333333333333333"),
+			testutil.WithService("checkout"),
+			testutil.WithEventName("checkout.request"),
+			testutil.WithStatusCode(502),
+			testutil.WithError("CHK_502", "checkout failed"),
+			testutil.WithLatency(100),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		),
+	}
+
+	for _, ev := range events {
+		st.Merge(b.Build(ev))
+	}
+
+	srv := &Server{store: st, builder: b}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/routes?window=10m", nil)
+	w := httptest.NewRecorder()
+	srv.Routes(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Sampled bool `json:"sampled"`
+		Routes  []struct {
+			Service      string  `json:"service"`
+			Route        string  `json:"route"`
+			Invocations  int     `json:"invocations"`
+			Errors       int     `json:"errors"`
+			ErrorRate    float64 `json:"error_rate"`
+			Status2xx    int     `json:"status_2xx"`
+			Status4xx    int     `json:"status_4xx"`
+			Status5xx    int     `json:"status_5xx"`
+			P75LatencyMs int64   `json:"p75_latency_ms"`
+		} `json:"routes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	if len(resp.Routes) < 2 {
+		t.Fatalf("expected at least 2 routes, got %d", len(resp.Routes))
+	}
+
+	// First route should be api-gateway (2 invocations) sorted by invocations desc.
+	if resp.Routes[0].Service != "api-gateway" {
+		t.Errorf("first route service = %q, want api-gateway", resp.Routes[0].Service)
+	}
+	if resp.Routes[0].Invocations != 2 {
+		t.Errorf("api-gateway invocations = %d, want 2", resp.Routes[0].Invocations)
+	}
+	if resp.Routes[0].Status2xx != 2 {
+		t.Errorf("api-gateway status_2xx = %d, want 2", resp.Routes[0].Status2xx)
+	}
+
+	// Second route: checkout with 1 error.
+	found := false
+	for _, r := range resp.Routes {
+		if r.Service == "checkout" {
+			found = true
+			if r.Invocations != 1 {
+				t.Errorf("checkout invocations = %d, want 1", r.Invocations)
+			}
+			if r.Errors != 1 {
+				t.Errorf("checkout errors = %d, want 1", r.Errors)
+			}
+			if r.ErrorRate != 100.0 {
+				t.Errorf("checkout error_rate = %.1f, want 100.0", r.ErrorRate)
+			}
+			if r.Status5xx != 1 {
+				t.Errorf("checkout status_5xx = %d, want 1", r.Status5xx)
+			}
+		}
+	}
+	if !found {
+		t.Error("checkout route not found")
+	}
+}
+
+func TestRoutes_RootServiceAttribution(t *testing.T) {
+	traceID := "aaaa0000bbbb1111cccc2222dddd9999"
+
+	t.Run("root_arrives_later", func(t *testing.T) {
+		st := graphstore.NewStore()
+		b := build.NewBuilder()
+
+		// Child span arrives first — service=payment, not the root.
+		child := testutil.MakeEvent(
+			testutil.WithTraceID(traceID),
+			testutil.WithSpanID("2222222222222222"),
+			testutil.WithParentSpanID("1111111111111111"),
+			testutil.WithService("payment"),
+			testutil.WithEventName("payment.request"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(10),
+			testutil.WithTimestamp(time.Now().Add(-2*time.Minute)),
+		)
+		st.Merge(b.Build(child))
+
+		// Root span arrives later — service=api-gateway.
+		root := testutil.MakeEvent(
+			testutil.WithTraceID(traceID),
+			testutil.WithSpanID("1111111111111111"),
+			testutil.WithService("api-gateway"),
+			testutil.WithEventName("api-gateway.request"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(50),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		)
+		st.Merge(b.Build(root))
+
+		srv := &Server{store: st, builder: b}
+		req := httptest.NewRequest(http.MethodGet, "/v1/routes?window=10m", nil)
+		w := httptest.NewRecorder()
+		srv.Routes(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp struct {
+			Routes []struct {
+				Service string `json:"service"`
+				Route   string `json:"route"`
+			} `json:"routes"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid json: %v", err)
+		}
+		if len(resp.Routes) != 1 {
+			t.Fatalf("expected 1 route, got %d", len(resp.Routes))
+		}
+		if resp.Routes[0].Service != "api-gateway" {
+			t.Errorf("service = %q, want api-gateway (root_service)", resp.Routes[0].Service)
+		}
+	})
+
+	t.Run("root_absent_fallback", func(t *testing.T) {
+		st := graphstore.NewStore()
+		b := build.NewBuilder()
+
+		// Only a child span — no root span arrives.
+		child := testutil.MakeEvent(
+			testutil.WithTraceID(traceID),
+			testutil.WithSpanID("2222222222222222"),
+			testutil.WithParentSpanID("1111111111111111"),
+			testutil.WithService("payment"),
+			testutil.WithEventName("payment.request"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(10),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		)
+		st.Merge(b.Build(child))
+
+		srv := &Server{store: st, builder: b}
+		req := httptest.NewRequest(http.MethodGet, "/v1/routes?window=10m", nil)
+		w := httptest.NewRecorder()
+		srv.Routes(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp struct {
+			Routes []struct {
+				Service string `json:"service"`
+				Route   string `json:"route"`
+			} `json:"routes"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid json: %v", err)
+		}
+		if len(resp.Routes) != 1 {
+			t.Fatalf("expected 1 route, got %d", len(resp.Routes))
+		}
+		// Fallback: derived from event_name prefix.
+		if resp.Routes[0].Service != "payment" {
+			t.Errorf("service = %q, want payment (event_name fallback)", resp.Routes[0].Service)
+		}
+	})
+}
+
 func gatherMap(families []*dto.MetricFamily) map[string]*dto.MetricFamily {
 	m := make(map[string]*dto.MetricFamily, len(families))
 	for _, f := range families {

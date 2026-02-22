@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -480,6 +481,7 @@ func (s *Server) TraceStory(w http.ResponseWriter, r *http.Request) {
 // traceEntry is a summary of a single request for the recent traces list.
 type traceEntry struct {
 	TraceID    string    `json:"trace_id"`
+	Service    string    `json:"service,omitempty"`
 	Success    bool      `json:"success"`
 	StatusCode int       `json:"status_code"`
 	LatencyMs  int64     `json:"latency_ms"`
@@ -540,6 +542,15 @@ func recentTracesFromGraph(g *core.Graph, limit int) []traceEntry {
 		if v, ok := n.Attr["event_name"].(string); ok {
 			e.EventName = v
 		}
+		// Prefer root_service; fall back to event_name prefix.
+		svc, _ := n.Attr["root_service"].(string)
+		if svc == "" && e.EventName != "" {
+			svc = e.EventName
+			if dot := strings.IndexByte(e.EventName, '.'); dot > 0 {
+				svc = e.EventName[:dot]
+			}
+		}
+		e.Service = svc
 		entries = append(entries, e)
 	}
 
@@ -648,6 +659,321 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 		"sampled":        s.sampleRatePct < 100,
 		"top_errors":     topErrors,
 		"recent_traces":  recent,
+	})
+}
+
+// OverviewTimeseries handles GET /v1/overview/timeseries?window=1h&step=5m.
+func (s *Server) OverviewTimeseries(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+
+	window := 1 * time.Hour
+	if v := q.Get("window"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			http.Error(w, "invalid window", http.StatusBadRequest)
+			return
+		}
+		if d > 24*time.Hour {
+			http.Error(w, "window max 24h", http.StatusBadRequest)
+			return
+		}
+		window = d
+	}
+
+	step := 5 * time.Minute
+	if v := q.Get("step"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			http.Error(w, "invalid step", http.StatusBadRequest)
+			return
+		}
+		if d < 15*time.Second {
+			http.Error(w, "step min 15s", http.StatusBadRequest)
+			return
+		}
+		if d > 15*time.Minute {
+			http.Error(w, "step max 15m", http.StatusBadRequest)
+			return
+		}
+		step = d
+	}
+
+	points := int(window / step)
+	if points > 1440 {
+		http.Error(w, "too many points (window/step max 1440)", http.StatusBadRequest)
+		return
+	}
+
+	snap, ok := s.snapshotOrServiceUnavailable(w)
+	if !ok {
+		return
+	}
+
+	now := time.Now()
+	start := now.Add(-window)
+
+	type bucket struct {
+		Start     time.Time `json:"start"`
+		End       time.Time `json:"end"`
+		Total     int       `json:"total"`
+		Failures  int       `json:"failures"`
+		ErrorRate float64   `json:"error_rate"`
+		Status2xx int       `json:"status_2xx"`
+		Status4xx int       `json:"status_4xx"`
+		Status5xx int       `json:"status_5xx"`
+		P50       int64     `json:"p50"`
+		P95       int64     `json:"p95"`
+		P99       int64     `json:"p99"`
+		latencies []int64
+	}
+
+	buckets := make([]bucket, points)
+	for i := range buckets {
+		buckets[i].Start = start.Add(time.Duration(i) * step)
+		buckets[i].End = buckets[i].Start.Add(step)
+	}
+
+	for _, n := range snap.Nodes {
+		if n.Type != core.NodeRequest {
+			continue
+		}
+		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
+			continue
+		}
+		idx := int(n.LastSeen.Sub(start) / step)
+		if idx >= points {
+			idx = points - 1
+		}
+		b := &buckets[idx]
+		b.Total++
+
+		sc := attrToInt(n.Attr["status_code"])
+		switch {
+		case sc >= 200 && sc < 300:
+			b.Status2xx++
+		case sc >= 400 && sc < 500:
+			b.Status4xx++
+		case sc >= 500:
+			b.Status5xx++
+		}
+
+		success, _ := n.Attr["success"].(bool)
+		if !success {
+			b.Failures++
+		}
+
+		if lat := attrToInt64(n.Attr["latency_ms"]); lat > 0 {
+			b.latencies = append(b.latencies, lat)
+		}
+	}
+
+	// Compute percentiles and error rates.
+	type bucketOut struct {
+		Start     time.Time `json:"start"`
+		End       time.Time `json:"end"`
+		Total     int       `json:"total"`
+		Failures  int       `json:"failures"`
+		ErrorRate float64   `json:"error_rate"`
+		Status2xx int       `json:"status_2xx"`
+		Status4xx int       `json:"status_4xx"`
+		Status5xx int       `json:"status_5xx"`
+		P50       int64     `json:"p50"`
+		P95       int64     `json:"p95"`
+		P99       int64     `json:"p99"`
+	}
+
+	out := make([]bucketOut, points)
+	for i := range buckets {
+		b := &buckets[i]
+		out[i] = bucketOut{
+			Start: b.Start, End: b.End,
+			Total: b.Total, Failures: b.Failures,
+			Status2xx: b.Status2xx, Status4xx: b.Status4xx, Status5xx: b.Status5xx,
+		}
+		if b.Total > 0 {
+			out[i].ErrorRate = math.Round(float64(b.Failures)/float64(b.Total)*10000) / 100
+		}
+		if len(b.latencies) > 0 {
+			sort.Slice(b.latencies, func(a, c int) bool { return b.latencies[a] < b.latencies[c] })
+			out[i].P50 = percentile(b.latencies, 50)
+			out[i].P95 = percentile(b.latencies, 95)
+			out[i].P99 = percentile(b.latencies, 99)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"sampled": s.sampleRatePct < 100,
+		"buckets": out,
+	})
+}
+
+func percentile(sorted []int64, pct int) int64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := int(math.Ceil(float64(pct)/100*float64(len(sorted)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	return sorted[idx]
+}
+
+// Routes handles GET /v1/routes?window=5m&limit=20.
+func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+
+	window := 5 * time.Minute
+	if v := q.Get("window"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			window = d
+		}
+	}
+
+	limit := 20
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	snap, ok := s.snapshotOrServiceUnavailable(w)
+	if !ok {
+		return
+	}
+
+	now := time.Now()
+	start := now.Add(-window)
+
+	type routeStats struct {
+		Service   string
+		Route     string
+		Total     int
+		Failures  int
+		Status2xx int
+		Status4xx int
+		Status5xx int
+		latencies []int64
+	}
+
+	groups := map[string]*routeStats{}
+
+	for _, n := range snap.Nodes {
+		if n.Type != core.NodeRequest {
+			continue
+		}
+		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
+			continue
+		}
+
+		eventName, _ := n.Attr["event_name"].(string)
+		if eventName == "" {
+			continue
+		}
+
+		// Prefer root_service (set by merge when root span arrives).
+		// Fall back to event_name prefix when root hasn't been merged yet.
+		svc, _ := n.Attr["root_service"].(string)
+		if svc == "" {
+			svc = eventName
+			if dot := strings.IndexByte(eventName, '.'); dot > 0 {
+				svc = eventName[:dot]
+			}
+		}
+
+		key := svc + "\x00" + eventName
+		rs := groups[key]
+		if rs == nil {
+			rs = &routeStats{Service: svc, Route: eventName}
+			groups[key] = rs
+		}
+
+		rs.Total++
+
+		sc := attrToInt(n.Attr["status_code"])
+		switch {
+		case sc >= 200 && sc < 300:
+			rs.Status2xx++
+		case sc >= 400 && sc < 500:
+			rs.Status4xx++
+		case sc >= 500:
+			rs.Status5xx++
+		}
+
+		success, _ := n.Attr["success"].(bool)
+		if !success {
+			rs.Failures++
+		}
+
+		if lat := attrToInt64(n.Attr["latency_ms"]); lat > 0 {
+			rs.latencies = append(rs.latencies, lat)
+		}
+	}
+
+	type routeEntry struct {
+		Service      string  `json:"service"`
+		Route        string  `json:"route"`
+		Invocations  int     `json:"invocations"`
+		Errors       int     `json:"errors"`
+		ErrorRate    float64 `json:"error_rate"`
+		Status2xx    int     `json:"status_2xx"`
+		Status4xx    int     `json:"status_4xx"`
+		Status5xx    int     `json:"status_5xx"`
+		P75LatencyMs int64   `json:"p75_latency_ms"`
+	}
+
+	routes := make([]routeEntry, 0, len(groups))
+	for _, rs := range groups {
+		re := routeEntry{
+			Service:     rs.Service,
+			Route:       rs.Route,
+			Invocations: rs.Total,
+			Errors:      rs.Failures,
+			Status2xx:   rs.Status2xx,
+			Status4xx:   rs.Status4xx,
+			Status5xx:   rs.Status5xx,
+		}
+		if rs.Total > 0 {
+			re.ErrorRate = math.Round(float64(rs.Failures)/float64(rs.Total)*10000) / 100
+		}
+		if len(rs.latencies) > 0 {
+			sort.Slice(rs.latencies, func(a, b int) bool { return rs.latencies[a] < rs.latencies[b] })
+			re.P75LatencyMs = percentile(rs.latencies, 75)
+		}
+		routes = append(routes, re)
+	}
+
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Invocations != routes[j].Invocations {
+			return routes[i].Invocations > routes[j].Invocations
+		}
+		return routes[i].Route < routes[j].Route
+	})
+
+	if len(routes) > limit {
+		routes = routes[:limit]
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"sampled": s.sampleRatePct < 100,
+		"routes":  routes,
 	})
 }
 

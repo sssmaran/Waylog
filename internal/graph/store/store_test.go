@@ -347,3 +347,55 @@ func TestStore_Index_Restore_Rebuilds(t *testing.T) {
 		t.Errorf("edges grew from %d to %d after duplicate merge post-Restore", edgesBefore, edgesAfter)
 	}
 }
+
+func TestStore_LateRootMerge_UpdatesRootService(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa03"
+	reqID := core.ID("request", traceID)
+
+	// Child span arrives first — same service set as root will use,
+	// so Services/Errors/Flags don't change when root merges.
+	child := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("2222222222222222"),
+		testutil.WithParentSpanID("1111111111111111"),
+		testutil.WithService("api-gateway"),
+		testutil.WithStatusCode(200),
+		testutil.WithEventName("api-gateway.request"),
+	)
+	s.Merge(b.Build(child))
+
+	// Before root: RootService should be empty.
+	facts1, ok := s.requestFacts[reqID]
+	if !ok {
+		t.Fatal("requestFacts not found after child merge")
+	}
+	if facts1.RootService != "" {
+		t.Errorf("RootService = %q before root merge, want empty", facts1.RootService)
+	}
+
+	// Root span arrives — counter-relevant fields (Services/Errors/Flags) unchanged.
+	root := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("1111111111111111"),
+		testutil.WithService("api-gateway"),
+		testutil.WithStatusCode(200),
+		testutil.WithEventName("api-gateway.request"),
+	)
+	s.Merge(b.Build(root))
+
+	// After root: RootService must be set even though counters didn't change.
+	facts2, ok := s.requestFacts[reqID]
+	if !ok {
+		t.Fatal("requestFacts not found after root merge")
+	}
+	if facts2.RootService != "api-gateway" {
+		t.Errorf("RootService = %q after root merge, want api-gateway", facts2.RootService)
+	}
+
+	// Counter-relevant fields should be identical (no spurious recompute).
+	if !factsEqual(facts1, facts2) {
+		t.Error("counter-relevant fields changed unexpectedly")
+	}
+}

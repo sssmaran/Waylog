@@ -24,7 +24,7 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
+# env files (deploy/*.env are tracked — no secrets, just config presets)
 .env
 
 # Editor/IDE
@@ -34,7 +34,6 @@ go.work.sum
 /*.log
 /data/
 *.md
-.env.example
 
 # Local runtime/build artifacts
 /ingest
@@ -46,5 +45,3 @@ go.work.sum
 /checkout-demo
 /db-demo
 /payment-demo
-
-.github/workflows/

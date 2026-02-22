@@ -6,7 +6,7 @@ info:
 
     Write endpoints require authentication via API key.
     Read endpoints are open (protected by CORS only).
-  version: 0.1.0
+  version: 0.2.0
 servers:
   - url: /
 paths:
@@ -44,6 +44,110 @@ paths:
           description: Method Not Allowed
         '413':
           description: Request Entity Too Large
+        '503':
+          description: Event log unavailable
+
+  /v1/events/validate:
+    post:
+      summary: Dry-run event validation
+      description: |
+        Validates a WideEvent payload without ingesting it.
+        Returns {valid: true} on success or {valid: false, errors: [...]} on failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WideEvent'
+      responses:
+        '200':
+          description: Valid event
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: true
+        '400':
+          description: Invalid event
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: false
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        '405':
+          description: Method Not Allowed
+        '413':
+          description: Request Entity Too Large
+
+  /v1/events/search:
+    get:
+      summary: Search raw event log
+      description: |
+        Searches the append-only event log by filters.
+        At least one filter is required. Returns matching events.
+      parameters:
+        - in: query
+          name: trace_id
+          schema:
+            type: string
+        - in: query
+          name: user_id
+          schema:
+            type: string
+        - in: query
+          name: service
+          schema:
+            type: string
+        - in: query
+          name: error_code
+          schema:
+            type: string
+        - in: query
+          name: start
+          schema:
+            type: string
+            format: date-time
+          description: RFC3339 start time filter
+        - in: query
+          name: end
+          schema:
+            type: string
+            format: date-time
+          description: RFC3339 end time filter
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WideEvent'
+                  count:
+                    type: integer
+        '400':
+          description: No filters provided or invalid time format
+        '503':
+          description: Event log not configured
 
   /v1/traces/story:
     get:
@@ -65,32 +169,36 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  story:
+                    type: object
+                    properties:
+                      trace_id:
+                        type: string
+                      chain:
+                        type: array
+                        items:
+                          type: object
+                      success:
+                        type: boolean
+                      first_fail_hop:
+                        type: object
+                        nullable: true
+                      hop_count:
+                        type: integer
+                  context:
+                    type: object
         '400':
           description: Missing trace_id query parameter
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
         '404':
           description: Trace not found
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
         '503':
           description: Service Unavailable (graph not ready)
 
   /v1/traces/recent:
     get:
       summary: Recent traces
-      description: Returns a list of recent trace summaries, ordered by time.
+      description: Returns a list of recent trace summaries, ordered by time descending.
       parameters:
         - in: query
           name: limit
@@ -110,7 +218,22 @@ paths:
                 type: array
                 items:
                   type: object
-                  additionalProperties: true
+                  properties:
+                    trace_id:
+                      type: string
+                    service:
+                      type: string
+                    success:
+                      type: boolean
+                    status_code:
+                      type: integer
+                    latency_ms:
+                      type: integer
+                    event_name:
+                      type: string
+                    timestamp:
+                      type: string
+                      format: date-time
         '503':
           description: Service Unavailable (graph not ready)
 
@@ -118,16 +241,22 @@ paths:
     get:
       summary: System overview
       description: |
-        Returns an overview of the system including service counts,
-        request rates, error rates, and top errors within the given window.
+        Returns an overview of the system including request counts,
+        error rates, top errors, and recent traces within the given window.
       parameters:
         - in: query
           name: window
-          required: false
           schema:
             type: string
             default: 5m
           description: Time window as a Go duration string (e.g. "5m", "1h")
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+          description: Max recent traces to include
       responses:
         '200':
           description: System overview stats
@@ -135,17 +264,243 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  window:
+                    type: string
+                  total_requests:
+                    type: integer
+                  total_failures:
+                    type: integer
+                  error_rate:
+                    type: number
+                  sampled:
+                    type: boolean
+                  top_errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code:
+                          type: string
+                        count:
+                          type: integer
+                  recent_traces:
+                    type: array
+                    items:
+                      type: object
+        '503':
+          description: Service Unavailable (graph not ready)
+
+  /v1/overview/timeseries:
+    get:
+      summary: Overview timeseries
+      description: |
+        Returns bucketed timeseries data for request counts, error rates,
+        status class breakdown, and latency percentiles.
+      parameters:
+        - in: query
+          name: window
+          schema:
+            type: string
+            default: 1h
+          description: Time window (max 24h)
+        - in: query
+          name: step
+          schema:
+            type: string
+            default: 5m
+          description: Bucket size (min 15s, max 15m). window/step must be <= 1440.
+      responses:
+        '200':
+          description: Timeseries buckets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sampled:
+                    type: boolean
+                  buckets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        start:
+                          type: string
+                          format: date-time
+                        end:
+                          type: string
+                          format: date-time
+                        total:
+                          type: integer
+                        failures:
+                          type: integer
+                        error_rate:
+                          type: number
+                        status_2xx:
+                          type: integer
+                        status_4xx:
+                          type: integer
+                        status_5xx:
+                          type: integer
+                        p50:
+                          type: integer
+                        p95:
+                          type: integer
+                        p99:
+                          type: integer
+        '400':
+          description: Invalid parameters or guardrail violation
+        '503':
+          description: Service Unavailable (graph not ready)
+
+  /v1/routes:
+    get:
+      summary: Route statistics
+      description: |
+        Returns per-route statistics grouped by (service, event_name),
+        sorted by invocation count descending.
+      parameters:
+        - in: query
+          name: window
+          schema:
+            type: string
+            default: 5m
+          description: Time window
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: Route statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sampled:
+                    type: boolean
+                  routes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        service:
+                          type: string
+                        route:
+                          type: string
+                        invocations:
+                          type: integer
+                        errors:
+                          type: integer
+                        error_rate:
+                          type: number
+                        status_2xx:
+                          type: integer
+                        status_4xx:
+                          type: integer
+                        status_5xx:
+                          type: integer
+                        p75_latency_ms:
+                          type: integer
         '503':
           description: Service Unavailable (graph not ready)
 
   /healthz:
     get:
-      summary: Health check
-      description: Returns 200 OK when the server is running.
+      summary: Health check (JSON)
+      description: |
+        Always returns HTTP 200 with a JSON status summary.
+        Shows "ok" or "degraded" status, uptime, store size, and replay state.
+        Use /readyz for traffic gating, /livez for liveness.
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, degraded]
+                  uptime:
+                    type: string
+                  ready:
+                    type: boolean
+                  store:
+                    type: object
+                    properties:
+                      configured:
+                        type: boolean
+                      nodes:
+                        type: integer
+                      edges:
+                        type: integer
+                  event_log:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                  replay:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        enum: [none, ok, failed]
+                      error:
+                        type: string
+                      last_attempt:
+                        type: string
+                        format: date-time
+                      last_success:
+                        type: string
+                        format: date-time
+
+  /livez:
+    get:
+      summary: Liveness probe
+      description: Always returns 200 if the process is alive. Use for K8s livenessProbe.
       responses:
         '200':
           description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+
+  /readyz:
+    get:
+      summary: Readiness probe
+      description: |
+        Returns 200 when the server is ready to accept traffic, 503 otherwise.
+        Use for K8s readinessProbe.
+      responses:
+        '200':
+          description: Ready
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+        '503':
+          description: Not ready
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: Returns all waylog_* metrics in Prometheus text exposition format.
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
 
 components:
   securitySchemes:

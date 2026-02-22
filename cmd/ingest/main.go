@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sssmaran/WaylogCLI/internal/cli"
 	"github.com/sssmaran/WaylogCLI/internal/config"
+	"github.com/sssmaran/WaylogCLI/internal/dashboard"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
@@ -171,6 +172,14 @@ func main() {
 	mux.HandleFunc("/v1/traces/recent", ingest.CORSWrap(corsOrigin, ingestServer.RecentTraces))
 	mux.HandleFunc("/v1/overview", ingest.CORSWrap(corsOrigin, ingestServer.Overview))
 	mux.HandleFunc("/v1/events/search", ingest.CORSWrap(corsOrigin, ingestServer.EventSearch))
+	mux.HandleFunc("/v1/overview/timeseries", ingest.CORSWrap(corsOrigin, ingestServer.OverviewTimeseries))
+	mux.HandleFunc("/v1/routes", ingest.CORSWrap(corsOrigin, ingestServer.Routes))
+
+	// Dashboard UI
+	mux.Handle("/ui/", http.StripPrefix("/ui/", dashboard.Handler()))
+	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
+	})
 
 	server := &http.Server{
 		Addr:              addr,

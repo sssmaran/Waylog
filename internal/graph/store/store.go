@@ -121,8 +121,8 @@ func (s *Store) Merge(g *core.Graph) {
 			if !factsEqual(oldFacts, facts) {
 				s.reverseFactsFromCountersLocked(oldFacts)
 				s.applyFactsToCountersLocked(facts)
-				s.requestFacts[id] = facts
 			}
+			s.requestFacts[id] = facts
 			continue
 		}
 
@@ -232,7 +232,7 @@ func mergeNodeTime(dst, src *core.Node) {
 
 // mergeRequestAttrs applies deterministic merge rules for request nodes.
 // - success: AND (any failure makes the request failed)
-// - If incoming is from root span (is_root=true): overwrite status_code, latency_ms, event_name, flow
+// - If incoming is from root span (is_root=true): overwrite status_code, latency_ms, event_name, flow, root_service
 // - error_codes: accumulated as deduplicated []string
 func mergeRequestAttrs(dst, src *core.Node) {
 	if dst.Attr == nil {
@@ -260,6 +260,9 @@ func mergeRequestAttrs(dst, src *core.Node) {
 		}
 		if v, ok := src.Attr["flow"]; ok {
 			dst.Attr["flow"] = v
+		}
+		if v, ok := src.Attr["service"]; ok {
+			dst.Attr["root_service"] = v
 		}
 		dst.Attr["is_root"] = true
 	}
@@ -574,7 +577,7 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 		SeenAt:    reqNode.LastSeen,
 	}
 
-	// Extract latency from request node attributes
+	// Extract attrs from request node
 	if reqNode.Attr != nil {
 		switch v := reqNode.Attr["latency_ms"].(type) {
 		case int64:
@@ -583,6 +586,9 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 			f.LatencyMs = int64(v)
 		case float64:
 			f.LatencyMs = int64(v)
+		}
+		if rs, ok := reqNode.Attr["root_service"].(string); ok {
+			f.RootService = rs
 		}
 	}
 
