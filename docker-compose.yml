@@ -45,6 +45,14 @@ services:
       LOG_LEVEL: info
       CORS_ORIGIN: "*"
       WAYLOG_API_KEY: ${WAYLOG_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      GEMINI_API_BASE: ${GEMINI_API_BASE:-}
+      GEMINI_TOOL_MODE: ${GEMINI_TOOL_MODE:-text}
+      ASK_MAX_STEPS_DEFAULT: ${ASK_MAX_STEPS_DEFAULT:-5}
+      ASK_MAX_STEPS_MAX: ${ASK_MAX_STEPS_MAX:-8}
+      DASHBOARD_REFRESH_SEC: ${DASHBOARD_REFRESH_SEC:-10}
     volumes:
       - ingest-data:/data
     healthcheck:

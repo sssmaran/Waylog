@@ -106,6 +106,12 @@
         align-items: center;
         gap: 6px;
       }
+      .route-controls {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
       .window-btn {
         background: var(--bg-elevated);
         color: var(--fg-secondary);
@@ -135,6 +141,13 @@
       .header h1 {
         margin-bottom: 0;
       }
+      .header-right {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
       .sampling-badge {
         display: inline-flex;
         align-items: center;
@@ -149,9 +162,301 @@
       .last-update {
         font-size: 12px;
         color: var(--fg-muted);
-        margin-left: auto;
         font-variant-numeric: tabular-nums;
         font-family: var(--font-mono);
+      }
+
+      /* Ask drawer layout */
+      #ask-backdrop {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 45;
+      }
+      body.ask-open #ask-backdrop {
+        display: block;
+      }
+      #ask-section {
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: min(500px, 94vw);
+        height: 100vh;
+        padding: 16px;
+        background: var(--bg);
+        border-left: 1px solid var(--border);
+        transform: translateX(100%);
+        transition: transform 0.2s ease;
+        z-index: 50;
+        overflow-y: auto;
+      }
+      body.ask-open #ask-section {
+        transform: translateX(0);
+      }
+      .ask-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .ask-head h2 {
+        margin-bottom: 0;
+      }
+      #ask-close {
+        background: none;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        color: var(--fg-secondary);
+        cursor: pointer;
+        padding: 4px 10px;
+        min-height: 32px;
+      }
+      #ask-close:hover {
+        color: var(--fg);
+        border-color: var(--border-hover);
+      }
+
+      /* Ask panel */
+      .ask-panel {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 16px;
+        box-shadow: var(--shadow);
+        margin-bottom: 24px;
+      }
+      .ask-form {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .ask-input {
+        flex: 1;
+        min-width: 240px;
+        background: var(--bg-elevated);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 10px 12px;
+        font-family: var(--font-sans);
+        font-size: 14px;
+        min-height: 40px;
+      }
+      .ask-input::placeholder {
+        color: var(--fg-muted);
+      }
+      .ask-btn {
+        background: var(--blue);
+        color: #fff;
+        border: 1px solid transparent;
+        border-radius: var(--radius-inline);
+        padding: 10px 14px;
+        font-weight: 500;
+        cursor: pointer;
+        min-height: 40px;
+        min-width: 88px;
+      }
+      .ask-btn[disabled] {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .ask-status {
+        margin-top: 8px;
+        color: var(--fg-secondary);
+        font-size: 12px;
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+        min-height: 18px;
+      }
+      .ask-answer {
+        margin-top: 10px;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 12px;
+        font-family: var(--font-sans);
+        font-size: 13px;
+        line-height: 1.45;
+        min-height: 74px;
+      }
+      .ask-answer .empty {
+        color: var(--fg-muted);
+      }
+      .ask-answer p {
+        margin: 0 0 8px;
+      }
+      .ask-answer p:last-child {
+        margin-bottom: 0;
+      }
+      .ask-answer ul {
+        margin: 0 0 8px 18px;
+        padding: 0;
+      }
+      .ask-answer code {
+        font-family: var(--font-mono);
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 1px 4px;
+        font-size: 12px;
+      }
+      .trace-summary-card {
+        display: grid;
+        gap: 10px;
+      }
+      .trace-summary-title {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .trace-summary-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 6px 10px;
+        align-items: start;
+      }
+      .trace-summary-grid dt {
+        color: var(--fg-muted);
+        font-size: 12px;
+        font-family: var(--font-mono);
+      }
+      .trace-summary-grid dd {
+        margin: 0;
+        word-break: break-word;
+      }
+      .trace-summary-path {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--fg-secondary);
+      }
+      .ask-suggestions {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .ask-suggestion {
+        background: var(--bg-elevated);
+        color: var(--fg-secondary);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 6px 10px;
+        font-size: 12px;
+        font-family: var(--font-mono);
+        cursor: pointer;
+      }
+      .ask-suggestion:hover {
+        color: var(--fg);
+        border-color: var(--border-hover);
+      }
+      .ask-tools {
+        margin-top: 10px;
+      }
+      .ask-tools-title {
+        margin: 0 0 8px;
+        color: var(--fg-secondary);
+        font-size: 12px;
+        font-family: var(--font-mono);
+      }
+      .ask-steps {
+        display: grid;
+        gap: 8px;
+      }
+      .ask-steps .empty {
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        color: var(--fg-muted);
+        font-size: 12px;
+        padding: 10px;
+      }
+      .ask-step {
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        overflow: hidden;
+      }
+      .ask-step summary {
+        list-style: none;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 10px 12px;
+      }
+      .ask-step summary::-webkit-details-marker {
+        display: none;
+      }
+      .ask-step-main {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .ask-step-index {
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .ask-step-tool {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .ask-step-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .ask-step-time {
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      .ask-step-badge {
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-size: 10px;
+        font-family: var(--font-mono);
+        padding: 2px 8px;
+      }
+      .ask-step-badge.ok {
+        background: rgba(0, 200, 83, 0.12);
+        border-color: rgba(0, 200, 83, 0.5);
+        color: #7ee787;
+      }
+      .ask-step-badge.err {
+        background: rgba(255, 69, 58, 0.12);
+        border-color: rgba(255, 69, 58, 0.5);
+        color: #ff7b72;
+      }
+      .ask-step-body {
+        padding: 0 12px 12px;
+        display: grid;
+        gap: 8px;
+      }
+      .ask-step-block-title {
+        color: var(--fg-muted);
+        font-size: 11px;
+        font-family: var(--font-mono);
+        margin-bottom: 4px;
+      }
+      .ask-step-block pre {
+        margin: 0;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 10px;
+        font-size: 11px;
+        font-family: var(--font-mono);
+        white-space: pre-wrap;
+        word-break: break-word;
       }
 
       /* KPI cards */
@@ -458,18 +763,65 @@
 
     <div class="header">
       <h1>Waylog Dashboard</h1>
-      <span
-        id="sampling-badge"
-        class="sampling-badge"
-        style="display: none"
-        aria-label="Data is sampled"
-      >
-        <span aria-hidden="true">&#9888;</span> Sampled
-      </span>
-      <span class="last-update" id="last-update" aria-live="polite"></span>
+      <div class="header-right">
+        <span
+          id="sampling-badge"
+          class="sampling-badge"
+          style="display: none"
+          aria-label="Data is sampled"
+        >
+          <span aria-hidden="true">&#9888;</span> Sampled
+        </span>
+        <span class="last-update" id="last-update" aria-live="polite"></span>
+        <button
+          id="ask-toggle"
+          class="window-btn"
+          type="button"
+          aria-controls="ask-section"
+          aria-expanded="false"
+        >
+          Ask
+        </button>
+      </div>
     </div>
 
+    <div id="ask-backdrop" aria-hidden="true"></div>
+
     <main id="main">
+      <!-- Ask panel -->
+      <section id="ask-section" aria-label="Ask Waylog">
+        <div class="ask-head">
+          <h2 style="scroll-margin-top: 24px">Ask Waylog</h2>
+          <button id="ask-close" type="button" aria-label="Close Ask panel">
+            Close
+          </button>
+        </div>
+        <div class="ask-panel">
+          <form id="ask-form" class="ask-form">
+            <input
+              id="ask-input"
+              class="ask-input"
+              type="text"
+              maxlength="500"
+              placeholder="Try: trace summary &lt;trace-id&gt; or show top errors"
+              aria-label="Ask Waylog question"
+            />
+            <button id="ask-btn" class="ask-btn" type="submit">Ask</button>
+          </form>
+          <div id="ask-status" class="ask-status" aria-live="polite"></div>
+          <div id="ask-answer" class="ask-answer">
+            <div class="empty">No query yet.</div>
+          </div>
+          <div class="ask-tools">
+            <h3 class="ask-tools-title">Tool Output</h3>
+            <div id="ask-steps" class="ask-steps">
+              <div class="empty">No tool executions for this answer.</div>
+            </div>
+          </div>
+          <div id="ask-suggestions" class="ask-suggestions"></div>
+        </div>
+      </section>
+
       <!-- KPI Cards -->
       <section aria-label="Key metrics">
         <h2 id="kpi-heading" style="scroll-margin-top: 24px">
@@ -522,21 +874,39 @@
           <h2 id="routes-heading" style="scroll-margin-top: 24px">
             Routes
             <span
-              id="routes-window-label"
+              id="routes-context-label"
               style="font-weight: 400; color: var(--fg-muted)"
-              >(1h)</span
+              >(1h • all)</span
             >
           </h2>
-          <div class="window-toggle" role="group" aria-label="Routes time window">
-            <button class="window-btn" data-route-window="5m" aria-pressed="false">
-              5m
-            </button>
-            <button class="window-btn" data-route-window="30m" aria-pressed="false">
-              30m
-            </button>
-            <button class="window-btn active" data-route-window="1h" aria-pressed="true">
-              1h
-            </button>
+          <div class="route-controls">
+            <div class="window-toggle" role="group" aria-label="Routes time window">
+              <button class="window-btn" data-route-window="5m" aria-pressed="false">
+                5m
+              </button>
+              <button class="window-btn" data-route-window="30m" aria-pressed="false">
+                30m
+              </button>
+              <button class="window-btn active" data-route-window="1h" aria-pressed="true">
+                1h
+              </button>
+            </div>
+            <div class="window-toggle" role="group" aria-label="Routes filter">
+              <button
+                class="window-btn active"
+                data-route-failures-only="false"
+                aria-pressed="true"
+              >
+                All
+              </button>
+              <button
+                class="window-btn"
+                data-route-failures-only="true"
+                aria-pressed="false"
+              >
+                Failed only
+              </button>
+            </div>
           </div>
         </div>
         <div class="table-wrap">
@@ -588,9 +958,7 @@
             <thead>
               <tr>
                 <th>Trace ID</th>
-                <th id="traces-service-th" style="display: none">
-                  Entry Service
-                </th>
+                <th>Failure Source</th>
                 <th>Event</th>
                 <th>Status</th>
                 <th class="num">Latency (ms)</th>
@@ -599,7 +967,7 @@
             </thead>
             <tbody id="traces-body">
               <tr>
-                <td colspan="5" class="empty">Loading...</td>
+                <td colspan="6" class="empty">Loading...</td>
               </tr>
             </tbody>
           </table>
@@ -646,12 +1014,6 @@
         }
 
         function statusBadge(code, success) {
-          if (success)
-            return (
-              '<span class="badge badge-success" aria-label="Success"><span aria-hidden="true">&#10003;</span> ' +
-              code +
-              "</span>"
-            );
           if (code >= 500)
             return (
               '<span class="badge badge-error" aria-label="Server error"><span aria-hidden="true">&#10007;</span> ' +
@@ -661,6 +1023,12 @@
           if (code >= 400)
             return (
               '<span class="badge badge-warn" aria-label="Client error"><span aria-hidden="true">&#9888;</span> ' +
+              code +
+              "</span>"
+            );
+          if (!success)
+            return (
+              '<span class="badge badge-error" aria-label="Failed"><span aria-hidden="true">&#10007;</span> ' +
               code +
               "</span>"
             );
@@ -674,11 +1042,18 @@
         let tsChart = null;
         let lastTriggerEl = null;
         let routeWindow = "1h";
+        let routeFailuresOnly = false;
         let tracesShowAll = false;
+        let refreshIntervalMs = 10000;
+        let askMaxStepsDefault = 0;
         const routeWindowText = {
           "5m": "5 minutes",
           "30m": "30 minutes",
           "1h": "1 hour",
+        };
+        const routeFilterText = {
+          all: "all",
+          failed: "failed only",
         };
         const traceLimitCollapsed = 10;
         const traceLimitExpanded = 100;
@@ -691,6 +1066,280 @@
           return r.json();
         }
 
+        async function askWaylog(prompt, maxSteps) {
+          const payload = { prompt: prompt };
+          if (typeof maxSteps === "number" && maxSteps > 0) {
+            payload.max_steps = maxSteps;
+          }
+          const r = await fetch("/v1/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const msg = await r.text();
+            throw new Error(msg || "request failed");
+          }
+          return r.json();
+        }
+
+        function prettyJSON(value) {
+          if (value === undefined || value === null) return "";
+          try {
+            return JSON.stringify(value, null, 2);
+          } catch (e) {
+            return String(value);
+          }
+        }
+
+        function formatInlineMarkdown(text) {
+          var out = esc(text || "");
+          out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+          out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+          return out;
+        }
+
+        function markdownishToHTML(text) {
+          var raw = String(text || "").replace(/\r\n/g, "\n");
+          var lines = raw.split("\n");
+          var html = [];
+          var inList = false;
+
+          function closeListIfOpen() {
+            if (inList) {
+              html.push("</ul>");
+              inList = false;
+            }
+          }
+
+          lines.forEach(function (line) {
+            var trimmed = line.trim();
+            if (!trimmed) {
+              closeListIfOpen();
+              return;
+            }
+            if (trimmed.startsWith("- ")) {
+              if (!inList) {
+                html.push("<ul>");
+                inList = true;
+              }
+              html.push(
+                "<li>" + formatInlineMarkdown(trimmed.slice(2).trim()) + "</li>",
+              );
+              return;
+            }
+            closeListIfOpen();
+            html.push("<p>" + formatInlineMarkdown(trimmed) + "</p>");
+          });
+          closeListIfOpen();
+
+          if (html.length === 0) {
+            return '<div class="empty">(empty answer)</div>';
+          }
+          return html.join("");
+        }
+
+        function latestToolResult(steps, toolName) {
+          if (!Array.isArray(steps)) return null;
+          for (var i = steps.length - 1; i >= 0; i--) {
+            var step = steps[i];
+            if (
+              step &&
+              step.tool === toolName &&
+              step.result &&
+              typeof step.result === "object"
+            ) {
+              return step.result;
+            }
+          }
+          return null;
+        }
+
+        function renderTraceSummary(summary) {
+          if (!summary || typeof summary !== "object") return "";
+          var traceID =
+            typeof summary.trace_id === "string" ? summary.trace_id : "";
+          if (!traceID) return "";
+          var requestID =
+            typeof summary.request_id === "string" ? summary.request_id : "—";
+          var eventName =
+            typeof summary.event_name === "string" && summary.event_name
+              ? summary.event_name
+              : "—";
+          var flow =
+            typeof summary.flow === "string" && summary.flow ? summary.flow : "—";
+          var latency =
+            summary.latency_ms === undefined || summary.latency_ms === null
+              ? "—"
+              : String(summary.latency_ms);
+          var roots = Array.isArray(summary.root_span_ids)
+            ? summary.root_span_ids.filter(function (v) {
+                return typeof v === "string" && v;
+              })
+            : [];
+          var rootsText = roots.length ? roots.join(", ") : "—";
+          var paths = Array.isArray(summary.paths)
+            ? summary.paths
+                .filter(function (path) {
+                  return Array.isArray(path) && path.length > 0;
+                })
+                .map(function (path) {
+                  return path.join(" -> ");
+                })
+            : [];
+          var pathText = paths.length ? paths.join(" | ") : "—";
+
+          return (
+            '<div class="trace-summary-card">' +
+            '<h4 class="trace-summary-title">Trace Summary <code>' +
+            esc(traceID) +
+            "</code></h4>" +
+            "<dl class=\"trace-summary-grid\">" +
+            "<dt>Request</dt><dd><code>" +
+            esc(requestID) +
+            "</code></dd>" +
+            "<dt>Event</dt><dd>" +
+            esc(eventName) +
+            "</dd>" +
+            "<dt>Flow</dt><dd>" +
+            esc(flow) +
+            "</dd>" +
+            "<dt>Latency</dt><dd><code>" +
+            esc(latency) +
+            " ms</code></dd>" +
+            "<dt>Root Span(s)</dt><dd><code>" +
+            esc(rootsText) +
+            "</code></dd>" +
+            "<dt>Service Path</dt><dd class=\"trace-summary-path\">" +
+            esc(pathText) +
+            "</dd>" +
+            "</dl>" +
+            "</div>"
+          );
+        }
+
+        function renderAskAnswer(answer, steps) {
+          var askAnswer = document.getElementById("ask-answer");
+          var traceSummary = latestToolResult(steps, "trace_summary");
+          if (traceSummary) {
+            var summaryHTML = renderTraceSummary(traceSummary);
+            if (summaryHTML) {
+              askAnswer.innerHTML = summaryHTML;
+              return;
+            }
+          }
+          askAnswer.innerHTML = markdownishToHTML(answer);
+        }
+
+        function renderAskSteps(steps) {
+          const root = document.getElementById("ask-steps");
+          if (!Array.isArray(steps) || steps.length === 0) {
+            root.innerHTML =
+              '<div class="empty">No tool executions for this answer.</div>';
+            return;
+          }
+
+          root.innerHTML = steps
+            .map(function (step) {
+              const index =
+                typeof step.index === "number" && step.index > 0
+                  ? step.index
+                  : 0;
+              const tool = step.tool || "unknown_tool";
+              const isError = !!step.error;
+              const badge = isError
+                ? '<span class="ask-step-badge err">ERROR</span>'
+                : '<span class="ask-step-badge ok">OK</span>';
+              const ms =
+                typeof step.duration_ms === "number"
+                  ? nf.format(step.duration_ms) + "ms"
+                  : "—";
+              const params = prettyJSON(step.params);
+              const result = prettyJSON(step.result);
+              const errorText = isError ? String(step.error) : "";
+
+              let body = "";
+              if (params) {
+                body +=
+                  '<div class="ask-step-block"><div class="ask-step-block-title">Params</div><pre>' +
+                  esc(params) +
+                  "</pre></div>";
+              }
+              if (isError) {
+                body +=
+                  '<div class="ask-step-block"><div class="ask-step-block-title">Error</div><pre>' +
+                  esc(errorText) +
+                  "</pre></div>";
+              } else if (result) {
+                body +=
+                  '<div class="ask-step-block"><div class="ask-step-block-title">Result</div><pre>' +
+                  esc(result) +
+                  "</pre></div>";
+              }
+
+              return (
+                '<details class="ask-step" open>' +
+                "<summary>" +
+                '<span class="ask-step-main">' +
+                '<span class="ask-step-index">#' +
+                esc(String(index)) +
+                "</span>" +
+                '<span class="ask-step-tool">' +
+                esc(tool) +
+                "</span>" +
+                "</span>" +
+                '<span class="ask-step-meta">' +
+                '<span class="ask-step-time">' +
+                esc(ms) +
+                "</span>" +
+                badge +
+                "</span>" +
+                "</summary>" +
+                '<div class="ask-step-body">' +
+                body +
+                "</div>" +
+                "</details>"
+              );
+            })
+            .join("");
+        }
+
+        async function loadCapabilities() {
+          try {
+            const caps = await fetchJSON("/v1/capabilities");
+            if (
+              caps.dashboard &&
+              typeof caps.dashboard.refresh_interval_sec === "number" &&
+              caps.dashboard.refresh_interval_sec > 0
+            ) {
+              refreshIntervalMs = caps.dashboard.refresh_interval_sec * 1000;
+            }
+            if (caps.ask && typeof caps.ask.max_steps_default === "number") {
+              askMaxStepsDefault = caps.ask.max_steps_default;
+            }
+
+            const askEnabled = !!(caps.ask && caps.ask.enabled);
+            const askInput = document.getElementById("ask-input");
+            const askBtn = document.getElementById("ask-btn");
+            const askStatus = document.getElementById("ask-status");
+            if (!askEnabled) {
+              askInput.disabled = true;
+              askBtn.disabled = true;
+              askInput.placeholder = "Ask is disabled on this server";
+              askStatus.textContent = "Configure GEMINI_API_KEY to enable Ask.";
+              return;
+            }
+            if (caps.ask.model) {
+              askStatus.textContent =
+                "Model: " +
+                caps.ask.model +
+                (caps.ask.tool_mode ? " · " + caps.ask.tool_mode : "");
+            }
+          } catch (e) {
+            console.error("Capabilities fetch error:", e);
+          }
+        }
+
         function showSampled(sampled) {
           document.getElementById("sampling-badge").style.display = sampled
             ? "inline-flex"
@@ -699,23 +1348,10 @@
 
         async function refreshKPIs() {
           try {
-            const data = await fetchJSON(
-              "/v1/overview/timeseries?window=1h&step=5m",
-            );
+            const data = await fetchJSON("/v1/overview?window=1h");
             showSampled(data.sampled);
-            const b = Array.isArray(data.buckets) ? data.buckets : [];
-            const totalRequests = b.reduce(function (acc, bucket) {
-              return acc + (bucket.total || 0);
-            }, 0);
-            const totalFailures = b.reduce(function (acc, bucket) {
-              return acc + (bucket.failures || 0);
-            }, 0);
-            const latestWithData = b
-              .slice()
-              .reverse()
-              .find(function (bucket) {
-                return (bucket.total || 0) > 0;
-              });
+            const totalRequests = Number(data.total_requests || 0);
+            const errorRate = Number(data.error_rate || 0);
             const row = document.getElementById("kpi-row");
             if (totalRequests === 0) {
               row.innerHTML =
@@ -726,23 +1362,22 @@
                 kpiCard("P99", "—", "ms");
               return;
             }
-            const errorRate = (totalFailures / totalRequests) * 100;
             row.innerHTML =
               kpiCard("Requests", nf.format(totalRequests), "") +
               kpiCard("Error Rate", pf.format(errorRate), "%") +
               kpiCard(
                 "P50",
-                latestWithData ? nf.format(latestWithData.p50 || 0) : "—",
+                data.p50 != null ? nf.format(Number(data.p50 || 0)) : "—",
                 "ms",
               ) +
               kpiCard(
                 "P95",
-                latestWithData ? nf.format(latestWithData.p95 || 0) : "—",
+                data.p95 != null ? nf.format(Number(data.p95 || 0)) : "—",
                 "ms",
               ) +
               kpiCard(
                 "P99",
-                latestWithData ? nf.format(latestWithData.p99 || 0) : "—",
+                data.p99 != null ? nf.format(Number(data.p99 || 0)) : "—",
                 "ms",
               );
           } catch (e) {
@@ -896,13 +1531,18 @@
         async function refreshRoutes() {
           try {
             const data = await fetchJSON(
-              "/v1/routes?window=" + encodeURIComponent(routeWindow),
+              "/v1/routes?window=" +
+                encodeURIComponent(routeWindow) +
+                "&failures_only=" +
+                encodeURIComponent(String(routeFailuresOnly)),
             );
             const tbody = document.getElementById("routes-body");
             if (!data.routes || data.routes.length === 0) {
+              const filterText = routeFailuresOnly ? " (failed only)" : "";
               tbody.innerHTML =
                 '<tr><td colspan="10" class="empty">No routes in the last ' +
                 routeWindowText[routeWindow] +
+                filterText +
                 "</td></tr>";
               return;
             }
@@ -949,15 +1589,34 @@
           }
         }
 
+        function updateRoutesContextLabel() {
+          var label = document.getElementById("routes-context-label");
+          if (!label) return;
+          var mode = routeFailuresOnly ? routeFilterText.failed : routeFilterText.all;
+          label.textContent = "(" + routeWindow + " • " + mode + ")";
+        }
+
         function setRouteWindow(window, refreshNow) {
           if (!routeWindowText[window]) return;
           routeWindow = window;
-          var label = document.getElementById("routes-window-label");
-          if (label) {
-            label.textContent = "(" + window + ")";
-          }
+          updateRoutesContextLabel();
           document.querySelectorAll("[data-route-window]").forEach(function (btn) {
             var active = btn.getAttribute("data-route-window") === routeWindow;
+            btn.classList.toggle("active", active);
+            btn.setAttribute("aria-pressed", active ? "true" : "false");
+          });
+          if (refreshNow !== false) {
+            refreshRoutes();
+          }
+        }
+
+        function setRouteFailuresOnly(nextValue, refreshNow) {
+          routeFailuresOnly = !!nextValue;
+          updateRoutesContextLabel();
+          document.querySelectorAll("[data-route-failures-only]").forEach(function (btn) {
+            var active =
+              btn.getAttribute("data-route-failures-only") ===
+              String(routeFailuresOnly);
             btn.classList.toggle("active", active);
             btn.setAttribute("aria-pressed", active ? "true" : "false");
           });
@@ -987,24 +1646,11 @@
                 encodeURIComponent(String(currentTraceLimit())),
             );
             const tbody = document.getElementById("traces-body");
-            const serviceHeader = document.getElementById("traces-service-th");
             const tracesContext = document.getElementById("traces-context");
             const traces = Array.isArray(data) ? data : [];
             updateTraceLimitToggle(traces.length);
-            const uniqueServices = new Set();
-            traces.forEach(function (t) {
-              const svc = typeof t.service === "string" ? t.service.trim() : "";
-              if (svc) uniqueServices.add(svc);
-            });
-            const showServiceColumn = uniqueServices.size > 1;
-            const singleService =
-              uniqueServices.size === 1 ? Array.from(uniqueServices)[0] : "";
-            serviceHeader.style.display = showServiceColumn ? "" : "none";
-            tracesContext.textContent =
-              showServiceColumn || !singleService
-                ? ""
-                : "Entry Service: " + singleService;
-            const colspan = showServiceColumn ? 6 : 5;
+            tracesContext.textContent = "";
+            const colspan = 6;
 
             if (traces.length === 0) {
               tbody.innerHTML =
@@ -1017,16 +1663,15 @@
               .map(function (t) {
                 const traceId =
                   typeof t.trace_id === "string" ? t.trace_id : "";
-                const service =
-                  typeof t.service === "string" ? t.service.trim() : "";
-                const serviceForLabel = service || singleService;
-                const ariaLabel =
-                  !showServiceColumn && serviceForLabel
-                    ? "Trace " + traceId + ", entry service " + serviceForLabel
-                    : "Trace " + traceId;
-                const serviceCell = showServiceColumn
-                  ? '<td class="ellipsis">' + esc(service || "—") + "</td>"
-                  : "";
+                const failureService =
+                  typeof t.failure_service === "string"
+                    ? t.failure_service.trim()
+                    : "";
+                const ariaLabel = "Trace " + traceId;
+                const failureServiceCell =
+                  '<td class="ellipsis"><code>' +
+                  esc(failureService || "—") +
+                  "</code></td>";
                 return (
                   "<tr>" +
                   '<td class="ellipsis"><a href="#trace-' +
@@ -1038,9 +1683,11 @@
                   '" style="font-family:var(--font-mono);font-size:12px">' +
                   esc(traceId.substring(0, 16)) +
                   "&hellip;</a></td>" +
-                  serviceCell +
+                  failureServiceCell +
                   '<td class="ellipsis">' +
+                  "<code>" +
                   esc(t.event_name || "—") +
+                  "</code>" +
                   "</td>" +
                   "<td>" +
                   statusBadge(t.status_code, t.success) +
@@ -1074,7 +1721,7 @@
           const overlay = document.getElementById("modal-overlay");
           const body = document.getElementById("modal-body");
           document.getElementById("modal-title").textContent =
-            "Trace " + traceId.substring(0, 16) + "\u2026";
+            "Trace " + traceId;
           body.innerHTML = '<div class="empty">Loading...</div>';
           overlay.classList.add("open");
           document.getElementById("modal-close").focus();
@@ -1210,7 +1857,81 @@
           openTrace(link.dataset.trace, link);
         });
 
+        function setAskOpen(open) {
+          document.body.classList.toggle("ask-open", open);
+          const askToggle = document.getElementById("ask-toggle");
+          if (askToggle) {
+            askToggle.setAttribute("aria-expanded", open ? "true" : "false");
+          }
+          if (open) {
+            const askInput = document.getElementById("ask-input");
+            if (askInput && !askInput.disabled) {
+              askInput.focus();
+            }
+          }
+        }
+
         // --- Init & auto-refresh ---
+
+        const askToggle = document.getElementById("ask-toggle");
+        const askClose = document.getElementById("ask-close");
+        const askBackdrop = document.getElementById("ask-backdrop");
+        const askForm = document.getElementById("ask-form");
+        const askInput = document.getElementById("ask-input");
+        const askBtn = document.getElementById("ask-btn");
+        const askStatus = document.getElementById("ask-status");
+        const askAnswer = document.getElementById("ask-answer");
+        const askSteps = document.getElementById("ask-steps");
+
+        askToggle.addEventListener("click", function () {
+          const isOpen = document.body.classList.contains("ask-open");
+          setAskOpen(!isOpen);
+        });
+        askClose.addEventListener("click", function () {
+          setAskOpen(false);
+        });
+        askBackdrop.addEventListener("click", function () {
+          setAskOpen(false);
+        });
+
+        askForm.addEventListener("submit", async function (e) {
+          e.preventDefault();
+          const prompt = askInput.value.trim();
+          if (!prompt) {
+            askStatus.textContent = "Enter a question first.";
+            askInput.focus();
+            return;
+          }
+
+          askBtn.disabled = true;
+          askStatus.textContent = "Thinking...";
+          askAnswer.innerHTML = '<div class="empty">Generating answer...</div>';
+          askSteps.innerHTML =
+            '<div class="empty">Running tools for this query...</div>';
+          try {
+            const data = await askWaylog(prompt, askMaxStepsDefault);
+            renderAskAnswer(data.answer || "", data.steps);
+            renderAskSteps(data.steps);
+            const detail = [];
+            if (data.model) detail.push(data.model);
+            if (typeof data.duration_ms === "number") {
+              detail.push(data.duration_ms + "ms");
+            }
+            if (Array.isArray(data.steps) && data.steps.length > 0) {
+              detail.push(data.steps.length + " step(s)");
+            }
+            askStatus.textContent = detail.join(" · ");
+          } catch (err) {
+            askAnswer.innerHTML = '<div class="empty">(no answer)</div>';
+            askSteps.innerHTML =
+              '<div class="empty">No tool output due to request error.</div>';
+            askStatus.textContent =
+              "Query failed: " +
+              (err && err.message ? err.message : String(err));
+          } finally {
+            askBtn.disabled = false;
+          }
+        });
 
         function refreshAll() {
           refreshKPIs();
@@ -1226,6 +1947,13 @@
             setRouteWindow(btn.getAttribute("data-route-window"));
           });
         });
+        document.querySelectorAll("[data-route-failures-only]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            setRouteFailuresOnly(
+              btn.getAttribute("data-route-failures-only") === "true",
+            );
+          });
+        });
         document
           .getElementById("traces-toggle-limit")
           .addEventListener("click", function () {
@@ -1233,9 +1961,19 @@
             refreshTraces();
           });
 
+        document.addEventListener("keydown", function (e) {
+          if (e.key !== "Escape") return;
+          if (document.body.classList.contains("ask-open")) {
+            setAskOpen(false);
+          }
+        });
+
+        setRouteFailuresOnly(routeFailuresOnly, false);
         setRouteWindow(routeWindow, false);
-        refreshAll();
-        setInterval(refreshAll, 10000);
+        loadCapabilities().finally(function () {
+          refreshAll();
+          setInterval(refreshAll, refreshIntervalMs);
+        });
       })();
     </script>
   </body>

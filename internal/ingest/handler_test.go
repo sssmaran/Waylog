@@ -170,6 +170,34 @@ func TestRecentTraces_Limit(t *testing.T) {
 	}
 }
 
+func TestRecentTraces_FailuresOnlyAndFailureSource(t *testing.T) {
+	srv := makeTestServerMixed()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/traces/recent?limit=10&failures_only=true", nil)
+	w := httptest.NewRecorder()
+	srv.RecentTraces(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var entries []traceEntry
+	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected at least one failed trace entry")
+	}
+	for _, e := range entries {
+		if e.Success {
+			t.Fatalf("expected only failed traces, got success trace %s", e.TraceID)
+		}
+		if e.FailureService == "" {
+			t.Fatalf("expected failure_service for failed trace %s", e.TraceID)
+		}
+	}
+}
+
 func TestOverview_Stats(t *testing.T) {
 	srv := makeTestServer()
 
@@ -186,7 +214,7 @@ func TestOverview_Stats(t *testing.T) {
 		t.Fatalf("invalid json: %v", err)
 	}
 
-	for _, key := range []string{"window", "total_requests", "total_failures", "error_rate", "sampled", "top_errors", "recent_traces"} {
+	for _, key := range []string{"window", "total_requests", "total_failures", "error_rate", "p50", "p95", "p99", "sampled", "top_errors", "recent_traces"} {
 		if _, ok := resp[key]; !ok {
 			t.Errorf("missing key %q in overview response", key)
 		}
@@ -225,6 +253,43 @@ func TestCORSWrap(t *testing.T) {
 
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
 		t.Errorf("CORS origin = %q, want %q", got, "http://localhost:3000")
+	}
+}
+
+func TestCapabilities_Defaults(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
+	w := httptest.NewRecorder()
+	srv.Capabilities(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Ask struct {
+			Enabled         bool   `json:"enabled"`
+			Model           string `json:"model"`
+			ToolMode        string `json:"tool_mode"`
+			MaxStepsDefault int    `json:"max_steps_default"`
+			MaxStepsMax     int    `json:"max_steps_max"`
+		} `json:"ask"`
+		Dashboard struct {
+			RefreshIntervalSec int `json:"refresh_interval_sec"`
+		} `json:"dashboard"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp.Ask.MaxStepsDefault != 5 {
+		t.Errorf("max_steps_default = %d, want 5", resp.Ask.MaxStepsDefault)
+	}
+	if resp.Ask.MaxStepsMax != 8 {
+		t.Errorf("max_steps_max = %d, want 8", resp.Ask.MaxStepsMax)
+	}
+	if resp.Dashboard.RefreshIntervalSec != 10 {
+		t.Errorf("refresh_interval_sec = %d, want 10", resp.Dashboard.RefreshIntervalSec)
 	}
 }
 
@@ -1186,6 +1251,61 @@ func TestRoutes(t *testing.T) {
 	}
 	if !found {
 		t.Error("checkout route not found")
+	}
+}
+
+func TestRoutes_FailuresOnly(t *testing.T) {
+	st := graphstore.NewStore()
+	b := build.NewBuilder()
+
+	events := []event.WideEvent{
+		testutil.MakeEvent(
+			testutil.WithTraceID("aaaa0000bbbb1111cccc2222dddd1010"),
+			testutil.WithSpanID("1010101010101010"),
+			testutil.WithService("api-gateway"),
+			testutil.WithEventName("api-gateway.request"),
+			testutil.WithStatusCode(200),
+			testutil.WithLatency(40),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		),
+		testutil.MakeEvent(
+			testutil.WithTraceID("aaaa0000bbbb1111cccc2222dddd1011"),
+			testutil.WithSpanID("1111111111111011"),
+			testutil.WithService("checkout"),
+			testutil.WithEventName("checkout.request"),
+			testutil.WithStatusCode(502),
+			testutil.WithError("CHK_502", "checkout failed"),
+			testutil.WithLatency(80),
+			testutil.WithTimestamp(time.Now().Add(-1*time.Minute)),
+		),
+	}
+	for _, ev := range events {
+		st.Merge(b.Build(ev))
+	}
+
+	srv := &Server{store: st, builder: b}
+	req := httptest.NewRequest(http.MethodGet, "/v1/routes?window=10m&failures_only=true", nil)
+	w := httptest.NewRecorder()
+	srv.Routes(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Routes []struct {
+			Service string `json:"service"`
+			Route   string `json:"route"`
+		} `json:"routes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(resp.Routes) != 1 {
+		t.Fatalf("expected exactly 1 failed route, got %d", len(resp.Routes))
+	}
+	if resp.Routes[0].Service != "checkout" {
+		t.Fatalf("service = %q, want checkout", resp.Routes[0].Service)
 	}
 }
 

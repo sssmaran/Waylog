@@ -1,11 +1,15 @@
 package ingest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,8 +21,10 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	"github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/llm"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/sampler"
+	"github.com/sssmaran/WaylogCLI/internal/tools"
 	"github.com/sssmaran/WaylogCLI/internal/tracestory"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
@@ -81,35 +87,47 @@ func (c *unsampledCounters) Sum(window time.Duration) (total, errs uint64) {
 // recent traces) may return partial results until the graph is rebuilt from
 // incoming traffic.
 type Server struct {
-	store        *store.Store
-	builder      *build.Builder
-	sampler      *sampler.Sampler
-	metrics      *metrics.Metrics
-	EventLog     *eventlog.Writer
-	EventLogDir  string
-	accepted       atomic.Uint64
-	counters       unsampledCounters
-	sampleRatePct  int
-	ready          atomic.Bool
-	startTime    time.Time
-	maxBodyBytes int64
+	store       *store.Store
+	builder     *build.Builder
+	sampler     *sampler.Sampler
+	metrics     *metrics.Metrics
+	EventLog    *eventlog.Writer
+	EventLogDir string
+
+	accepted      atomic.Uint64
+	counters      unsampledCounters
+	sampleRatePct int
+	ready         atomic.Bool
+	startTime     time.Time
+	maxBodyBytes  int64
+
+	askProvider         llm.Provider
+	askRegistry         *tools.Registry
+	askMaxStepsDefault  int
+	askMaxStepsMax      int
+	dashboardRefreshSec int
 
 	// Replay state — set once during startup, read by /healthz.
-	replayStatus       string // "none", "ok", "failed"
-	replayError        string
-	lastReplayAttempt  time.Time
-	lastReplaySuccess  time.Time
+	replayStatus      string // "none", "ok", "failed"
+	replayError       string
+	lastReplayAttempt time.Time
+	lastReplaySuccess time.Time
 }
 
 // ServerConfig holds configuration for creating a new Server.
 type ServerConfig struct {
-	Store         *store.Store
-	Sampler       *sampler.Sampler
-	Metrics       *metrics.Metrics
-	MaxBodyBytes  int64
-	EventLogDir   string
-	StartTime     time.Time
-	SampleRatePct int // 0 means use sampler's default from env
+	Store               *store.Store
+	Sampler             *sampler.Sampler
+	Metrics             *metrics.Metrics
+	MaxBodyBytes        int64
+	EventLogDir         string
+	StartTime           time.Time
+	SampleRatePct       int // 0 means use sampler's default from env
+	AskProvider         llm.Provider
+	AskRegistry         *tools.Registry
+	AskMaxStepsDefault  int
+	AskMaxStepsMax      int
+	DashboardRefreshSec int
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -123,21 +141,38 @@ func NewServer(cfg ServerConfig) *Server {
 		startTime = time.Now()
 	}
 	s := &Server{
-		store:         cfg.Store,
-		builder:       build.NewBuilder(),
-		sampler:       cfg.Sampler,
-		metrics:       cfg.Metrics,
-		maxBodyBytes:  maxBody,
-		startTime:     startTime,
-		EventLogDir:   cfg.EventLogDir,
-		sampleRatePct: cfg.SampleRatePct,
-		replayStatus:  "none",
+		store:               cfg.Store,
+		builder:             build.NewBuilder(),
+		sampler:             cfg.Sampler,
+		metrics:             cfg.Metrics,
+		maxBodyBytes:        maxBody,
+		startTime:           startTime,
+		EventLogDir:         cfg.EventLogDir,
+		sampleRatePct:       cfg.SampleRatePct,
+		askProvider:         cfg.AskProvider,
+		askRegistry:         cfg.AskRegistry,
+		askMaxStepsDefault:  cfg.AskMaxStepsDefault,
+		askMaxStepsMax:      cfg.AskMaxStepsMax,
+		dashboardRefreshSec: cfg.DashboardRefreshSec,
+		replayStatus:        "none",
 	}
 	if s.sampler == nil {
 		s.sampler = sampler.New(sampler.LoadConfigFromEnv())
 	}
 	if s.sampleRatePct == 0 {
 		s.sampleRatePct = s.sampler.HappySampleRatePct()
+	}
+	if s.askMaxStepsDefault <= 0 {
+		s.askMaxStepsDefault = 5
+	}
+	if s.askMaxStepsMax <= 0 {
+		s.askMaxStepsMax = 8
+	}
+	if s.askMaxStepsMax < s.askMaxStepsDefault {
+		s.askMaxStepsMax = s.askMaxStepsDefault
+	}
+	if s.dashboardRefreshSec <= 0 {
+		s.dashboardRefreshSec = 10
 	}
 	return s
 }
@@ -449,6 +484,181 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Capabilities handles GET /v1/capabilities.
+// It returns runtime capabilities/config used by UI clients.
+func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	askEnabled, model, toolMode := s.askCapabilityState()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ask": map[string]any{
+			"enabled":           askEnabled,
+			"model":             model,
+			"tool_mode":         toolMode,
+			"max_steps_default": s.askMaxStepsDefault,
+			"max_steps_max":     s.askMaxStepsMax,
+		},
+		"dashboard": map[string]any{
+			"refresh_interval_sec": s.dashboardRefreshSec,
+		},
+	})
+}
+
+type askRequest struct {
+	Prompt   string `json:"prompt"`
+	MaxSteps int    `json:"max_steps,omitempty"`
+}
+
+type askResponse struct {
+	Answer     string        `json:"answer"`
+	Model      string        `json:"model,omitempty"`
+	ToolMode   string        `json:"tool_mode,omitempty"`
+	DurationMs int64         `json:"duration_ms"`
+	Steps      []askToolStep `json:"steps,omitempty"`
+}
+
+type askToolStep struct {
+	Index      int    `json:"index"`
+	Tool       string `json:"tool"`
+	DurationMs int64  `json:"duration_ms"`
+	Params     any    `json:"params,omitempty"`
+	Result     any    `json:"result,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+type overviewErrorEntry struct {
+	Code  string `json:"code"`
+	Count int    `json:"count"`
+}
+
+type overviewRollup struct {
+	TotalRequests  int
+	TotalFailures  int
+	P50            int64
+	P95            int64
+	P99            int64
+	TopErrorByCode map[string]int
+}
+
+// Ask handles POST /v1/ask and returns an LLM answer backed by graph tools.
+func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.store == nil {
+		http.Error(w, "store not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
+	var req askRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.Prompt == "" {
+		http.Error(w, "prompt is required", http.StatusBadRequest)
+		return
+	}
+
+	var (
+		provider llm.Provider
+		model    string
+		toolMode string
+		err      error
+	)
+	if s.askProvider != nil {
+		provider = s.askProvider
+	} else {
+		provider, model, toolMode, err = s.askProviderFromEnv()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+	}
+
+	registry := s.askRegistry
+	if registry == nil {
+		registry = tools.NewRegistry()
+		if err := tools.RegisterGraphTools(registry); err != nil {
+			slog.Error("ask tool registry init failed", "err", err)
+			http.Error(w, "tool registry unavailable", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	defs := make([]llm.ToolDefinition, 0, len(registry.List()))
+	for _, t := range registry.List() {
+		defs = append(defs, llm.ToolDefinition{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+
+	maxSteps := s.askMaxStepsDefault
+	if req.MaxSteps > 0 {
+		maxSteps = req.MaxSteps
+	}
+	if maxSteps < 1 {
+		maxSteps = 1
+	}
+	if maxSteps > s.askMaxStepsMax {
+		maxSteps = s.askMaxStepsMax
+	}
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	steps := make([]askToolStep, 0, maxSteps)
+	answer, err := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
+		stepStart := time.Now()
+		step := askToolStep{
+			Index:  len(steps) + 1,
+			Tool:   name,
+			Params: decodeJSONRaw(params),
+		}
+		result, callErr := registry.Call(ctx, s.store, name, params)
+		step.DurationMs = time.Since(stepStart).Milliseconds()
+		if callErr != nil {
+			step.Error = callErr.Error()
+			steps = append(steps, step)
+			return nil, callErr
+		}
+		step.Result = normalizeJSONValue(result)
+		steps = append(steps, step)
+		return result, nil
+	}), req.Prompt, maxSteps)
+	if err != nil {
+		slog.Warn("ask failed", "err", err)
+		http.Error(w, "ask failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	resp := askResponse{
+		Answer:     answer,
+		Model:      model,
+		ToolMode:   toolMode,
+		DurationMs: time.Since(start).Milliseconds(),
+		Steps:      steps,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 // TraceStory handles GET /v1/traces/story?trace_id=<id>.
 func (s *Server) TraceStory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -480,13 +690,14 @@ func (s *Server) TraceStory(w http.ResponseWriter, r *http.Request) {
 
 // traceEntry is a summary of a single request for the recent traces list.
 type traceEntry struct {
-	TraceID    string    `json:"trace_id"`
-	Service    string    `json:"service,omitempty"`
-	Success    bool      `json:"success"`
-	StatusCode int       `json:"status_code"`
-	LatencyMs  int64     `json:"latency_ms"`
-	EventName  string    `json:"event_name,omitempty"`
-	Timestamp  time.Time `json:"timestamp"`
+	TraceID        string    `json:"trace_id"`
+	Service        string    `json:"service,omitempty"`
+	FailureService string    `json:"failure_service,omitempty"`
+	Success        bool      `json:"success"`
+	StatusCode     int       `json:"status_code"`
+	LatencyMs      int64     `json:"latency_ms"`
+	EventName      string    `json:"event_name,omitempty"`
+	Timestamp      time.Time `json:"timestamp"`
 }
 
 // RecentTraces handles GET /v1/traces/recent?limit=<n>.
@@ -496,29 +707,23 @@ func (s *Server) RecentTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := 20
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 100 {
-		limit = 100
-	}
+	q := r.URL.Query()
+	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
+	failuresOnly := parseOptionalBool(q, "failures_only")
 
 	snap, ok := s.snapshotOrServiceUnavailable(w)
 	if !ok {
 		return
 	}
-	entries := recentTracesFromGraph(snap, limit)
+	entries := recentTracesFromGraph(snap, limit, failuresOnly)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(entries)
 }
 
-func recentTracesFromGraph(g *core.Graph, limit int) []traceEntry {
+func recentTracesFromGraph(g *core.Graph, limit int, failuresOnly bool) []traceEntry {
 	var entries []traceEntry
-	for _, n := range g.Nodes {
+	for reqID, n := range g.Nodes {
 		if n.Type != core.NodeRequest {
 			continue
 		}
@@ -526,12 +731,14 @@ func recentTracesFromGraph(g *core.Graph, limit int) []traceEntry {
 		if traceID == "" {
 			continue
 		}
+		failed := requestNodeFailed(n)
+		if failuresOnly && !failed {
+			continue
+		}
 		e := traceEntry{
 			TraceID:   traceID,
 			Timestamp: n.LastSeen,
-		}
-		if v, ok := n.Attr["success"].(bool); ok {
-			e.Success = v
+			Success:   !failed,
 		}
 		if v, ok := n.Attr["status_code"]; ok {
 			e.StatusCode = attrToInt(v)
@@ -542,15 +749,10 @@ func recentTracesFromGraph(g *core.Graph, limit int) []traceEntry {
 		if v, ok := n.Attr["event_name"].(string); ok {
 			e.EventName = v
 		}
-		// Prefer root_service; fall back to event_name prefix.
-		svc, _ := n.Attr["root_service"].(string)
-		if svc == "" && e.EventName != "" {
-			svc = e.EventName
-			if dot := strings.IndexByte(e.EventName, '.'); dot > 0 {
-				svc = e.EventName[:dot]
-			}
+		e.Service = requestOwnerService(n.Attr, e.EventName)
+		if failed {
+			e.FailureService = requestFailureService(g, reqID, n)
 		}
-		e.Service = svc
 		entries = append(entries, e)
 	}
 
@@ -576,23 +778,9 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	windowStr := r.URL.Query().Get("window")
-	dur := 5 * time.Minute
-	if windowStr != "" {
-		if d, err := time.ParseDuration(windowStr); err == nil && d > 0 {
-			dur = d
-		}
-	}
-
-	limit := 20
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 100 {
-		limit = 100
-	}
+	q := r.URL.Query()
+	dur := parseLooseDuration(q, "window", 5*time.Minute)
+	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
 
 	now := time.Now()
 	start := now.Add(-dur)
@@ -602,7 +790,8 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	recent := recentTracesFromGraph(snap, limit)
+	recent := recentTracesFromGraph(snap, limit, false)
+	rollup := summarizeOverviewFromGraph(snap, start, now)
 
 	totalRequests := summary.TotalRequests
 	totalFailures := summary.TotalFailures
@@ -617,31 +806,9 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 		errorRate = float64(totalFailures) / float64(totalRequests) * 100
 	}
 
-	// Top errors: count one primary error per failed request.
-	// This avoids fan-out inflation where one failed request emits multiple
-	// downstream error events across services.
-	type errorEntry struct {
-		Code  string `json:"code"`
-		Count int    `json:"count"`
-	}
-	errorCountByCode := map[string]int{}
-	for reqID, n := range snap.Nodes {
-		if n.Type != core.NodeRequest {
-			continue
-		}
-		if n.LastSeen.IsZero() || n.LastSeen.Before(start) || n.LastSeen.After(now) {
-			continue
-		}
-		code, ok := primaryRequestErrorCode(snap, reqID, n)
-		if !ok {
-			continue
-		}
-		errorCountByCode[code]++
-	}
-
-	var topErrors []errorEntry
-	for code, count := range errorCountByCode {
-		topErrors = append(topErrors, errorEntry{Code: code, Count: count})
+	var topErrors []overviewErrorEntry
+	for code, count := range rollup.TopErrorByCode {
+		topErrors = append(topErrors, overviewErrorEntry{Code: code, Count: count})
 	}
 	sort.Slice(topErrors, func(i, j int) bool {
 		if topErrors[i].Count == topErrors[j].Count {
@@ -656,6 +823,9 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 		"total_requests": totalRequests,
 		"total_failures": totalFailures,
 		"error_rate":     errorRate,
+		"p50":            rollup.P50,
+		"p95":            rollup.P95,
+		"p99":            rollup.P99,
 		"sampled":        s.sampleRatePct < 100,
 		"top_errors":     topErrors,
 		"recent_traces":  recent,
@@ -752,18 +922,14 @@ func (s *Server) OverviewTimeseries(w http.ResponseWriter, r *http.Request) {
 		b := &buckets[idx]
 		b.Total++
 
-		sc := attrToInt(n.Attr["status_code"])
-		switch {
-		case sc >= 200 && sc < 300:
-			b.Status2xx++
-		case sc >= 400 && sc < 500:
-			b.Status4xx++
-		case sc >= 500:
-			b.Status5xx++
-		}
+		addStatusClassCount(
+			attrToInt(n.Attr["status_code"]),
+			&b.Status2xx,
+			&b.Status4xx,
+			&b.Status5xx,
+		)
 
-		success, _ := n.Attr["success"].(bool)
-		if !success {
+		if requestNodeFailed(n) {
 			b.Failures++
 		}
 
@@ -813,6 +979,34 @@ func (s *Server) OverviewTimeseries(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func summarizeOverviewFromGraph(g *core.Graph, start, end time.Time) overviewRollup {
+	rollup := overviewRollup{TopErrorByCode: map[string]int{}}
+	var latencies []int64
+	for reqID, n := range g.Nodes {
+		if n.Type != core.NodeRequest || n.LastSeen.IsZero() || n.LastSeen.Before(start) || n.LastSeen.After(end) {
+			continue
+		}
+		rollup.TotalRequests++
+		if requestNodeFailed(n) {
+			rollup.TotalFailures++
+		}
+		if lat := attrToInt64(n.Attr["latency_ms"]); lat > 0 {
+			latencies = append(latencies, lat)
+		}
+		if code, ok := primaryRequestErrorCode(g, reqID, n); ok {
+			rollup.TopErrorByCode[code]++
+		}
+	}
+	if len(latencies) == 0 {
+		return rollup
+	}
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	rollup.P50 = percentile(latencies, 50)
+	rollup.P95 = percentile(latencies, 95)
+	rollup.P99 = percentile(latencies, 99)
+	return rollup
+}
+
 func percentile(sorted []int64, pct int) int64 {
 	if len(sorted) == 0 {
 		return 0
@@ -836,22 +1030,9 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 
-	window := 5 * time.Minute
-	if v := q.Get("window"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			window = d
-		}
-	}
-
-	limit := 20
-	if v := q.Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 100 {
-		limit = 100
-	}
+	window := parseLooseDuration(q, "window", 5*time.Minute)
+	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
+	failuresOnly := parseOptionalBool(q, "failures_only")
 
 	snap, ok := s.snapshotOrServiceUnavailable(w)
 	if !ok {
@@ -882,21 +1063,17 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
 			continue
 		}
+		failed := requestNodeFailed(n)
+		if failuresOnly && !failed {
+			continue
+		}
 
 		eventName, _ := n.Attr["event_name"].(string)
 		if eventName == "" {
 			continue
 		}
 
-		// Prefer root_service (set by merge when root span arrives).
-		// Fall back to event_name prefix when root hasn't been merged yet.
-		svc, _ := n.Attr["root_service"].(string)
-		if svc == "" {
-			svc = eventName
-			if dot := strings.IndexByte(eventName, '.'); dot > 0 {
-				svc = eventName[:dot]
-			}
-		}
+		svc := requestOwnerService(n.Attr, eventName)
 
 		method, _ := n.Attr["http_method"].(string)
 		if method == "" {
@@ -916,18 +1093,8 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 
 		rs.Total++
 
-		sc := attrToInt(n.Attr["status_code"])
-		switch {
-		case sc >= 200 && sc < 300:
-			rs.Status2xx++
-		case sc >= 400 && sc < 500:
-			rs.Status4xx++
-		case sc >= 500:
-			rs.Status5xx++
-		}
-
-		success, _ := n.Attr["success"].(bool)
-		if !success {
+		addStatusClassCount(attrToInt(n.Attr["status_code"]), &rs.Status2xx, &rs.Status4xx, &rs.Status5xx)
+		if failed {
 			rs.Failures++
 		}
 
@@ -963,9 +1130,7 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 			Status4xx:     rs.Status4xx,
 			Status5xx:     rs.Status5xx,
 		}
-		if rs.Total > 0 {
-			re.ErrorRate = math.Round(float64(rs.Failures)/float64(rs.Total)*10000) / 100
-		}
+		re.ErrorRate = percentage(rs.Failures, rs.Total)
 		if len(rs.latencies) > 0 {
 			sort.Slice(rs.latencies, func(a, b int) bool { return rs.latencies[a] < rs.latencies[b] })
 			re.P75LatencyMs = percentile(rs.latencies, 75)
@@ -1023,6 +1188,71 @@ func CORSWrap(allowOrigin string, h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		h(w, r)
+	}
+}
+
+func parseBoundedPositiveInt(q url.Values, key string, def, max int) int {
+	n := def
+	if v := q.Get(key); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			n = parsed
+		}
+	}
+	if n > max {
+		n = max
+	}
+	return n
+}
+
+func parseLooseDuration(q url.Values, key string, def time.Duration) time.Duration {
+	d := def
+	if v := q.Get(key); v != "" {
+		if parsed, err := time.ParseDuration(v); err == nil && parsed > 0 {
+			d = parsed
+		}
+	}
+	return d
+}
+
+func parseOptionalBool(q url.Values, key string) bool {
+	v := q.Get(key)
+	if v == "" {
+		return false
+	}
+	parsed, err := strconv.ParseBool(v)
+	if err != nil {
+		return false
+	}
+	return parsed
+}
+
+func serviceFromEventName(eventName string) string {
+	if dot := strings.IndexByte(eventName, '.'); dot > 0 {
+		return eventName[:dot]
+	}
+	return eventName
+}
+
+func requestOwnerService(attr map[string]any, eventName string) string {
+	if attr != nil {
+		if svc, _ := attr["root_service"].(string); svc != "" {
+			return svc
+		}
+	}
+	if eventName == "" {
+		return ""
+	}
+	return serviceFromEventName(eventName)
+}
+
+func addStatusClassCount(code int, status2xx, status4xx, status5xx *int) {
+	switch {
+	case code >= 200 && code < 300:
+		*status2xx = *status2xx + 1
+	case code >= 400 && code < 500:
+		*status4xx = *status4xx + 1
+	case code >= 500:
+		*status5xx = *status5xx + 1
 	}
 }
 
@@ -1102,6 +1332,133 @@ func anyToStringSlice(v any) []string {
 	default:
 		return nil
 	}
+}
+
+func requestFailureService(g *core.Graph, reqID string, req core.Node) string {
+	if !requestNodeFailed(req) {
+		return ""
+	}
+	bestService := ""
+	bestTime := time.Time{}
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type != core.EdgeRequestHasSpan {
+			continue
+		}
+		span, ok := g.Nodes[e.To]
+		if !ok || span.Type != core.NodeSpan {
+			continue
+		}
+		if !requestNodeFailed(span) {
+			continue
+		}
+		svc, _ := span.Attr["service"].(string)
+		if svc == "" {
+			continue
+		}
+		ts := span.LastSeen
+		if bestService == "" || (!ts.IsZero() && (bestTime.IsZero() || ts.Before(bestTime))) {
+			bestService = svc
+			bestTime = ts
+		}
+	}
+	if bestService != "" {
+		return bestService
+	}
+	if svc, _ := req.Attr["root_service"].(string); svc != "" {
+		return svc
+	}
+	if svc, _ := req.Attr["service"].(string); svc != "" {
+		return svc
+	}
+	if eventName, _ := req.Attr["event_name"].(string); eventName != "" {
+		return serviceFromEventName(eventName)
+	}
+	return ""
+}
+
+func requestNodeFailed(n core.Node) bool {
+	if n.Attr == nil {
+		return false
+	}
+	if success, ok := n.Attr["success"].(bool); ok && !success {
+		return true
+	}
+	if statusCode := attrToInt(n.Attr["status_code"]); statusCode >= 500 {
+		return true
+	}
+	if code, ok := n.Attr["error_code"].(string); ok && code != "" {
+		return true
+	}
+	return len(anyToStringSlice(n.Attr["error_codes"])) > 0
+}
+
+func percentage(numerator, denominator int) float64 {
+	if denominator <= 0 {
+		return 0
+	}
+	return math.Round(float64(numerator)/float64(denominator)*10000) / 100
+}
+
+func decodeJSONRaw(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return string(raw)
+	}
+	return out
+}
+
+func normalizeJSONValue(v any) any {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return string(b)
+	}
+	return out
+}
+
+func (s *Server) askProviderFromEnv() (llm.Provider, string, string, error) {
+	key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	if key == "" {
+		key = strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
+	}
+	if key == "" {
+		return nil, "", "", errors.New("gemini api key is not configured")
+	}
+
+	client := llm.NewGeminiClient(key)
+	model := strings.TrimSpace(os.Getenv("GEMINI_MODEL"))
+	base := strings.TrimSpace(os.Getenv("GEMINI_API_BASE"))
+	mode := strings.TrimSpace(os.Getenv("GEMINI_TOOL_MODE"))
+	if model != "" {
+		client.Model = model
+	}
+	if base != "" {
+		client.BaseURL = base
+	}
+	if mode != "" {
+		client.ToolMode = mode
+	}
+	return client, client.Model, client.ToolMode, nil
+}
+
+func (s *Server) askCapabilityState() (bool, string, string) {
+	if s.askProvider != nil {
+		return true, "", ""
+	}
+	_, model, toolMode, err := s.askProviderFromEnv()
+	if err != nil {
+		return false, "", ""
+	}
+	return true, model, toolMode
 }
 
 func attrToInt64(v any) int64 {

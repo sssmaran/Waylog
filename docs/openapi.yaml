@@ -209,6 +209,13 @@ paths:
             minimum: 1
             maximum: 100
           description: Maximum number of traces to return (default 20, max 100)
+        - in: query
+          name: failures_only
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: When true, returns only failed requests.
       responses:
         '200':
           description: Array of recent trace summaries
@@ -223,6 +230,9 @@ paths:
                       type: string
                     service:
                       type: string
+                    failure_service:
+                      type: string
+                      description: First failing span service for the request when available.
                     success:
                       type: boolean
                     status_code:
@@ -273,6 +283,12 @@ paths:
                     type: integer
                   error_rate:
                     type: number
+                  p50:
+                    type: integer
+                  p95:
+                    type: integer
+                  p99:
+                    type: integer
                   sampled:
                     type: boolean
                   top_errors:
@@ -373,6 +389,13 @@ paths:
             type: integer
             default: 20
             maximum: 100
+        - in: query
+          name: failures_only
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: When true, includes only failed requests.
       responses:
         '200':
           description: Route statistics
@@ -416,6 +439,122 @@ paths:
                           type: integer
         '503':
           description: Service Unavailable (graph not ready)
+
+  /v1/capabilities:
+    get:
+      summary: Runtime capabilities
+      description: |
+        Returns runtime feature/configuration flags used by UI clients.
+      responses:
+        '200':
+          description: Capabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ask:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                      model:
+                        type: string
+                      tool_mode:
+                        type: string
+                      max_steps_default:
+                        type: integer
+                      max_steps_max:
+                        type: integer
+                  dashboard:
+                    type: object
+                    properties:
+                      refresh_interval_sec:
+                        type: integer
+        '405':
+          description: Method Not Allowed
+
+  /v1/ask:
+    post:
+      summary: Ask Waylog (LLM + tools)
+      description: |
+        Executes a natural-language query against the live graph using the
+        configured Gemini provider and built-in graph tools.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+                  description: Natural-language question.
+                max_steps:
+                  type: integer
+                  minimum: 1
+                  maximum: 8
+                  description: Optional tool-call iteration cap.
+      responses:
+        '200':
+          description: Query answered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  answer:
+                    type: string
+                  model:
+                    type: string
+                  tool_mode:
+                    type: string
+                  duration_ms:
+                    type: integer
+                  steps:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index:
+                          type: integer
+                        tool:
+                          type: string
+                        duration_ms:
+                          type: integer
+                        params:
+                          description: Tool arguments as structured JSON.
+                          oneOf:
+                            - type: object
+                              additionalProperties: true
+                            - type: array
+                              items: {}
+                            - type: string
+                            - type: number
+                            - type: boolean
+                        result:
+                          description: Tool output as structured JSON when available.
+                          oneOf:
+                            - type: object
+                              additionalProperties: true
+                            - type: array
+                              items: {}
+                            - type: string
+                            - type: number
+                            - type: boolean
+                        error:
+                          type: string
+        '400':
+          description: Invalid request body or missing prompt
+        '405':
+          description: Method Not Allowed
+        '413':
+          description: Request Entity Too Large
+        '502':
+          description: Upstream/provider/tool execution failure
+        '503':
+          description: LLM provider not configured or store unavailable
 
   /healthz:
     get:

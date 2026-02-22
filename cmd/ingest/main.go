@@ -73,6 +73,15 @@ func main() {
 	apiKey := config.Getenv("WAYLOG_API_KEY", "")
 	maxBody := int64(config.GetenvInt("MAX_BODY_BYTES", 1<<20))
 	eventLogDir := config.Getenv("EVENT_LOG_DIR", "")
+	askMaxStepsDefault := config.GetenvInt("ASK_MAX_STEPS_DEFAULT", 5)
+	askMaxStepsMax := config.GetenvInt("ASK_MAX_STEPS_MAX", 8)
+	dashboardRefreshSec := config.GetenvInt("DASHBOARD_REFRESH_SEC", 10)
+
+	reg := tools.NewRegistry()
+	if err := tools.RegisterGraphTools(reg); err != nil {
+		slog.Error("mcp tools init failed", "err", err)
+		os.Exit(1)
+	}
 
 	// Prometheus metrics
 	promReg := prometheus.NewRegistry()
@@ -80,11 +89,15 @@ func main() {
 
 	// Create ingest server with the store
 	ingestServer := ingest.NewServer(ingest.ServerConfig{
-		Store:        graphStore,
-		MaxBodyBytes: maxBody,
-		EventLogDir:  eventLogDir,
-		Metrics:      m,
-		StartTime:    time.Now(),
+		Store:               graphStore,
+		MaxBodyBytes:        maxBody,
+		EventLogDir:         eventLogDir,
+		Metrics:             m,
+		StartTime:           time.Now(),
+		AskRegistry:         reg,
+		AskMaxStepsDefault:  askMaxStepsDefault,
+		AskMaxStepsMax:      askMaxStepsMax,
+		DashboardRefreshSec: dashboardRefreshSec,
 	})
 
 	// Optional append-only event log
@@ -145,12 +158,6 @@ func main() {
 	// Set default store for CLI
 	cli.SetDefaultStore(graphStore)
 
-	reg := tools.NewRegistry()
-	if err := tools.RegisterGraphTools(reg); err != nil {
-		slog.Error("mcp tools init failed", "err", err)
-		os.Exit(1)
-	}
-
 	// ---------------- HTTP server ----------------
 
 	mux := http.NewServeMux()
@@ -174,6 +181,8 @@ func main() {
 	mux.HandleFunc("/v1/events/search", ingest.CORSWrap(corsOrigin, ingestServer.EventSearch))
 	mux.HandleFunc("/v1/overview/timeseries", ingest.CORSWrap(corsOrigin, ingestServer.OverviewTimeseries))
 	mux.HandleFunc("/v1/routes", ingest.CORSWrap(corsOrigin, ingestServer.Routes))
+	mux.HandleFunc("/v1/capabilities", ingest.CORSWrap(corsOrigin, ingestServer.Capabilities))
+	mux.HandleFunc("/v1/ask", ingestServer.Ask)
 
 	// Dashboard UI
 	mux.Handle("/ui/", http.StripPrefix("/ui/", dashboard.Handler()))
