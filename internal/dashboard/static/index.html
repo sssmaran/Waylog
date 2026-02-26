@@ -773,6 +773,7 @@
           <span aria-hidden="true">&#9888;</span> Sampled
         </span>
         <span class="last-update" id="last-update" aria-live="polite"></span>
+        <a id="link-grafana" href="#" target="_blank" rel="noopener" class="window-btn" style="text-decoration:none;display:none">Grafana</a>
         <button
           id="ask-toggle"
           class="window-btn"
@@ -1316,6 +1317,14 @@
             }
             if (caps.ask && typeof caps.ask.max_steps_default === "number") {
               askMaxStepsDefault = caps.ask.max_steps_default;
+            }
+
+            if (caps.links) {
+              if (caps.links.grafana) {
+                var gl = document.getElementById("link-grafana");
+                gl.href = caps.links.grafana;
+                gl.style.display = "";
+              }
             }
 
             const askEnabled = !!(caps.ask && caps.ask.enabled);

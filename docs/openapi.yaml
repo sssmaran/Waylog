@@ -471,6 +471,15 @@ paths:
                     properties:
                       refresh_interval_sec:
                         type: integer
+                  links:
+                    type: object
+                    properties:
+                      prometheus:
+                        type: string
+                        description: Prometheus UI URL (empty if not configured)
+                      grafana:
+                        type: string
+                        description: Grafana UI URL (empty if not configured)
         '405':
           description: Method Not Allowed
 

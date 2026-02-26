@@ -45,3 +45,4 @@ go.work.sum
 /checkout-demo
 /db-demo
 /payment-demo
+/.DS_Store

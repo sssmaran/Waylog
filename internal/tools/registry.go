@@ -15,6 +15,7 @@ type Tool struct {
 	InputSchema  json.RawMessage
 	OutputSchema json.RawMessage
 	Handler      ToolHandler
+	Examples     []string
 }
 
 type Registry struct {

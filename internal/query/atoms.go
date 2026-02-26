@@ -15,7 +15,7 @@ func (p EqualsPredicate) Eval(f store.RequestFacts) bool {
 				return true
 			}
 		}
-	case "error":
+	case "error", "error_code":
 		for _, e := range f.Errors {
 			if e == p.Value {
 				return true

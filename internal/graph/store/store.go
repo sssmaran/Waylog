@@ -598,14 +598,24 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 		}
 	}
 
-	// Gather neighbors via adjacency indexes
+	// Gather neighbors via adjacency indexes.
+	// Store human-readable names/codes (not node IDs) so queries like
+	// error_code=PMT_502 or service=checkout work directly.
 	for _, e := range g.OutEdges[reqID] {
 		if n, ok := g.Nodes[e.To]; ok {
 			switch n.Type {
 			case core.NodeService:
-				f.Services = append(f.Services, n.ID)
+				if name, _ := n.Attr["name"].(string); name != "" {
+					f.Services = append(f.Services, name)
+				} else {
+					f.Services = append(f.Services, n.ID)
+				}
 			case core.NodeError:
-				f.Errors = append(f.Errors, n.ID)
+				if code, _ := n.Attr["code"].(string); code != "" {
+					f.Errors = append(f.Errors, code)
+				} else {
+					f.Errors = append(f.Errors, n.ID)
+				}
 			case core.NodeFlag:
 				f.Flags = append(f.Flags, n.ID)
 			}
@@ -615,9 +625,17 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 		if n, ok := g.Nodes[e.From]; ok {
 			switch n.Type {
 			case core.NodeService:
-				f.Services = append(f.Services, n.ID)
+				if name, _ := n.Attr["name"].(string); name != "" {
+					f.Services = append(f.Services, name)
+				} else {
+					f.Services = append(f.Services, n.ID)
+				}
 			case core.NodeError:
-				f.Errors = append(f.Errors, n.ID)
+				if code, _ := n.Attr["code"].(string); code != "" {
+					f.Errors = append(f.Errors, code)
+				} else {
+					f.Errors = append(f.Errors, n.ID)
+				}
 			case core.NodeFlag:
 				f.Flags = append(f.Flags, n.ID)
 			}

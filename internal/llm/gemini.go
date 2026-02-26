@@ -474,9 +474,12 @@ func filterToolsForPrompt(tools []ToolDefinition, prompt string) []ToolDefinitio
 	case strings.Contains(p, "service path") || strings.Contains(p, "path"):
 		add("trace_summary")
 		add("failure_chain")
+	case strings.Contains(p, "root cause") || strings.Contains(p, "why did") || strings.Contains(p, "why is"):
+		add("explain_request")
+		add("failure_chain")
 	case strings.Contains(p, "explain") || strings.Contains(p, "info"):
 		add("explain_request")
-	case strings.Contains(p, "blast"):
+	case strings.Contains(p, "impact") || strings.Contains(p, "affected") || strings.Contains(p, "blast") || strings.Contains(p, "radius"):
 		add("blast_radius")
 	case strings.Contains(p, "pattern"):
 		add("failure_patterns")
@@ -484,7 +487,9 @@ func filterToolsForPrompt(tools []ToolDefinition, prompt string) []ToolDefinitio
 		add("compare_windows")
 	case strings.Contains(p, "query"):
 		add("graph_query")
-	case strings.Contains(p, "insight") || strings.Contains(p, "top") || strings.Contains(p, "stats"):
+	case strings.Contains(p, "insight") || strings.Contains(p, "top") || strings.Contains(p, "stats") ||
+		strings.Contains(p, "overview") || strings.Contains(p, "summary") || strings.Contains(p, "health") ||
+		strings.Contains(p, "what happened"):
 		add("graph_insights")
 	case strings.Contains(p, "failure") || strings.Contains(p, "error"):
 		add("graph_failures")

@@ -76,6 +76,8 @@ func main() {
 	askMaxStepsDefault := config.GetenvInt("ASK_MAX_STEPS_DEFAULT", 5)
 	askMaxStepsMax := config.GetenvInt("ASK_MAX_STEPS_MAX", 8)
 	dashboardRefreshSec := config.GetenvInt("DASHBOARD_REFRESH_SEC", 10)
+	prometheusURL := config.Getenv("PROMETHEUS_URL", "")
+	grafanaURL := config.Getenv("GRAFANA_URL", "")
 
 	reg := tools.NewRegistry()
 	if err := tools.RegisterGraphTools(reg); err != nil {
@@ -98,6 +100,8 @@ func main() {
 		AskMaxStepsDefault:  askMaxStepsDefault,
 		AskMaxStepsMax:      askMaxStepsMax,
 		DashboardRefreshSec: dashboardRefreshSec,
+		PrometheusURL:       prometheusURL,
+		GrafanaURL:          grafanaURL,
 	})
 
 	// Optional append-only event log
@@ -182,6 +186,7 @@ func main() {
 	mux.HandleFunc("/v1/overview/timeseries", ingest.CORSWrap(corsOrigin, ingestServer.OverviewTimeseries))
 	mux.HandleFunc("/v1/routes", ingest.CORSWrap(corsOrigin, ingestServer.Routes))
 	mux.HandleFunc("/v1/capabilities", ingest.CORSWrap(corsOrigin, ingestServer.Capabilities))
+	mux.HandleFunc("/v1/tools", ingest.CORSWrap(corsOrigin, ingestServer.Tools))
 	mux.HandleFunc("/v1/ask", ingestServer.Ask)
 
 	// Dashboard UI

@@ -299,12 +299,11 @@ func TestStore_Merge_RecomputesFacts(t *testing.T) {
 	)
 	s.Merge(b.Build(ev2))
 
-	// The error node should now be counted
-	errNodeID := core.ID("error", "ERR_PAYMENT")
-	count, ok := s.counters.ErrorCount[errNodeID]
+	// The error code should now be counted (keyed by code string, not node ID).
+	count, ok := s.counters.ErrorCount["ERR_PAYMENT"]
 	if !ok || count < 1 {
-		t.Errorf("expected ErrorCount[%s] >= 1, got %d (ok=%v); full counters: %v",
-			errNodeID, count, ok, s.counters.ErrorCount)
+		t.Errorf("expected ErrorCount[ERR_PAYMENT] >= 1, got %d (ok=%v); full counters: %v",
+			count, ok, s.counters.ErrorCount)
 	}
 }
 

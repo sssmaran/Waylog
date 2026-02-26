@@ -106,6 +106,8 @@ type Server struct {
 	askMaxStepsDefault  int
 	askMaxStepsMax      int
 	dashboardRefreshSec int
+	prometheusURL       string
+	grafanaURL          string
 
 	// Replay state — set once during startup, read by /healthz.
 	replayStatus      string // "none", "ok", "failed"
@@ -128,6 +130,8 @@ type ServerConfig struct {
 	AskMaxStepsDefault  int
 	AskMaxStepsMax      int
 	DashboardRefreshSec int
+	PrometheusURL       string
+	GrafanaURL          string
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -154,6 +158,8 @@ func NewServer(cfg ServerConfig) *Server {
 		askMaxStepsDefault:  cfg.AskMaxStepsDefault,
 		askMaxStepsMax:      cfg.AskMaxStepsMax,
 		dashboardRefreshSec: cfg.DashboardRefreshSec,
+		prometheusURL:       cfg.PrometheusURL,
+		grafanaURL:          cfg.GrafanaURL,
 		replayStatus:        "none",
 	}
 	if s.sampler == nil {
@@ -505,6 +511,51 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 		"dashboard": map[string]any{
 			"refresh_interval_sec": s.dashboardRefreshSec,
 		},
+		"links": map[string]any{
+			"prometheus": s.prometheusURL,
+			"grafana":    s.grafanaURL,
+		},
+	})
+}
+
+// Tools handles GET /v1/tools — returns available graph tools with examples.
+func (s *Server) Tools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	registry := s.askRegistry
+	if registry == nil {
+		registry = tools.NewRegistry()
+		if err := tools.RegisterGraphTools(registry); err != nil {
+			http.Error(w, "tool registry unavailable", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	type toolEntry struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		InputSchema json.RawMessage `json:"input_schema,omitempty"`
+		Examples    []string        `json:"examples,omitempty"`
+	}
+
+	list := registry.List()
+	entries := make([]toolEntry, len(list))
+	for i, t := range list {
+		entries[i] = toolEntry{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+			Examples:    t.Examples,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"tools": entries,
+		"count": len(entries),
 	})
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 
@@ -34,7 +36,13 @@ func RunWithStore(store tools.Store, args []string) {
 	switch args[0] {
 	case "help":
 		usage()
+	case "tools":
+		handleTools()
 	case "waylog":
+		if len(args) > 1 && args[1] == "tools" {
+			handleTools()
+			return
+		}
 		handleAsk(store, args[1:])
 	default:
 		usage()
@@ -44,6 +52,7 @@ func RunWithStore(store tools.Store, args []string) {
 func usage() {
 	fmt.Println("usage:")
 	fmt.Println("  waylog \"<question>\"")
+	fmt.Println("  waylog tools")
 	fmt.Println("")
 	fmt.Println("examples:")
 	fmt.Println("  waylog \"show top errors\"")
@@ -51,6 +60,67 @@ func usage() {
 	fmt.Println("  waylog \"explain request <trace-id>\"")
 	fmt.Println("  waylog \"graph_query expr='error_code=PMT_502' window='10m'\"")
 	fmt.Println("  waylog \"compare_windows current='10m' baseline='10m' offset='1h'\"")
+}
+
+func handleTools() {
+	// Try fetching from the ingest server first.
+	addr := strings.TrimSpace(os.Getenv("INGEST_ADDR"))
+	if addr == "" {
+		addr = "http://localhost:8080"
+	}
+	if !strings.HasPrefix(addr, "http") {
+		addr = "http://" + addr
+	}
+
+	type toolEntry struct {
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Examples    []string `json:"examples,omitempty"`
+	}
+
+	var entries []toolEntry
+
+	resp, err := http.Get(addr + "/v1/tools")
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			body, readErr := io.ReadAll(resp.Body)
+			if readErr == nil {
+				var result struct {
+					Tools []toolEntry `json:"tools"`
+				}
+				if json.Unmarshal(body, &result) == nil && len(result.Tools) > 0 {
+					entries = result.Tools
+				}
+			}
+		}
+	}
+
+	// Fallback to local registry if server is unreachable.
+	if len(entries) == 0 {
+		reg := tools.NewRegistry()
+		if regErr := tools.RegisterGraphTools(reg); regErr != nil {
+			fmt.Println("tool registry error:", regErr)
+			return
+		}
+		for _, t := range reg.List() {
+			entries = append(entries, toolEntry{
+				Name:        t.Name,
+				Description: t.Description,
+				Examples:    t.Examples,
+			})
+		}
+	}
+
+	// Print formatted table.
+	fmt.Printf("\n%s%sAvailable Tools%s (%d)\n\n", ansiBold, ansiCyan, ansiReset, len(entries))
+	for _, t := range entries {
+		fmt.Printf("  %s%s%-20s%s %s\n", ansiBold, ansiYellow, t.Name, ansiReset, t.Description)
+		for _, ex := range t.Examples {
+			fmt.Printf("  %s%-20s%s %swaylog \"%s\"%s\n", ansiDim, "", ansiReset, ansiDim, ex, ansiReset)
+		}
+		fmt.Println()
+	}
 }
 
 func handleAsk(store tools.Store, args []string) {
