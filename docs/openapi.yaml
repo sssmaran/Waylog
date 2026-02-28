@@ -480,8 +480,75 @@ paths:
                       grafana:
                         type: string
                         description: Grafana UI URL (empty if not configured)
+                  graph:
+                    type: boolean
+                    description: Whether graph topology UI is enabled (GRAPH_UI=1)
         '405':
           description: Method Not Allowed
+
+  /v1/graph/topology:
+    get:
+      summary: Service topology graph
+      description: |
+        Returns Cytoscape.js-formatted service topology with aggregate stats.
+        Only available when GRAPH_UI=1.
+      parameters:
+        - in: query
+          name: window
+          schema:
+            type: string
+            default: 1h
+          description: Time window (max 24h)
+      responses:
+        '200':
+          description: Topology graph
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        data:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            label:
+                              type: string
+                            type:
+                              type: string
+                              enum: [service]
+                            invocations:
+                              type: integer
+                              description: Number of span invocations handled by this service
+                            errors:
+                              type: integer
+                            error_rate:
+                              type: number
+                  edges:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        data:
+                          type: object
+                          properties:
+                            source:
+                              type: string
+                            target:
+                              type: string
+                            label:
+                              type: string
+                            count:
+                              type: integer
+        '405':
+          description: Method Not Allowed
+        '503':
+          description: Service Unavailable (graph not ready)
 
   /v1/ask:
     post:

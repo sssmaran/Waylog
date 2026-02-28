@@ -78,6 +78,7 @@ func main() {
 	dashboardRefreshSec := config.GetenvInt("DASHBOARD_REFRESH_SEC", 10)
 	prometheusURL := config.Getenv("PROMETHEUS_URL", "")
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
+	graphUI := config.GetenvBool("GRAPH_UI", false)
 
 	reg := tools.NewRegistry()
 	if err := tools.RegisterGraphTools(reg); err != nil {
@@ -102,6 +103,7 @@ func main() {
 		DashboardRefreshSec: dashboardRefreshSec,
 		PrometheusURL:       prometheusURL,
 		GrafanaURL:          grafanaURL,
+		GraphUI:             graphUI,
 	})
 
 	// Optional append-only event log
@@ -188,6 +190,9 @@ func main() {
 	mux.HandleFunc("/v1/capabilities", ingest.CORSWrap(corsOrigin, ingestServer.Capabilities))
 	mux.HandleFunc("/v1/tools", ingest.CORSWrap(corsOrigin, ingestServer.Tools))
 	mux.HandleFunc("/v1/ask", ingestServer.Ask)
+	if graphUI {
+		mux.HandleFunc("/v1/graph/topology", ingest.CORSWrap(corsOrigin, ingestServer.GraphTopology))
+	}
 
 	// Dashboard UI
 	mux.Handle("/ui/", http.StripPrefix("/ui/", dashboard.Handler()))

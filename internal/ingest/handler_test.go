@@ -1545,3 +1545,160 @@ func histogramCount(mf *dto.MetricFamily) uint64 {
 	}
 	return 0
 }
+
+func TestGraphTopology(t *testing.T) {
+	// makeTestServer creates: api-gateway -> checkout -> payment (PMT_502)
+	// Span nodes have caller_service attrs set for checkout and payment.
+	srv := makeTestServer()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/graph/topology?window=1h", nil)
+	w := httptest.NewRecorder()
+	srv.GraphTopology(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Nodes []struct {
+			Data struct {
+				ID          string  `json:"id"`
+				Label       string  `json:"label"`
+				Type        string  `json:"type"`
+				Invocations int     `json:"invocations"`
+				Errors      int     `json:"errors"`
+				ErrorRate   float64 `json:"error_rate"`
+			} `json:"data"`
+		} `json:"nodes"`
+		Edges []struct {
+			Data struct {
+				Source string `json:"source"`
+				Target string `json:"target"`
+				Label  string `json:"label"`
+				Count  int    `json:"count"`
+			} `json:"data"`
+		} `json:"edges"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	// Should have service nodes (at least api-gateway, checkout, payment)
+	if len(resp.Nodes) < 3 {
+		t.Errorf("expected at least 3 nodes, got %d", len(resp.Nodes))
+	}
+	for _, n := range resp.Nodes {
+		if n.Data.Type != "service" {
+			t.Errorf("node %q has type %q, want service", n.Data.ID, n.Data.Type)
+		}
+		if n.Data.Label == "" {
+			t.Errorf("node %q has empty label", n.Data.ID)
+		}
+	}
+
+	// Should have edges from span caller_service -> service
+	if len(resp.Edges) < 2 {
+		t.Errorf("expected at least 2 edges, got %d", len(resp.Edges))
+	}
+	for _, e := range resp.Edges {
+		if e.Data.Source == "" || e.Data.Target == "" {
+			t.Errorf("edge has empty source or target")
+		}
+		if e.Data.Count < 1 {
+			t.Errorf("edge %s->%s has count %d, want >= 1", e.Data.Source, e.Data.Target, e.Data.Count)
+		}
+	}
+
+	// Error attribution: payment (status 502, success=false) should carry the
+	// error, NOT the root service api-gateway.
+	nodeByID := map[string]struct {
+		Invocations int
+		Errors      int
+		ErrorRate   float64
+	}{}
+	for _, n := range resp.Nodes {
+		nodeByID[n.Data.ID] = struct {
+			Invocations int
+			Errors      int
+			ErrorRate   float64
+		}{n.Data.Invocations, n.Data.Errors, n.Data.ErrorRate}
+	}
+	if pmt, ok := nodeByID["payment"]; !ok {
+		t.Error("payment node missing")
+	} else if pmt.Errors == 0 {
+		t.Errorf("payment errors = 0, want > 0 (failure should be attributed to originating service)")
+	}
+	// api-gateway's own span succeeded (200) — it must not inherit downstream errors.
+	gw, ok := nodeByID["api-gateway"]
+	if !ok {
+		t.Fatal("api-gateway node missing")
+	}
+	if gw.Errors != 0 {
+		t.Errorf("api-gateway errors = %d, want 0 (downstream failures must not inflate root service)", gw.Errors)
+	}
+}
+
+func TestGraphTopology_MethodNotAllowed(t *testing.T) {
+	srv := makeTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/v1/graph/topology", nil)
+	w := httptest.NewRecorder()
+	srv.GraphTopology(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestGraphTopology_NoStore(t *testing.T) {
+	srv := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/v1/graph/topology?window=5m", nil)
+	w := httptest.NewRecorder()
+	srv.GraphTopology(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestGraphTopology_WindowClamped(t *testing.T) {
+	srv := makeTestServer()
+	// Request a 48h window — should be clamped to 24h and still work.
+	req := httptest.NewRequest(http.MethodGet, "/v1/graph/topology?window=48h", nil)
+	w := httptest.NewRecorder()
+	srv.GraphTopology(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCapabilities_GraphFlag(t *testing.T) {
+	tests := []struct {
+		name    string
+		graphUI bool
+		want    bool
+	}{
+		{"disabled", false, false},
+		{"enabled", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := NewServer(ServerConfig{GraphUI: tt.graphUI})
+
+			req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
+			w := httptest.NewRecorder()
+			srv.Capabilities(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+
+			var resp struct {
+				Graph bool `json:"graph"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid json: %v", err)
+			}
+			if resp.Graph != tt.want {
+				t.Errorf("graph = %v, want %v", resp.Graph, tt.want)
+			}
+		})
+	}
+}

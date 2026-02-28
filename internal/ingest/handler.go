@@ -108,6 +108,7 @@ type Server struct {
 	dashboardRefreshSec int
 	prometheusURL       string
 	grafanaURL          string
+	graphUI             bool
 
 	// Replay state — set once during startup, read by /healthz.
 	replayStatus      string // "none", "ok", "failed"
@@ -132,6 +133,7 @@ type ServerConfig struct {
 	DashboardRefreshSec int
 	PrometheusURL       string
 	GrafanaURL          string
+	GraphUI             bool
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -160,6 +162,7 @@ func NewServer(cfg ServerConfig) *Server {
 		dashboardRefreshSec: cfg.DashboardRefreshSec,
 		prometheusURL:       cfg.PrometheusURL,
 		grafanaURL:          cfg.GrafanaURL,
+		graphUI:             cfg.GraphUI,
 		replayStatus:        "none",
 	}
 	if s.sampler == nil {
@@ -515,6 +518,7 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 			"prometheus": s.prometheusURL,
 			"grafana":    s.grafanaURL,
 		},
+		"graph": s.graphUI,
 	})
 }
 
@@ -1207,6 +1211,126 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"sampled": s.sampleRatePct < 100,
 		"routes":  routes,
+	})
+}
+
+// GraphTopology handles GET /v1/graph/topology?window=1h.
+// Returns Cytoscape-formatted service topology: service nodes with aggregate
+// stats and edges derived from span caller→service pairs.
+func (s *Server) GraphTopology(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+	window := parseLooseDuration(q, "window", 1*time.Hour)
+	if window > 24*time.Hour {
+		window = 24 * time.Hour
+	}
+
+	snap, ok := s.snapshotOrServiceUnavailable(w)
+	if !ok {
+		return
+	}
+
+	now := time.Now()
+	start := now.Add(-window)
+
+	type svcStats struct {
+		Invocations int
+		Errors      int
+	}
+	type edgeKey struct {
+		Source, Target string
+	}
+
+	services := map[string]*svcStats{}
+	edgeCounts := map[edgeKey]int{}
+
+	// Derive per-service stats and edges from span nodes.
+	// Each span belongs to exactly one service and carries its own success
+	// flag, so errors are attributed to the service that failed — not the
+	// root service that owns the request node.
+	for _, n := range snap.Nodes {
+		if n.Type != core.NodeSpan {
+			continue
+		}
+		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
+			continue
+		}
+		svc, _ := n.Attr["service"].(string)
+		if svc == "" {
+			continue
+		}
+		ss := services[svc]
+		if ss == nil {
+			ss = &svcStats{}
+			services[svc] = ss
+		}
+		ss.Invocations++
+		if success, ok := n.Attr["success"].(bool); ok && !success {
+			ss.Errors++
+		}
+
+		// Edge: caller_service → service
+		caller, _ := n.Attr["caller_service"].(string)
+		if caller != "" && caller != svc {
+			if services[caller] == nil {
+				services[caller] = &svcStats{}
+			}
+			edgeCounts[edgeKey{caller, svc}]++
+		}
+	}
+
+	type cyNode struct {
+		Data map[string]any `json:"data"`
+	}
+	type cyEdge struct {
+		Data map[string]any `json:"data"`
+	}
+
+	nodes := make([]cyNode, 0, len(services))
+	for name, ss := range services {
+		errRate := 0.0
+		if ss.Invocations > 0 {
+			errRate = math.Round(float64(ss.Errors)/float64(ss.Invocations)*10000) / 100
+		}
+		nodes = append(nodes, cyNode{Data: map[string]any{
+			"id":          name,
+			"label":       name,
+			"type":        "service",
+			"invocations": ss.Invocations,
+			"errors":      ss.Errors,
+			"error_rate":  errRate,
+		}})
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].Data["id"].(string) < nodes[j].Data["id"].(string)
+	})
+
+	edges := make([]cyEdge, 0, len(edgeCounts))
+	for ek, count := range edgeCounts {
+		edges = append(edges, cyEdge{Data: map[string]any{
+			"source": ek.Source,
+			"target": ek.Target,
+			"label":  "calls",
+			"count":  count,
+		}})
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		si := edges[i].Data["source"].(string)
+		sj := edges[j].Data["source"].(string)
+		if si != sj {
+			return si < sj
+		}
+		return edges[i].Data["target"].(string) < edges[j].Data["target"].(string)
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"nodes": nodes,
+		"edges": edges,
 	})
 }
 

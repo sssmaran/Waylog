@@ -66,6 +66,65 @@
         outline-offset: 2px;
         border-radius: var(--radius-inline);
       }
+      /* Tab bar */
+      .tab-bar {
+        display: flex;
+        gap: 0;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 24px;
+      }
+      .tab-bar [role="tab"] {
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--fg-secondary);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        font-weight: 500;
+        padding: 8px 16px;
+        cursor: pointer;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      .tab-bar [role="tab"]:hover {
+        color: var(--fg);
+      }
+      .tab-bar [role="tab"][aria-selected="true"] {
+        color: var(--fg);
+        border-bottom-color: var(--blue);
+      }
+      .tab-panel[hidden] { display: none; }
+
+      /* Graph tab */
+      #graph-container {
+        width: 100%;
+        height: 500px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        background: var(--bg-card);
+      }
+      .graph-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .graph-tooltip {
+        position: absolute;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 8px 12px;
+        font-size: 12px;
+        font-family: var(--font-mono);
+        pointer-events: none;
+        z-index: 40;
+        display: none;
+        line-height: 1.6;
+      }
+      .graph-tooltip .tt-label { font-weight: 600; color: var(--fg); }
+      .graph-tooltip .tt-row { color: var(--fg-secondary); }
+      .graph-tooltip .tt-err { color: var(--red); }
+
       .skip-link {
         position: absolute;
         left: -9999px;
@@ -789,6 +848,12 @@
     <div id="ask-backdrop" aria-hidden="true"></div>
 
     <main id="main">
+      <!-- Tab bar -->
+      <div class="tab-bar" role="tablist" aria-label="Dashboard views" id="tab-bar">
+        <button role="tab" id="tab-dashboard" aria-selected="true" aria-controls="panel-dashboard" tabindex="0">Dashboard</button>
+        <button role="tab" id="tab-graph" aria-selected="false" aria-controls="panel-graph" tabindex="-1" style="display:none">Graph</button>
+      </div>
+
       <!-- Ask panel -->
       <section id="ask-section" aria-label="Ask Waylog">
         <div class="ask-head">
@@ -822,6 +887,9 @@
           <div id="ask-suggestions" class="ask-suggestions"></div>
         </div>
       </section>
+
+      <!-- Dashboard tab panel -->
+      <div id="panel-dashboard" role="tabpanel" aria-labelledby="tab-dashboard">
 
       <!-- KPI Cards -->
       <section aria-label="Key metrics">
@@ -974,6 +1042,20 @@
           </table>
         </div>
       </section>
+      </div><!-- /panel-dashboard -->
+
+      <!-- Graph tab panel -->
+      <div id="panel-graph" role="tabpanel" aria-labelledby="tab-graph" hidden>
+        <div class="graph-controls">
+          <div class="window-toggle" role="group" aria-label="Graph time window">
+            <button class="window-btn" data-graph-window="5m" aria-pressed="false">5m</button>
+            <button class="window-btn" data-graph-window="30m" aria-pressed="false">30m</button>
+            <button class="window-btn active" data-graph-window="1h" aria-pressed="true">1h</button>
+          </div>
+        </div>
+        <div id="graph-container"></div>
+        <div class="graph-tooltip" id="graph-tooltip"></div>
+      </div>
     </main>
 
     <!-- Trace drilldown modal -->
@@ -996,6 +1078,7 @@
     </div>
 
     <script src="chart.umd.min.js"></script>
+    <script src="cytoscape.min.js"></script>
     <script>
       (function () {
         "use strict";
@@ -1058,6 +1141,12 @@
         };
         const traceLimitCollapsed = 10;
         const traceLimitExpanded = 100;
+
+        // --- Tab state ---
+        let activeTab = "dashboard";
+        let graphCapEnabled = false;
+        let graphWindow = "1h";
+        let cyInstance = null;
 
         // --- Data fetching ---
 
@@ -1325,6 +1414,11 @@
                 gl.href = caps.links.grafana;
                 gl.style.display = "";
               }
+            }
+
+            if (caps.graph) {
+              graphCapEnabled = true;
+              document.getElementById("tab-graph").style.display = "";
             }
 
             const askEnabled = !!(caps.ask && caps.ask.enabled);
@@ -1943,10 +2037,14 @@
         });
 
         function refreshAll() {
-          refreshKPIs();
-          refreshChart();
-          refreshRoutes();
-          refreshTraces();
+          if (activeTab === "dashboard") {
+            refreshKPIs();
+            refreshChart();
+            refreshRoutes();
+            refreshTraces();
+          } else if (activeTab === "graph") {
+            refreshGraph();
+          }
           document.getElementById("last-update").textContent =
             "Updated " + new Date().toLocaleTimeString();
         }
@@ -1977,9 +2075,203 @@
           }
         });
 
+        // --- Tab switching ---
+        var validTabs = ["dashboard", "graph"];
+        function switchTab(tabId) {
+          if (validTabs.indexOf(tabId) === -1) tabId = "dashboard";
+          if (tabId === "graph" && !graphCapEnabled) tabId = "dashboard";
+          activeTab = tabId;
+          var tabs = document.querySelectorAll("#tab-bar [role='tab']");
+          tabs.forEach(function (t) {
+            var selected = t.id === "tab-" + tabId;
+            t.setAttribute("aria-selected", String(selected));
+            t.setAttribute("tabindex", selected ? "0" : "-1");
+            var panel = document.getElementById(t.getAttribute("aria-controls"));
+            if (panel) {
+              if (selected) { panel.removeAttribute("hidden"); }
+              else { panel.setAttribute("hidden", ""); }
+            }
+          });
+          // Update URL
+          var params = new URLSearchParams(window.location.search);
+          if (tabId === "dashboard") {
+            params.delete("tab");
+            params.delete("graph_window");
+          } else {
+            params.set("tab", tabId);
+            params.set("graph_window", graphWindow);
+          }
+          var qs = params.toString();
+          history.replaceState(null, "", window.location.pathname + (qs ? "?" + qs : ""));
+          refreshAll();
+        }
+
+        document.querySelectorAll("#tab-bar [role='tab']").forEach(function (tab) {
+          tab.addEventListener("click", function () {
+            switchTab(tab.id.replace("tab-", ""));
+          });
+        });
+        // Keyboard arrow navigation between tabs
+        document.getElementById("tab-bar").addEventListener("keydown", function (e) {
+          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+          var visible = Array.from(document.querySelectorAll("#tab-bar [role='tab']")).filter(
+            function (t) { return t.style.display !== "none"; }
+          );
+          var idx = visible.findIndex(function (t) { return t.getAttribute("aria-selected") === "true"; });
+          if (e.key === "ArrowRight") idx = (idx + 1) % visible.length;
+          else idx = (idx - 1 + visible.length) % visible.length;
+          visible[idx].focus();
+          switchTab(visible[idx].id.replace("tab-", ""));
+        });
+
+        // --- Graph rendering ---
+        async function refreshGraph() {
+          if (!graphCapEnabled || typeof cytoscape === "undefined") return;
+          try {
+            var data = await fetchJSON("/v1/graph/topology?window=" + graphWindow);
+            var elements = [];
+            (data.nodes || []).forEach(function (n) { elements.push({ group: "nodes", data: n.data }); });
+            (data.edges || []).forEach(function (e) { elements.push({ group: "edges", data: e.data }); });
+
+            var container = document.getElementById("graph-container");
+            if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
+
+            cyInstance = cytoscape({
+              container: container,
+              elements: elements,
+              style: [
+                {
+                  selector: "node",
+                  style: {
+                    "label": "data(label)",
+                    "background-color": function (ele) {
+                      var er = ele.data("error_rate") || 0;
+                      if (er >= 10) return "#f31260";
+                      if (er >= 1) return "#f5a623";
+                      return "#17c964";
+                    },
+                    "color": "#ededed",
+                    "text-valign": "bottom",
+                    "text-margin-y": 6,
+                    "font-size": 11,
+                    "font-family": "Geist, system-ui, sans-serif",
+                    "width": function (ele) { return Math.max(30, Math.min(80, 20 + (ele.data("invocations") || 0) / 2)); },
+                    "height": function (ele) { return Math.max(30, Math.min(80, 20 + (ele.data("invocations") || 0) / 2)); },
+                    "border-width": 2,
+                    "border-color": "#333"
+                  }
+                },
+                {
+                  selector: "edge",
+                  style: {
+                    "width": function (ele) { return Math.max(1, Math.min(6, (ele.data("count") || 1) / 5)); },
+                    "line-color": "#444",
+                    "target-arrow-color": "#444",
+                    "target-arrow-shape": "triangle",
+                    "curve-style": "bezier",
+                    "label": function (ele) { var c = ele.data("count"); return c > 1 ? String(c) : ""; },
+                    "font-size": 9,
+                    "color": "#888",
+                    "text-background-color": "#0a0a0a",
+                    "text-background-opacity": 0.8,
+                    "text-background-padding": "2px"
+                  }
+                },
+                {
+                  selector: "node.highlighted",
+                  style: { "border-color": "#0070f3", "border-width": 3 }
+                },
+                {
+                  selector: "edge.highlighted",
+                  style: { "line-color": "#0070f3", "target-arrow-color": "#0070f3", "width": 3 }
+                },
+                {
+                  selector: "node.faded",
+                  style: { "opacity": 0.25 }
+                },
+                {
+                  selector: "edge.faded",
+                  style: { "opacity": 0.15 }
+                }
+              ],
+              layout: { name: "cose", animate: false, nodeDimensionsIncludeLabels: true, padding: 40 },
+              minZoom: 0.3,
+              maxZoom: 3
+            });
+
+            // Click interaction: highlight connections + tooltip
+            var tooltip = document.getElementById("graph-tooltip");
+            cyInstance.on("tap", "node", function (evt) {
+              var node = evt.target;
+              cyInstance.elements().removeClass("highlighted faded");
+              var neighborhood = node.neighborhood().add(node);
+              neighborhood.addClass("highlighted");
+              cyInstance.elements().not(neighborhood).addClass("faded");
+
+              var d = node.data();
+              tooltip.innerHTML =
+                '<div class="tt-label">' + escH(d.label) + '</div>' +
+                '<div class="tt-row">Invocations: ' + (d.invocations || 0) + '</div>' +
+                '<div class="tt-err">Errors: ' + (d.errors || 0) + ' (' + (d.error_rate || 0).toFixed(1) + '%)</div>';
+              var pos = evt.renderedPosition || evt.position;
+              tooltip.style.left = (container.offsetLeft + pos.x + 15) + "px";
+              tooltip.style.top = (container.offsetTop + pos.y - 10) + "px";
+              tooltip.style.display = "block";
+            });
+            cyInstance.on("tap", function (evt) {
+              if (evt.target === cyInstance) {
+                cyInstance.elements().removeClass("highlighted faded");
+                tooltip.style.display = "none";
+              }
+            });
+          } catch (e) {
+            console.error("Graph topology fetch error:", e);
+          }
+        }
+
+        function escH(s) {
+          var d = document.createElement("div");
+          d.textContent = s;
+          return d.innerHTML;
+        }
+
+        // Graph window controls
+        document.querySelectorAll("[data-graph-window]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            graphWindow = btn.getAttribute("data-graph-window");
+            document.querySelectorAll("[data-graph-window]").forEach(function (b) {
+              var active = b === btn;
+              b.classList.toggle("active", active);
+              b.setAttribute("aria-pressed", String(active));
+            });
+            var params = new URLSearchParams(window.location.search);
+            params.set("graph_window", graphWindow);
+            history.replaceState(null, "", window.location.pathname + "?" + params.toString());
+            refreshGraph();
+          });
+        });
+
+        // Restore tab from URL
+        (function restoreURL() {
+          var params = new URLSearchParams(window.location.search);
+          var t = params.get("tab");
+          if (t && validTabs.indexOf(t) !== -1) activeTab = t;
+          var gw = params.get("graph_window");
+          if (gw && ["5m", "30m", "1h"].indexOf(gw) !== -1) {
+            graphWindow = gw;
+            document.querySelectorAll("[data-graph-window]").forEach(function (b) {
+              var active = b.getAttribute("data-graph-window") === gw;
+              b.classList.toggle("active", active);
+              b.setAttribute("aria-pressed", String(active));
+            });
+          }
+        })();
+
         setRouteFailuresOnly(routeFailuresOnly, false);
         setRouteWindow(routeWindow, false);
         loadCapabilities().finally(function () {
+          // Apply saved tab after capabilities are loaded (so graph tab is visible if enabled)
+          if (activeTab !== "dashboard") switchTab(activeTab);
           refreshAll();
           setInterval(refreshAll, refreshIntervalMs);
         });
