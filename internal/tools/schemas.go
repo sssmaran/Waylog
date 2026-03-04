@@ -9,6 +9,7 @@ const graphStatsInputSchema = `{
 const graphStatsOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "nodes": { "type": "integer" },
     "edges": { "type": "integer" },
     "requests": { "type": "integer" },
@@ -17,7 +18,7 @@ const graphStatsOutputSchema = `{
     "feature_flags": { "type": "integer" },
     "failures": { "type": "integer" }
   },
-  "required": ["nodes", "edges", "requests", "users", "services", "feature_flags", "failures"],
+  "required": ["schema_version", "nodes", "edges", "requests", "users", "services", "feature_flags", "failures"],
   "additionalProperties": false
 }`
 
@@ -33,20 +34,22 @@ const explainRequestInputSchema = `{
 const explainRequestOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "request_id": { "type": "string" },
-    "latency_ms": {},
-    "flow": {},
+    "latency_ms": { "type": ["number", "null"] },
+    "flow": { "type": ["string", "null"] },
     "user_id": { "type": "string" },
-    "user_tier": {},
+    "user_tier": { "type": ["string", "null"] },
     "feature_flags": { "type": "array", "items": { "type": "string" } },
     "span_id": { "type": "string" },
-    "span_service": {},
+    "span_service": { "type": ["string", "null"] },
     "span_depth": { "type": "string" },
-    "service": {},
-    "error_code": {},
-    "error_msg": {}
+    "service": { "type": ["string", "null"] },
+    "error_code": { "type": ["string", "null"] },
+    "error_msg": { "type": ["string", "null"] },
+    "span_chain": { "type": "array", "items": { "type": "object" } }
   },
-  "required": ["request_id"],
+  "required": ["schema_version", "request_id"],
   "additionalProperties": false
 }`
 
@@ -62,6 +65,7 @@ const traceGraphInputSchema = `{
 const traceGraphOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "trace_id": { "type": "string" },
     "roots": {
       "type": "array",
@@ -69,14 +73,14 @@ const traceGraphOutputSchema = `{
         "type": "object",
         "properties": {
           "span_id": { "type": "string" },
-          "service": {},
+          "service": { "type": ["string", "null"] },
           "children": { "type": "array" }
         },
         "additionalProperties": false
       }
     }
   },
-  "required": ["trace_id", "roots"],
+  "required": ["schema_version", "trace_id", "roots"],
   "additionalProperties": false
 }`
 
@@ -92,18 +96,19 @@ const traceSummaryInputSchema = `{
 const traceSummaryOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "trace_id": { "type": "string" },
     "request_id": { "type": "string" },
     "event_name": { "type": "string" },
     "flow": { "type": "string" },
-    "latency_ms": {},
+    "latency_ms": { "type": ["number", "null"] },
     "root_span_ids": { "type": "array", "items": { "type": "string" } },
     "paths": {
       "type": "array",
       "items": { "type": "array", "items": { "type": "string" } }
     }
   },
-  "required": ["trace_id", "request_id"],
+  "required": ["schema_version", "trace_id", "request_id"],
   "additionalProperties": false
 }`
 
@@ -118,6 +123,7 @@ const failuresInputSchema = `{
 const failuresOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "failures": {
       "type": "array",
       "items": {
@@ -125,7 +131,7 @@ const failuresOutputSchema = `{
         "properties": {
           "request_id": { "type": "string" },
           "trace_id": { "type": "string" },
-          "latency_ms": {},
+          "latency_ms": { "type": ["number", "null"] },
           "tier": { "type": "string" },
           "error_code": { "type": "string" }
         },
@@ -133,7 +139,7 @@ const failuresOutputSchema = `{
       }
     }
   },
-  "required": ["failures"],
+  "required": ["schema_version", "failures"],
   "additionalProperties": false
 }`
 
@@ -148,6 +154,7 @@ const patternsInputSchema = `{
 const patternsOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "patterns": {
       "type": "array",
       "items": {
@@ -156,14 +163,14 @@ const patternsOutputSchema = `{
           "error_code": { "type": "string" },
           "flow": { "type": "string" },
           "user_tier": { "type": "string" },
-          "feature_flags": { "type": "array", "items": { "type": "string" } },
+          "feature_flags": { "type": ["array", "null"], "items": { "type": "string" } },
           "count": { "type": "integer" }
         },
         "additionalProperties": false
       }
     }
   },
-  "required": ["patterns"],
+  "required": ["schema_version", "patterns"],
   "additionalProperties": false
 }`
 
@@ -182,9 +189,12 @@ const blastInputSchema = `{
 const blastOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "error_code": { "type": "string" },
     "affected_requests": { "type": "integer" },
     "affected_users": { "type": "integer" },
+    "vip_users": { "type": "integer" },
+    "severity_score": { "type": "number" },
     "services": {
       "type": "array",
       "items": {
@@ -220,7 +230,7 @@ const blastOutputSchema = `{
     },
     "feature_flags": { "type": "array", "items": { "type": "string" } }
   },
-  "required": ["error_code", "affected_requests", "affected_users"],
+  "required": ["schema_version", "error_code", "affected_requests", "affected_users", "vip_users", "severity_score"],
   "additionalProperties": false
 }`
 
@@ -236,10 +246,11 @@ const chainInputSchema = `{
 const chainOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "request_id": { "type": "string" },
     "services": { "type": "array", "items": { "type": "string" } }
   },
-  "required": ["request_id", "services"],
+  "required": ["schema_version", "request_id", "services"],
   "additionalProperties": false
 }`
 
@@ -256,9 +267,10 @@ const queryInputSchema = `{
 const queryOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "matched_requests": { "type": "integer" }
   },
-  "required": ["matched_requests"],
+  "required": ["schema_version", "matched_requests"],
   "additionalProperties": false
 }`
 
@@ -273,14 +285,37 @@ const diffInputSchema = `{
   "additionalProperties": false
 }`
 
+const diffEntryItemSchema = `{
+  "type": "object",
+  "properties": {
+    "error_code": { "type": "string" },
+    "before": { "type": "integer" },
+    "after": { "type": "integer" },
+    "delta": { "type": "integer" }
+  },
+  "additionalProperties": false
+}`
+
 const diffOutputSchema = `{
   "type": "object",
   "properties": {
-    "new": { "type": "array" },
-    "removed": { "type": "array" },
-    "increased": { "type": "array" },
-    "decreased": { "type": "array" }
+    "schema_version": { "type": "string" },
+    "new": { "type": "array", "items": ` + diffEntryItemSchema + ` },
+    "removed": { "type": "array", "items": ` + diffEntryItemSchema + ` },
+    "increased": { "type": "array", "items": ` + diffEntryItemSchema + ` },
+    "decreased": { "type": "array", "items": ` + diffEntryItemSchema + ` },
+    "total_requests_before": { "type": "integer" },
+    "total_requests_after": { "type": "integer" },
+    "total_failures_before": { "type": "integer" },
+    "total_failures_after": { "type": "integer" },
+    "latency_p50_before": { "type": "integer" },
+    "latency_p50_after": { "type": "integer" },
+    "latency_p95_before": { "type": "integer" },
+    "latency_p95_after": { "type": "integer" },
+    "latency_p99_before": { "type": "integer" },
+    "latency_p99_after": { "type": "integer" }
   },
+  "required": ["schema_version"],
   "additionalProperties": false
 }`
 
@@ -297,6 +332,7 @@ const insightsInputSchema = `{
 const insightsOutputSchema = `{
   "type": "object",
   "properties": {
+    "schema_version": { "type": "string" },
     "total_failures": { "type": "integer" },
     "top_errors": {
       "type": "array",
@@ -321,6 +357,6 @@ const insightsOutputSchema = `{
       }
     }
   },
-  "required": ["total_failures"],
+  "required": ["schema_version", "total_failures"],
   "additionalProperties": false
 }`

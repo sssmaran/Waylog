@@ -227,7 +227,7 @@ func TestOverview_Stats(t *testing.T) {
 }
 
 func TestCORSWrap(t *testing.T) {
-	handler := CORSWrap("http://localhost:3000", func(w http.ResponseWriter, r *http.Request) {
+	handler := CORSWrap("http://localhost:3000", "GET, OPTIONS", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 

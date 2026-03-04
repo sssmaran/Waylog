@@ -8,21 +8,23 @@ import (
 )
 
 type graphStatsOutput struct {
-	Nodes        int `json:"nodes"`
-	Edges        int `json:"edges"`
-	Requests     int `json:"requests"`
-	Users        int `json:"users"`
-	Services     int `json:"services"`
-	FeatureFlags int `json:"feature_flags"`
-	Failures     int `json:"failures"`
+	SchemaVersion string `json:"schema_version"`
+	Nodes         int    `json:"nodes"`
+	Edges         int    `json:"edges"`
+	Requests      int    `json:"requests"`
+	Users         int    `json:"users"`
+	Services      int    `json:"services"`
+	FeatureFlags  int    `json:"feature_flags"`
+	Failures      int    `json:"failures"`
 }
 
 func handleGraphStats(ctx context.Context, store Store, _ json.RawMessage) (any, error) {
 	_ = ctx
 	g := store.Snapshot()
 	out := graphStatsOutput{
-		Nodes: len(g.Nodes),
-		Edges: len(g.Edges),
+		SchemaVersion: "1.0",
+		Nodes:         len(g.Nodes),
+		Edges:         len(g.Edges),
 	}
 
 	for _, n := range g.Nodes {

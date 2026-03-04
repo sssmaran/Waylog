@@ -24,7 +24,8 @@ type failureEntry struct {
 }
 
 type failuresOutput struct {
-	Failures []failureEntry `json:"failures"`
+	SchemaVersion string         `json:"schema_version"`
+	Failures      []failureEntry `json:"failures"`
 }
 
 func handleFailures(ctx context.Context, store Store, params json.RawMessage) (any, error) {
@@ -32,7 +33,7 @@ func handleFailures(ctx context.Context, store Store, params json.RawMessage) (a
 	var input failuresInput
 	if len(params) > 0 {
 		if err := json.Unmarshal(params, &input); err != nil {
-			return nil, fmt.Errorf("invalid params: %w", err)
+			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 		}
 	}
 
@@ -90,7 +91,7 @@ func handleFailures(ctx context.Context, store Store, params json.RawMessage) (a
 		})
 	}
 
-	return failuresOutput{Failures: out}, nil
+	return failuresOutput{SchemaVersion: "1.0", Failures: out}, nil
 }
 
 type patternsInput struct {
@@ -98,7 +99,8 @@ type patternsInput struct {
 }
 
 type patternsOutput struct {
-	Patterns []analysis.FailurePattern `json:"patterns"`
+	SchemaVersion string                    `json:"schema_version"`
+	Patterns      []analysis.FailurePattern `json:"patterns"`
 }
 
 func handleFailurePatterns(ctx context.Context, store Store, params json.RawMessage) (any, error) {
@@ -106,14 +108,14 @@ func handleFailurePatterns(ctx context.Context, store Store, params json.RawMess
 	var input patternsInput
 	if len(params) > 0 {
 		if err := json.Unmarshal(params, &input); err != nil {
-			return nil, fmt.Errorf("invalid params: %w", err)
+			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 		}
 	}
 
 	if input.Window != "" {
 		d, err := time.ParseDuration(input.Window)
 		if err != nil {
-			return nil, fmt.Errorf("invalid window: %w", err)
+			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid window: %v", err)}
 		}
 		end := time.Now()
 		start := end.Add(-d)
@@ -123,12 +125,12 @@ func handleFailurePatterns(ctx context.Context, store Store, params json.RawMess
 		for i := range patterns {
 			patterns[i].ErrorCode = errorCodeForID(g, patterns[i].ErrorCode)
 		}
-		return patternsOutput{Patterns: patterns}, nil
+		return patternsOutput{SchemaVersion: "1.0", Patterns: patterns}, nil
 	}
 
 	g := store.Snapshot()
 	patterns := analysis.DetectFailurePatterns(g)
-	return patternsOutput{Patterns: patterns}, nil
+	return patternsOutput{SchemaVersion: "1.0", Patterns: patterns}, nil
 }
 
 type blastInput struct {
@@ -154,6 +156,7 @@ type blastUser struct {
 }
 
 type blastOutput struct {
+	SchemaVersion    string         `json:"schema_version"`
 	ErrorCode        string         `json:"error_code"`
 	AffectedRequests int            `json:"affected_requests"`
 	AffectedUsers    int            `json:"affected_users"`
@@ -169,14 +172,22 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 	_ = ctx
 	var input blastInput
 	if err := json.Unmarshal(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
 	if input.ErrorCode == "" {
-		return nil, fmt.Errorf("error_code required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "error_code required"}
 	}
 
 	g := store.Snapshot()
-	spanToRequest := spanToRequestIndex(g)
+
+	// Try error index for fast lookup
+	var requestIDs []string
+	useIndex := false
+	ids, ready := store.ErrorIndex(input.ErrorCode)
+	if ready {
+		requestIDs = ids
+		useIndex = true
+	}
 
 	weightRequest := config.GetenvFloat("BLAST_WEIGHT_REQUEST", 1.0)
 	weightVIP := config.GetenvFloat("BLAST_WEIGHT_VIP", 10.0)
@@ -191,57 +202,42 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 	vipUsers := map[string]bool{}
 	premiumUsers := map[string]bool{}
 
-	for _, e := range g.Edges {
-		if e.Type != core.EdgeFailedWith {
-			continue
-		}
-
-		errNode := g.Nodes[e.To]
-		code := ""
-		if errNode.Attr != nil {
-			code, _ = errNode.Attr["code"].(string)
-		}
-		if code != input.ErrorCode {
-			continue
-		}
-
-		reqID, ok := requestIDForFailureEdge(g, e, spanToRequest)
-		if !ok {
-			continue
-		}
-
-		if requests[reqID] {
-			continue
-		}
-		requests[reqID] = true
-
-		for _, ed := range g.OutEdges[reqID] {
-			switch ed.Type {
-			case core.EdgeRequestBy:
-				u := g.Nodes[ed.To]
-				users[u.ID]++
-				if t, ok := u.Attr["tier"].(string); ok {
-					tiers[t]++
-					if t == "premium" {
-						premiumUsers[u.ID] = true
-					}
-				}
-				if vip, ok := u.Attr["vip"].(bool); ok && vip {
-					vipUsers[u.ID] = true
-				}
-			case core.EdgeHandledBy:
-				s := g.Nodes[ed.To]
-				services[serviceNameForNode(s)]++
-			case core.EdgeUsedFlag:
-				f := g.Nodes[ed.To]
-				if name, ok := f.Attr["name"].(string); ok {
-					flags[name] = true
-				}
+	if useIndex {
+		for _, reqID := range requestIDs {
+			if requests[reqID] {
+				continue
 			}
+			requests[reqID] = true
+			collectBlastNeighbors(g, reqID, users, services, tiers, flags, vipUsers, premiumUsers)
+		}
+	} else {
+		spanToRequest := spanToRequestIndex(g)
+		for _, e := range g.Edges {
+			if e.Type != core.EdgeFailedWith {
+				continue
+			}
+			errNode := g.Nodes[e.To]
+			code := ""
+			if errNode.Attr != nil {
+				code, _ = errNode.Attr["code"].(string)
+			}
+			if code != input.ErrorCode {
+				continue
+			}
+			reqID, ok := requestIDForFailureEdge(g, e, spanToRequest)
+			if !ok {
+				continue
+			}
+			if requests[reqID] {
+				continue
+			}
+			requests[reqID] = true
+			collectBlastNeighbors(g, reqID, users, services, tiers, flags, vipUsers, premiumUsers)
 		}
 	}
 
 	out := blastOutput{
+		SchemaVersion:    "1.0",
 		ErrorCode:        input.ErrorCode,
 		AffectedRequests: len(requests),
 		AffectedUsers:    len(users),
@@ -266,23 +262,51 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 	return out, nil
 }
 
+func collectBlastNeighbors(g *core.Graph, reqID string, users map[string]int, services map[string]int, tiers map[string]int, flags map[string]bool, vipUsers map[string]bool, premiumUsers map[string]bool) {
+	for _, ed := range g.OutEdges[reqID] {
+		switch ed.Type {
+		case core.EdgeRequestBy:
+			u := g.Nodes[ed.To]
+			users[u.ID]++
+			if t, ok := u.Attr["tier"].(string); ok {
+				tiers[t]++
+				if t == "premium" {
+					premiumUsers[u.ID] = true
+				}
+			}
+			if vip, ok := u.Attr["vip"].(bool); ok && vip {
+				vipUsers[u.ID] = true
+			}
+		case core.EdgeHandledBy:
+			s := g.Nodes[ed.To]
+			services[serviceNameForNode(s)]++
+		case core.EdgeUsedFlag:
+			f := g.Nodes[ed.To]
+			if name, ok := f.Attr["name"].(string); ok {
+				flags[name] = true
+			}
+		}
+	}
+}
+
 type chainInput struct {
 	RequestID string `json:"request_id"`
 }
 
 type chainOutput struct {
-	RequestID string   `json:"request_id"`
-	Services  []string `json:"services"`
+	SchemaVersion string   `json:"schema_version"`
+	RequestID     string   `json:"request_id"`
+	Services      []string `json:"services"`
 }
 
 func handleFailureChain(ctx context.Context, store Store, params json.RawMessage) (any, error) {
 	_ = ctx
 	var input chainInput
 	if err := json.Unmarshal(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
 	if input.RequestID == "" {
-		return nil, fmt.Errorf("request_id required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "request_id required"}
 	}
 
 	g := store.Snapshot()
@@ -294,11 +318,11 @@ func handleFailureChain(ctx context.Context, store Store, params json.RawMessage
 		}
 	}
 	if serviceID == "" {
-		return chainOutput{RequestID: input.RequestID, Services: []string{}}, nil
+		return chainOutput{SchemaVersion: "1.0", RequestID: input.RequestID, Services: []string{}}, nil
 	}
 
 	visited := map[string]bool{}
-	var services []string
+	var svcs []string
 	curr := serviceID
 
 	for {
@@ -311,7 +335,7 @@ func handleFailureChain(ctx context.Context, store Store, params json.RawMessage
 		if !ok {
 			break
 		}
-		services = append(services, serviceNameForNode(svc))
+		svcs = append(svcs, serviceNameForNode(svc))
 
 		next := ""
 		for _, e := range g.OutEdges[curr] {
@@ -326,5 +350,5 @@ func handleFailureChain(ctx context.Context, store Store, params json.RawMessage
 		curr = next
 	}
 
-	return chainOutput{RequestID: input.RequestID, Services: services}, nil
+	return chainOutput{SchemaVersion: "1.0", RequestID: input.RequestID, Services: svcs}, nil
 }

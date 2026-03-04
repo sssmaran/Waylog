@@ -169,9 +169,9 @@ func handleAsk(store tools.Store, args []string) {
 		client.ToolMode = toolMode
 	}
 
-	answer, err := llm.Ask(context.Background(), client, toolDefs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
+	answer, _, err := llm.Ask(context.Background(), client, toolDefs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
 		return reg.Call(ctx, store, name, params)
-	}), prompt, 5)
+	}), prompt, llm.AskOptions{MaxSteps: 5})
 	if err != nil {
 		printAskError(err)
 		return

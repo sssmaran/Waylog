@@ -12,6 +12,7 @@ type ToolHandler func(ctx context.Context, store Store, params json.RawMessage) 
 type Tool struct {
 	Name         string
 	Description  string
+	Version      string
 	InputSchema  json.RawMessage
 	OutputSchema json.RawMessage
 	Handler      ToolHandler
@@ -58,10 +59,25 @@ func (r *Registry) List() []Tool {
 	return out
 }
 
-func (r *Registry) Call(ctx context.Context, store Store, name string, params json.RawMessage) (any, error) {
+func (r *Registry) Call(ctx context.Context, store Store, name string, params json.RawMessage) (result any, err error) {
 	t, ok := r.tools[name]
 	if !ok {
-		return nil, fmt.Errorf("unknown tool: %s", name)
+		return nil, &ToolError{Code: CodeNotFound, Message: fmt.Sprintf("unknown tool: %s", name), Retryable: false}
 	}
-	return t.Handler(ctx, store, params)
+
+	defer func() {
+		if p := recover(); p != nil {
+			err = &ToolError{Code: CodeInternal, Message: fmt.Sprintf("panic: %v", p), Retryable: true}
+			result = nil
+		}
+	}()
+
+	result, err = t.Handler(ctx, store, params)
+	if err != nil {
+		if _, ok := AsToolError(err); ok {
+			return nil, err
+		}
+		return nil, &ToolError{Code: CodeInternal, Message: err.Error(), Retryable: false}
+	}
+	return result, nil
 }
