@@ -23,12 +23,12 @@ type Metrics struct {
 	ReplayInProgress    prometheus.Gauge
 	ReplayFailuresTotal prometheus.Counter
 	Ready               prometheus.Gauge
-	InFlightRequests   prometheus.Gauge
+	InFlightRequests    prometheus.Gauge
 	SnapshotLastSuccess prometheus.Gauge
 	SnapshotLastError   prometheus.Gauge
-	GraphNodes       prometheus.Gauge
-	GraphEdges       prometheus.Gauge
-	GraphPrunedTotal prometheus.Counter
+	GraphNodes          prometheus.Gauge
+	GraphEdges          prometheus.Gauge
+	GraphPrunedTotal    prometheus.Counter
 }
 
 // New creates a Metrics instance and registers all collectors with the given registry.

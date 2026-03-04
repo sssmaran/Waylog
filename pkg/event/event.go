@@ -41,6 +41,10 @@ type RequestContext struct {
 
 	Flow         string   `json:"flow"`
 	FeatureFlags []string `json:"feature_flags"`
+
+	CorrelationID string `json:"correlation_id,omitempty"`
+	Attempt       int    `json:"attempt,omitempty"`
+	TransportKind string `json:"transport_kind,omitempty"`
 }
 
 type SystemContext struct {

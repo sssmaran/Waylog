@@ -40,24 +40,28 @@ func Init(cfg Config) error {
 }
 
 func New(cfg Config) (*Client, error) {
-	if cfg.Service == "" {
-		return nil, ErrServiceRequired
-	}
-	if cfg.Env == "" {
-		return nil, ErrEnvRequired
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 
 	applyDefaults(&cfg)
 
 	t := cfg.Transport
 	if t == nil {
-		if len(cfg.Kafka.Brokers) > 0 {
-			kafkaTransport, err := transport.NewKafkaTransport(cfg.Kafka)
+		switch {
+		case cfg.IngestURL != "":
+			ht, err := transport.NewHTTPTransport(cfg.IngestURL, 0)
 			if err != nil {
 				return nil, err
 			}
-			t = kafkaTransport
-		} else {
+			t = ht
+		case len(cfg.Kafka.Brokers) > 0:
+			kt, err := transport.NewKafkaTransport(cfg.Kafka)
+			if err != nil {
+				return nil, err
+			}
+			t = kt
+		default:
 			t = &transport.NopTransport{}
 		}
 	}
@@ -136,6 +140,14 @@ func (c *Client) ServiceName() string {
 		return ""
 	}
 	return c.cfg.Service
+}
+
+// Stats returns a snapshot of this client's counters.
+func (c *Client) Stats() StatsSnapshot {
+	if c == nil {
+		return StatsSnapshot{}
+	}
+	return c.stats.snapshot()
 }
 
 func (c *Client) RequestEnd(ctx context.Context) {
@@ -266,11 +278,16 @@ func (c *Client) run() {
 		if len(batch) == 0 {
 			return
 		}
-		if err := c.transport.Send(ctx, batch); err != nil {
+		sent, err := c.transport.Send(ctx, batch)
+		if sent > 0 {
+			c.stats.incEmitted(uint64(sent))
+		}
+		if err != nil {
 			c.stats.incTransportErrors(1)
-			c.stats.incDropped(uint64(len(batch)))
-		} else {
-			c.stats.incEmitted(uint64(len(batch)))
+			dropped := len(batch) - sent
+			if dropped > 0 {
+				c.stats.incDropped(uint64(dropped))
+			}
 		}
 		batch = batch[:0]
 	}

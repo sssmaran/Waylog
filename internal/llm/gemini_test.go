@@ -412,13 +412,13 @@ func TestIsHex(t *testing.T) {
 		input string
 		want  bool
 	}{
-		{"abcdef1234567890", true},  // 16 chars, minimum
-		{"ABCDEF1234567890", true},  // uppercase
+		{"abcdef1234567890", true},                 // 16 chars, minimum
+		{"ABCDEF1234567890", true},                 // uppercase
 		{"abcdef1234567890abcdef1234567890", true}, // 32 chars
-		{"abc123", false},           // too short (<16)
-		{"", false},                 // empty
-		{"abcdef123456789g", false}, // invalid char 'g'
-		{"abcdef12345678 0", false}, // space
+		{"abc123", false},                          // too short (<16)
+		{"", false},                                // empty
+		{"abcdef123456789g", false},                // invalid char 'g'
+		{"abcdef12345678 0", false},                // space
 	}
 
 	for _, tt := range tests {
@@ -436,10 +436,10 @@ func TestIsUUID(t *testing.T) {
 		want  bool
 	}{
 		{"550e8400-e29b-41d4-a716-446655440000", true},
-		{"550E8400-E29B-41D4-A716-446655440000", true},  // uppercase
+		{"550E8400-E29B-41D4-A716-446655440000", true},   // uppercase
 		{"550e8400e29b41d4a716446655440000", false},      // no dashes
 		{"550e8400-e29b-41d4-a716-44665544000", false},   // 35 chars
-		{"550e8400-e29b-41d4-a716-4466554400000", false},  // 37 chars
+		{"550e8400-e29b-41d4-a716-4466554400000", false}, // 37 chars
 		{"", false},
 		{"not-a-uuid-at-all-no-not-this-one!!", false},
 	}

@@ -806,6 +806,15 @@ components:
         feature_flags:
           type: array
           items: { type: string }
+        correlation_id:
+          type: string
+          description: Optional correlation ID for cross-request tracing.
+        attempt:
+          type: integer
+          description: Optional retry attempt number.
+        transport_kind:
+          type: string
+          description: Optional transport type indicator (e.g. "http", "kafka").
     SystemContext:
       type: object
       required: [service, version, deployment_id, env]
