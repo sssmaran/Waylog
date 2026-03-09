@@ -23,12 +23,20 @@ type Metrics struct {
 	ReplayInProgress    prometheus.Gauge
 	ReplayFailuresTotal prometheus.Counter
 	Ready               prometheus.Gauge
-	InFlightRequests   prometheus.Gauge
+	InFlightRequests    prometheus.Gauge
 	SnapshotLastSuccess prometheus.Gauge
 	SnapshotLastError   prometheus.Gauge
-	GraphNodes       prometheus.Gauge
-	GraphEdges       prometheus.Gauge
-	GraphPrunedTotal prometheus.Counter
+	GraphNodes          prometheus.Gauge
+	GraphEdges          prometheus.Gauge
+	GraphPrunedTotal    prometheus.Counter
+
+	AskRequestsTotal     *prometheus.CounterVec
+	AskDuration          prometheus.Histogram
+	AskToolCallsTotal    *prometheus.CounterVec
+	AskToolDuration      *prometheus.HistogramVec
+	ToolDirectCallsTotal *prometheus.CounterVec
+	DedupReplayTotal     prometheus.Counter
+	DedupCacheSize       prometheus.Gauge
 }
 
 // New creates a Metrics instance and registers all collectors with the given registry.
@@ -99,6 +107,39 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help: "Number of retention prune cycles executed.",
 	})
 
+	m.AskRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_ask_requests_total",
+		Help: "Ask endpoint requests.",
+	}, []string{"status", "error_code"})
+	m.AskDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_ask_duration_seconds",
+		Help:    "Ask endpoint latency.",
+		Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30},
+	})
+	m.AskToolCallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_ask_tool_calls_total",
+		Help: "Tool calls within ask.",
+	}, []string{"tool", "status"})
+	m.AskToolDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "waylog_ask_tool_duration_seconds",
+		Help:    "Tool call latency within ask.",
+		Buckets: defaultBuckets,
+	}, []string{"tool"})
+	m.ToolDirectCallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_tool_direct_calls_total",
+		Help: "Direct tool endpoint calls.",
+	}, []string{"tool", "status"})
+	// Renamed from waylog_dedup_cache_hits_total → waylog_dedup_replay_total
+	// to reflect that this counts both cache-hit replays and inflight-wait replays.
+	m.DedupReplayTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_dedup_replay_total",
+		Help: "Idempotency replay responses (cache hit or inflight wait).",
+	})
+	m.DedupCacheSize = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "waylog_dedup_cache_size",
+		Help: "Current dedup cache entry count.",
+	})
+
 	reg.MustRegister(
 		m.IngestLatency, m.MergeLatency,
 		m.EventsAccepted, m.EventsRejected, m.EventlogFails,
@@ -106,6 +147,9 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.InFlightRequests,
 		m.SnapshotLastSuccess, m.SnapshotLastError,
 		m.GraphNodes, m.GraphEdges, m.GraphPrunedTotal,
+		m.AskRequestsTotal, m.AskDuration,
+		m.AskToolCallsTotal, m.AskToolDuration,
+		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
 	)
 
 	return m

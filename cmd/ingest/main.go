@@ -71,6 +71,7 @@ func main() {
 	}
 
 	apiKey := config.Getenv("WAYLOG_API_KEY", "")
+	agentKey := config.Getenv("WAYLOG_AGENT_KEY", "")
 	maxBody := int64(config.GetenvInt("MAX_BODY_BYTES", 1<<20))
 	eventLogDir := config.Getenv("EVENT_LOG_DIR", "")
 	askMaxStepsDefault := config.GetenvInt("ASK_MAX_STEPS_DEFAULT", 5)
@@ -79,6 +80,10 @@ func main() {
 	prometheusURL := config.Getenv("PROMETHEUS_URL", "")
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
 	graphUI := config.GetenvBool("GRAPH_UI", false)
+
+	trustProxy := config.GetenvBool("WAYLOG_TRUST_PROXY", false)
+
+	dedupCache := ingest.NewDedupCache()
 
 	reg := tools.NewRegistry()
 	if err := tools.RegisterGraphTools(reg); err != nil {
@@ -104,6 +109,9 @@ func main() {
 		PrometheusURL:       prometheusURL,
 		GrafanaURL:          grafanaURL,
 		GraphUI:             graphUI,
+		DedupCache:          dedupCache,
+		AgentKey:            agentKey,
+		TrustProxy:          trustProxy,
 	})
 
 	// Optional append-only event log
@@ -166,6 +174,11 @@ func main() {
 
 	// ---------------- HTTP server ----------------
 
+	// Start dedup cache eviction
+	dedupCtx, dedupCancel := context.WithCancel(context.Background())
+	defer dedupCancel()
+	dedupCache.StartEviction(dedupCtx)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", ingestServer.Health)
 	mux.HandleFunc("/livez", ingestServer.Livez)
@@ -181,17 +194,27 @@ func main() {
 
 	// Read APIs with CORS
 	corsOrigin := config.Getenv("CORS_ORIGIN", "*")
-	mux.HandleFunc("/v1/traces/story", ingest.CORSWrap(corsOrigin, ingestServer.TraceStory))
-	mux.HandleFunc("/v1/traces/recent", ingest.CORSWrap(corsOrigin, ingestServer.RecentTraces))
-	mux.HandleFunc("/v1/overview", ingest.CORSWrap(corsOrigin, ingestServer.Overview))
-	mux.HandleFunc("/v1/events/search", ingest.CORSWrap(corsOrigin, ingestServer.EventSearch))
-	mux.HandleFunc("/v1/overview/timeseries", ingest.CORSWrap(corsOrigin, ingestServer.OverviewTimeseries))
-	mux.HandleFunc("/v1/routes", ingest.CORSWrap(corsOrigin, ingestServer.Routes))
-	mux.HandleFunc("/v1/capabilities", ingest.CORSWrap(corsOrigin, ingestServer.Capabilities))
-	mux.HandleFunc("/v1/tools", ingest.CORSWrap(corsOrigin, ingestServer.Tools))
-	mux.HandleFunc("/v1/ask", ingestServer.Ask)
+	mux.HandleFunc("/v1/traces/story", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.TraceStory))
+	mux.HandleFunc("/v1/traces/recent", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.RecentTraces))
+	mux.HandleFunc("/v1/overview", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Overview))
+	mux.HandleFunc("/v1/events/search", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.EventSearch))
+	mux.HandleFunc("/v1/overview/timeseries", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.OverviewTimeseries))
+	mux.HandleFunc("/v1/routes", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Routes))
+	mux.HandleFunc("/v1/capabilities", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Capabilities))
+
+	// Agent-authenticated endpoints: CORS outermost, then auth
+	if agentKey != "" {
+		mux.HandleFunc("/v1/tools", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.Tools)))
+		mux.HandleFunc("/v1/tools/", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.ToolCall)))
+		mux.HandleFunc("/v1/ask", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.Ask)))
+	} else {
+		mux.HandleFunc("/v1/tools", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Tools))
+		mux.HandleFunc("/v1/tools/", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.ToolCall))
+		mux.HandleFunc("/v1/ask", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.Ask))
+	}
+
 	if graphUI {
-		mux.HandleFunc("/v1/graph/topology", ingest.CORSWrap(corsOrigin, ingestServer.GraphTopology))
+		mux.HandleFunc("/v1/graph/topology", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.GraphTopology))
 	}
 
 	// Dashboard UI
@@ -199,10 +222,14 @@ func main() {
 	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
 	})
+	mux.HandleFunc("/ui/ask", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.DashboardAsk))
+
+	// Wrap mux with CorrelationID middleware
+	handler := ingest.CorrelationIDMiddleware(mux)
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: config.GetenvDuration("READ_HEADER_TIMEOUT", 5*time.Second),
 		ReadTimeout:       config.GetenvDuration("READ_TIMEOUT", 10*time.Second),
 		WriteTimeout:      config.GetenvDuration("WRITE_TIMEOUT", 10*time.Second),

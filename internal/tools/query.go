@@ -17,29 +17,30 @@ type queryInput struct {
 }
 
 type queryOutput struct {
-	MatchedRequests int `json:"matched_requests"`
+	SchemaVersion   string `json:"schema_version"`
+	MatchedRequests int    `json:"matched_requests"`
 }
 
 func handleGraphQuery(ctx context.Context, store Store, params json.RawMessage) (any, error) {
 	_ = ctx
 	var input queryInput
 	if err := json.Unmarshal(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
 	if input.Expr == "" {
-		return nil, fmt.Errorf("expr required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "expr required"}
 	}
 	if input.Window == "" {
-		return nil, fmt.Errorf("window required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "window required"}
 	}
 
 	d, err := time.ParseDuration(input.Window)
 	if err != nil {
-		return nil, fmt.Errorf("invalid window: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid window: %v", err)}
 	}
 	pred, err := query.Parse(input.Expr)
 	if err != nil {
-		return nil, fmt.Errorf("query parse error: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("query parse error: %v", err)}
 	}
 
 	end := time.Now()
@@ -52,7 +53,7 @@ func handleGraphQuery(ctx context.Context, store Store, params json.RawMessage) 
 		}
 	})
 
-	return queryOutput{MatchedRequests: matched}, nil
+	return queryOutput{SchemaVersion: "1.0", MatchedRequests: matched}, nil
 }
 
 type diffInput struct {
@@ -69,10 +70,11 @@ type diffEntry struct {
 }
 
 type diffOutput struct {
-	New       []diffEntry `json:"new,omitempty"`
-	Removed   []diffEntry `json:"removed,omitempty"`
-	Increased []diffEntry `json:"increased,omitempty"`
-	Decreased []diffEntry `json:"decreased,omitempty"`
+	SchemaVersion string      `json:"schema_version"`
+	New           []diffEntry `json:"new,omitempty"`
+	Removed       []diffEntry `json:"removed,omitempty"`
+	Increased     []diffEntry `json:"increased,omitempty"`
+	Decreased     []diffEntry `json:"decreased,omitempty"`
 
 	TotalRequestsBefore int   `json:"total_requests_before"`
 	TotalRequestsAfter  int   `json:"total_requests_after"`
@@ -90,23 +92,23 @@ func handleCompareWindows(ctx context.Context, store Store, params json.RawMessa
 	_ = ctx
 	var input diffInput
 	if err := json.Unmarshal(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
 	if input.Current == "" || input.Baseline == "" || input.Offset == "" {
-		return nil, fmt.Errorf("current, baseline, and offset required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "current, baseline, and offset required"}
 	}
 
 	currDur, err := time.ParseDuration(input.Current)
 	if err != nil {
-		return nil, fmt.Errorf("invalid current: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid current: %v", err)}
 	}
 	baseDur, err := time.ParseDuration(input.Baseline)
 	if err != nil {
-		return nil, fmt.Errorf("invalid baseline: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid baseline: %v", err)}
 	}
 	offDur, err := time.ParseDuration(input.Offset)
 	if err != nil {
-		return nil, fmt.Errorf("invalid offset: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid offset: %v", err)}
 	}
 
 	now := time.Now()
@@ -121,6 +123,7 @@ func handleCompareWindows(ctx context.Context, store Store, params json.RawMessa
 	g := store.Snapshot()
 
 	return diffOutput{
+		SchemaVersion:       "1.0",
 		New:                 mapDiffEntries(g, diff.New),
 		Removed:             mapDiffEntries(g, diff.Removed),
 		Increased:           mapDiffEntries(g, diff.Increased),

@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
@@ -445,4 +446,263 @@ func TestStore_Merge_RootOverwritesHTTPMethodAndRouteTemplate(t *testing.T) {
 	if got := req.Attr["route_template"]; got != "/checkout" {
 		t.Errorf("route_template = %v, want /checkout after root merge", got)
 	}
+}
+
+// ---------- ErrorIndex tests ----------
+
+func requireSetEqual(t *testing.T, label string, got []string, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: len = %d, want %d; got %v", label, len(got), len(want), got)
+	}
+	set := map[string]struct{}{}
+	for _, v := range want {
+		set[v] = struct{}{}
+	}
+	for _, v := range got {
+		if _, ok := set[v]; !ok {
+			t.Fatalf("%s: unexpected element %q; got %v, want %v", label, v, got, want)
+		}
+	}
+}
+
+func TestErrorIndex_UnknownCode(t *testing.T) {
+	s := NewStore()
+	ids, ready := s.ErrorIndex("NOPE")
+	if !ready {
+		t.Fatal("expected ready=true on fresh store")
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected empty slice, got %v", ids)
+	}
+}
+
+func TestErrorIndex_BasicLookup(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "aa00000000000000000000000000aa01"
+
+	ev := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("1100000000000001"),
+		testutil.WithService("svc-a"),
+		testutil.WithStatusCode(500),
+		testutil.WithError("SVC_500", "internal error"),
+		testutil.WithEventName("svc-a.error"),
+	)
+	s.Merge(b.Build(ev))
+
+	ids, ready := s.ErrorIndex("SVC_500")
+	if !ready {
+		t.Fatal("expected ready=true")
+	}
+	requireSetEqual(t, "ErrorIndex(SVC_500)", ids, []string{core.ID("request", traceID)})
+}
+
+func TestErrorIndex_DeduplicatesSameRequest_DuplicateEdges(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "aa00000000000000000000000000aa02"
+
+	ev := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("1100000000000002"),
+		testutil.WithService("svc-b"),
+		testutil.WithStatusCode(502),
+		testutil.WithError("DUP_502", "bad gateway"),
+		testutil.WithEventName("svc-b.error"),
+	)
+	g := b.Build(ev)
+	s.Merge(g)
+	s.Merge(g) // duplicate merge
+
+	ids, ready := s.ErrorIndex("DUP_502")
+	if !ready {
+		t.Fatal("expected ready=true")
+	}
+	requireSetEqual(t, "ErrorIndex(DUP_502)", ids, []string{core.ID("request", traceID)})
+}
+
+func TestErrorIndex_DeduplicatesSameRequest_SpanAndRequestOrigin(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "aa00000000000000000000000000aa03"
+
+	// Root span with error
+	root := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("1100000000000003"),
+		testutil.WithParentSpanID(""),
+		testutil.WithService("svc-c"),
+		testutil.WithStatusCode(500),
+		testutil.WithError("BOTH_500", "root error"),
+		testutil.WithEventName("svc-c.error"),
+	)
+	s.Merge(b.Build(root))
+
+	// Child span with same error code
+	child := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("1100000000000004"),
+		testutil.WithParentSpanID("1100000000000003"),
+		testutil.WithService("svc-c"),
+		testutil.WithStatusCode(500),
+		testutil.WithError("BOTH_500", "child error"),
+		testutil.WithEventName("svc-c.error"),
+	)
+	s.Merge(b.Build(child))
+
+	ids, ready := s.ErrorIndex("BOTH_500")
+	if !ready {
+		t.Fatal("expected ready=true")
+	}
+	requireSetEqual(t, "ErrorIndex(BOTH_500)", ids, []string{core.ID("request", traceID)})
+}
+
+func TestErrorIndex_MultiRequestSameCode(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceA := "aa00000000000000000000000000aa04"
+	traceB := "aa00000000000000000000000000aa05"
+
+	evA := testutil.MakeEvent(
+		testutil.WithTraceID(traceA),
+		testutil.WithSpanID("1100000000000005"),
+		testutil.WithService("svc-d"),
+		testutil.WithStatusCode(503),
+		testutil.WithError("SHARED_503", "service unavailable"),
+		testutil.WithEventName("svc-d.error"),
+	)
+	evB := testutil.MakeEvent(
+		testutil.WithTraceID(traceB),
+		testutil.WithSpanID("1100000000000006"),
+		testutil.WithService("svc-e"),
+		testutil.WithStatusCode(503),
+		testutil.WithError("SHARED_503", "service unavailable"),
+		testutil.WithEventName("svc-e.error"),
+	)
+	s.Merge(b.Build(evA))
+	s.Merge(b.Build(evB))
+
+	ids, ready := s.ErrorIndex("SHARED_503")
+	if !ready {
+		t.Fatal("expected ready=true")
+	}
+	requireSetEqual(t, "ErrorIndex(SHARED_503)", ids, []string{
+		core.ID("request", traceA),
+		core.ID("request", traceB),
+	})
+}
+
+func TestErrorIndex_ReadinessAfterRestore(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "aa00000000000000000000000000aa06"
+
+	ev := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("1100000000000007"),
+		testutil.WithService("svc-f"),
+		testutil.WithStatusCode(500),
+		testutil.WithError("RESTORE_ERR", "fail"),
+		testutil.WithEventName("svc-f.error"),
+	)
+	s.Merge(b.Build(ev))
+
+	snap := s.Snapshot()
+
+	s2 := NewStore()
+	s2.Restore(snap)
+
+	ids, ready := s2.ErrorIndex("RESTORE_ERR")
+	if !ready {
+		t.Fatal("expected ready=true after Restore")
+	}
+	requireSetEqual(t, "ErrorIndex(RESTORE_ERR) after restore", ids, []string{core.ID("request", traceID)})
+}
+
+func TestErrorIndex_PruneRemovesStaleEntries(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+
+	// Use a fixed reference time to avoid any time.Now() sensitivity.
+	ref := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	oldTrace := "aa00000000000000000000000000aa07"
+	newTrace := "aa00000000000000000000000000aa08"
+
+	oldEv := testutil.MakeEvent(
+		testutil.WithTraceID(oldTrace),
+		testutil.WithSpanID("1100000000000008"),
+		testutil.WithService("svc-old"),
+		testutil.WithStatusCode(500),
+		testutil.WithError("OLD_ERR", "old failure"),
+		testutil.WithEventName("svc-old.error"),
+		testutil.WithTimestamp(ref.Add(-2*time.Hour)),
+		testutil.WithUser("user-old", "standard", "us-west-2"),
+	)
+	newEv := testutil.MakeEvent(
+		testutil.WithTraceID(newTrace),
+		testutil.WithSpanID("1100000000000009"),
+		testutil.WithService("svc-new"),
+		testutil.WithStatusCode(500),
+		testutil.WithError("NEW_ERR", "new failure"),
+		testutil.WithEventName("svc-new.error"),
+		testutil.WithTimestamp(ref),
+		testutil.WithUser("user-new", "standard", "us-west-2"),
+	)
+
+	s.Merge(b.Build(oldEv))
+	s.Merge(b.Build(newEv))
+
+	// Prune with 1h cutoff — old entries should be removed
+	s.PruneOlderThan(ref.Add(-1 * time.Hour))
+
+	oldIDs, ready := s.ErrorIndex("OLD_ERR")
+	if !ready {
+		t.Fatal("expected ready=true after prune")
+	}
+	if len(oldIDs) != 0 {
+		t.Errorf("OLD_ERR should be empty after prune, got %v", oldIDs)
+	}
+
+	newIDs, ready := s.ErrorIndex("NEW_ERR")
+	if !ready {
+		t.Fatal("expected ready=true after prune")
+	}
+	requireSetEqual(t, "ErrorIndex(NEW_ERR) after prune", newIDs, []string{core.ID("request", newTrace)})
+}
+
+func TestErrorIndex_SpanToRequestResolution(t *testing.T) {
+	s := NewStore()
+	b := build.NewBuilder()
+	traceID := "aa00000000000000000000000000aa09"
+
+	// Root span (no error) — creates request + span nodes
+	root := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("110000000000000a"),
+		testutil.WithParentSpanID(""),
+		testutil.WithService("svc-g"),
+		testutil.WithStatusCode(200),
+		testutil.WithEventName("svc-g.request"),
+	)
+	s.Merge(b.Build(root))
+
+	// Child span with error — FailedWith edge from span node to error node
+	child := testutil.MakeEvent(
+		testutil.WithTraceID(traceID),
+		testutil.WithSpanID("110000000000000b"),
+		testutil.WithParentSpanID("110000000000000a"),
+		testutil.WithService("svc-h"),
+		testutil.WithStatusCode(500),
+		testutil.WithError("CHILD_ERR", "child failed"),
+		testutil.WithEventName("svc-h.error"),
+	)
+	s.Merge(b.Build(child))
+
+	ids, ready := s.ErrorIndex("CHILD_ERR")
+	if !ready {
+		t.Fatal("expected ready=true")
+	}
+	requireSetEqual(t, "ErrorIndex(CHILD_ERR) via span→request", ids, []string{core.ID("request", traceID)})
 }

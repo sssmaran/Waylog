@@ -36,27 +36,30 @@ func NewKafkaTransport(cfg KafkaConfig) (*KafkaTransport, error) {
 	return &KafkaTransport{writer: writer}, nil
 }
 
-func (t *KafkaTransport) Send(ctx context.Context, batch []event.WideEvent) error {
+func (t *KafkaTransport) Send(ctx context.Context, batch []event.WideEvent) (int, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	if t.closed.Load() {
-		return errTransportClosed
+		return 0, errTransportClosed
 	}
 	if len(batch) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	msgs := make([]kafka.Message, 0, len(batch))
 	for _, ev := range batch {
 		payload, err := json.Marshal(ev)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		msgs = append(msgs, kafka.Message{Value: payload})
 	}
 
-	return t.writer.WriteMessages(ctx, msgs...)
+	if err := t.writer.WriteMessages(ctx, msgs...); err != nil {
+		return 0, err
+	}
+	return len(batch), nil
 }
 
 func (t *KafkaTransport) Close(ctx context.Context) error {

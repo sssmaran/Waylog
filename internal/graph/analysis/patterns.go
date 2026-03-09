@@ -9,12 +9,11 @@ import (
 
 // FailurePattern represents a recurring failure shape in the system.
 type FailurePattern struct {
-	ErrorCode    string
-	Flow         string
-	UserTier     string
-	FeatureFlags []string
-
-	Count int
+	ErrorCode    string   `json:"error_code"`
+	Flow         string   `json:"flow"`
+	UserTier     string   `json:"user_tier"`
+	FeatureFlags []string `json:"feature_flags"`
+	Count        int      `json:"count"`
 }
 
 // DetectFailurePatterns scans the graph and groups failed requests
@@ -75,6 +74,9 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 			}
 		}
 
+		if flags == nil {
+			flags = []string{}
+		}
 		key := fmt.Sprintf("%s|%s|%s|%v", errorCode, flow, userTier, flags)
 
 		if _, ok := patterns[key]; !ok {

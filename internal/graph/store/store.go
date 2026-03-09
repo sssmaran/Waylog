@@ -13,23 +13,27 @@ type Store struct {
 	mu    sync.RWMutex
 	graph *core.Graph
 	//for fast lookups
-	requestFacts   map[string]RequestFacts
-	seenRequests   map[string]struct{}
-	counters       *Counters
-	edgeSet        map[string]struct{} // "from:to:type" for dedup
-	traceToRequest map[string]string   // trace_id -> request node ID
-	traceToSpans   map[string][]string // trace_id -> []span node IDs
+	requestFacts    map[string]RequestFacts
+	seenRequests    map[string]struct{}
+	counters        *Counters
+	edgeSet         map[string]struct{}            // "from:to:type" for dedup
+	traceToRequest  map[string]string              // trace_id -> request node ID
+	traceToSpans    map[string][]string            // trace_id -> []span node IDs
+	errorIndex      map[string]map[string]struct{} // error_code -> set of request IDs
+	errorIndexReady bool
 }
 
 func NewStore() *Store {
 	return &Store{
-		graph:          core.New(),
-		requestFacts:   map[string]RequestFacts{},
-		seenRequests:   map[string]struct{}{},
-		counters:       NewCounters(),
-		edgeSet:        map[string]struct{}{},
-		traceToRequest: map[string]string{},
-		traceToSpans:   map[string][]string{},
+		graph:           core.New(),
+		requestFacts:    map[string]RequestFacts{},
+		seenRequests:    map[string]struct{}{},
+		counters:        NewCounters(),
+		edgeSet:         map[string]struct{}{},
+		traceToRequest:  map[string]string{},
+		traceToSpans:    map[string][]string{},
+		errorIndex:      map[string]map[string]struct{}{},
+		errorIndexReady: true,
 	}
 }
 
@@ -73,7 +77,8 @@ func (s *Store) Merge(g *core.Graph) {
 		}
 		s.graph.Nodes[id] = existing
 	}
-	// Merge edges (deduplicated)
+	// Merge edges (deduplicated); collect FailedWith edges for deferred error index update
+	var failedEdges []core.Edge
 	for _, e := range g.Edges {
 		key := e.From + ":" + e.To + ":" + string(e.Type)
 		if _, exists := s.edgeSet[key]; exists {
@@ -89,6 +94,10 @@ func (s *Store) Merge(g *core.Graph) {
 		}
 		s.graph.OutEdges[e.From] = append(s.graph.OutEdges[e.From], e)
 		s.graph.InEdges[e.To] = append(s.graph.InEdges[e.To], e)
+
+		if e.Type == core.EdgeFailedWith {
+			failedEdges = append(failedEdges, e)
+		}
 	}
 
 	// Update trace indexes
@@ -129,6 +138,11 @@ func (s *Store) Merge(g *core.Graph) {
 		s.seenRequests[id] = struct{}{}
 		s.requestFacts[id] = facts
 		s.applyFactsToCountersLocked(facts)
+	}
+
+	// Process error index with fully-populated traceToRequest
+	for _, e := range failedEdges {
+		s.addToErrorIndexLocked(e)
 	}
 }
 
@@ -483,15 +497,21 @@ func (s *Store) rebuildDerivedIndexesLocked() {
 	s.edgeSet = map[string]struct{}{}
 	s.traceToRequest = map[string]string{}
 	s.traceToSpans = map[string][]string{}
+	s.errorIndex = map[string]map[string]struct{}{}
+	s.errorIndexReady = false
 
-	// Rebuild edge set and adjacency indexes
+	// Rebuild edge set; collect FailedWith for deferred error index update
+	var failedEdges []core.Edge
 	for _, e := range s.graph.Edges {
 		key := e.From + ":" + e.To + ":" + string(e.Type)
 		s.edgeSet[key] = struct{}{}
+		if e.Type == core.EdgeFailedWith {
+			failedEdges = append(failedEdges, e)
+		}
 	}
 	s.graph.RebuildIndexes()
 
-	// Rebuild trace indexes
+	// Rebuild trace indexes (must precede error index for span→request lookup)
 	for id, n := range s.graph.Nodes {
 		traceID, _ := n.Attr["trace_id"].(string)
 		if traceID == "" {
@@ -504,6 +524,12 @@ func (s *Store) rebuildDerivedIndexesLocked() {
 			s.traceToSpans[traceID] = appendUniqueString(s.traceToSpans[traceID], id)
 		}
 	}
+
+	// Now build error index with fully-populated traceToRequest
+	for _, e := range failedEdges {
+		s.addToErrorIndexLocked(e)
+	}
+	s.errorIndexReady = true
 
 	for id, n := range s.graph.Nodes {
 		if n.Type != core.NodeRequest {
@@ -570,6 +596,62 @@ func appendUniqueString(values []string, candidate string) []string {
 		}
 	}
 	return append(values, candidate)
+}
+
+// addToErrorIndexLocked adds a FailedWith edge to the error index.
+// Must be called with s.mu held.
+func (s *Store) addToErrorIndexLocked(e core.Edge) {
+	errNode, ok := s.graph.Nodes[e.To]
+	if !ok {
+		return
+	}
+	code, _ := errNode.Attr["code"].(string)
+	if code == "" {
+		return
+	}
+
+	// Determine request ID: edge.From is either a request or span node
+	reqID := ""
+	fromNode, ok := s.graph.Nodes[e.From]
+	if !ok {
+		return
+	}
+	switch fromNode.Type {
+	case core.NodeRequest:
+		reqID = e.From
+	case core.NodeSpan:
+		// Look up via traceToRequest
+		traceID, _ := fromNode.Attr["trace_id"].(string)
+		if traceID != "" {
+			reqID = s.traceToRequest[traceID]
+		}
+	}
+	if reqID == "" {
+		return
+	}
+
+	set := s.errorIndex[code]
+	if set == nil {
+		set = map[string]struct{}{}
+		s.errorIndex[code] = set
+	}
+	set[reqID] = struct{}{}
+}
+
+// ErrorIndex returns request IDs affected by a given error code.
+// The bool indicates whether the index is ready (valid).
+func (s *Store) ErrorIndex(errorCode string) ([]string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.errorIndexReady {
+		return nil, false
+	}
+	set := s.errorIndex[errorCode]
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	return out, true
 }
 
 func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bool) {

@@ -1,7 +1,11 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -412,13 +416,13 @@ func TestIsHex(t *testing.T) {
 		input string
 		want  bool
 	}{
-		{"abcdef1234567890", true},  // 16 chars, minimum
-		{"ABCDEF1234567890", true},  // uppercase
+		{"abcdef1234567890", true},                 // 16 chars, minimum
+		{"ABCDEF1234567890", true},                 // uppercase
 		{"abcdef1234567890abcdef1234567890", true}, // 32 chars
-		{"abc123", false},           // too short (<16)
-		{"", false},                 // empty
-		{"abcdef123456789g", false}, // invalid char 'g'
-		{"abcdef12345678 0", false}, // space
+		{"abc123", false},                          // too short (<16)
+		{"", false},                                // empty
+		{"abcdef123456789g", false},                // invalid char 'g'
+		{"abcdef12345678 0", false},                // space
 	}
 
 	for _, tt := range tests {
@@ -436,10 +440,10 @@ func TestIsUUID(t *testing.T) {
 		want  bool
 	}{
 		{"550e8400-e29b-41d4-a716-446655440000", true},
-		{"550E8400-E29B-41D4-A716-446655440000", true},  // uppercase
+		{"550E8400-E29B-41D4-A716-446655440000", true},   // uppercase
 		{"550e8400e29b41d4a716446655440000", false},      // no dashes
 		{"550e8400-e29b-41d4-a716-44665544000", false},   // 35 chars
-		{"550e8400-e29b-41d4-a716-4466554400000", false},  // 37 chars
+		{"550e8400-e29b-41d4-a716-4466554400000", false}, // 37 chars
 		{"", false},
 		{"not-a-uuid-at-all-no-not-this-one!!", false},
 	}
@@ -450,6 +454,51 @@ func TestIsUUID(t *testing.T) {
 				t.Fatalf("isUUID(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGeminiGenerate_NonOK_ReturnsProviderError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+	}))
+	defer ts.Close()
+
+	c := &GeminiClient{APIKey: "test", BaseURL: ts.URL, Model: "test-model"}
+	_, err := c.Generate(context.Background(), "hello", nil, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var pe *ProviderError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected ProviderError, got %T: %v", err, err)
+	}
+	if pe.Provider != "gemini" {
+		t.Errorf("Provider = %q, want gemini", pe.Provider)
+	}
+	if pe.StatusCode != 429 {
+		t.Errorf("StatusCode = %d, want 429", pe.StatusCode)
+	}
+	if !pe.Retryable {
+		t.Error("expected Retryable=true for 429")
+	}
+}
+
+func TestGeminiGenerate_TransportError_ReturnsProviderError(t *testing.T) {
+	c := &GeminiClient{APIKey: "test", BaseURL: "http://localhost:1", Model: "test-model"}
+	_, err := c.Generate(context.Background(), "hello", nil, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var pe *ProviderError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected ProviderError, got %T: %v", err, err)
+	}
+	if pe.StatusCode != 0 {
+		t.Errorf("StatusCode = %d, want 0 for transport error", pe.StatusCode)
+	}
+	if !pe.Retryable {
+		t.Error("expected Retryable=true for transport error")
 	}
 }
 

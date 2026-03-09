@@ -1,8 +1,10 @@
 package ingest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,9 +16,11 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/llm"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/sampler"
 	"github.com/sssmaran/WaylogCLI/internal/testutil"
+	"github.com/sssmaran/WaylogCLI/internal/tools"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
@@ -227,7 +231,7 @@ func TestOverview_Stats(t *testing.T) {
 }
 
 func TestCORSWrap(t *testing.T) {
-	handler := CORSWrap("http://localhost:3000", func(w http.ResponseWriter, r *http.Request) {
+	handler := CORSWrap("http://localhost:3000", "GET, OPTIONS", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -1700,5 +1704,301 @@ func TestCapabilities_GraphFlag(t *testing.T) {
 				t.Errorf("graph = %v, want %v", resp.Graph, tt.want)
 			}
 		})
+	}
+}
+
+// --- Agentic API fix tests ---
+
+func TestAsk_InvalidJSON_EnvelopeError(t *testing.T) {
+	srv := &Server{store: graphstore.NewStore(), maxBodyBytes: 1 << 20}
+	r := httptest.NewRequest("POST", "/v1/ask?envelope=v2", strings.NewReader("{bad"))
+	r = r.WithContext(ContextWithRequestID(r.Context(), "req_test"))
+	w := httptest.NewRecorder()
+	srv.Ask(w, r)
+
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error in envelope")
+	}
+	if resp.Error.Code != "INVALID_PARAMS" {
+		t.Errorf("code = %q, want INVALID_PARAMS", resp.Error.Code)
+	}
+}
+
+func TestToolCall_InvalidJSON_EnvelopeError(t *testing.T) {
+	reg := tools.NewRegistry()
+	tools.RegisterGraphTools(reg)
+	srv := &Server{store: graphstore.NewStore(), maxBodyBytes: 1 << 20, askRegistry: reg}
+	r := httptest.NewRequest("POST", "/v1/tools/graph_stats?envelope=v2", strings.NewReader("{bad"))
+	r = r.WithContext(ContextWithRequestID(r.Context(), "req_test"))
+	w := httptest.NewRecorder()
+	srv.ToolCall(w, r)
+
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != "INVALID_PARAMS" {
+		t.Errorf("expected INVALID_PARAMS, got %+v", resp.Error)
+	}
+}
+
+func TestAsk_DedupSafetyNet_PreservesActualStatus(t *testing.T) {
+	dc := NewDedupCache()
+	srv := &Server{
+		store:        graphstore.NewStore(),
+		maxBodyBytes: 1 << 20,
+		dedupCache:   dc,
+	}
+	// askProvider is nil and no env key → should return 503
+	body := `{"prompt":"test"}`
+	r := httptest.NewRequest("POST", "/v1/ask", strings.NewReader(body))
+	r.Header.Set("Idempotency-Key", "test-key-1")
+	r = r.WithContext(ContextWithRequestID(r.Context(), "req_test"))
+	w := httptest.NewRecorder()
+	srv.Ask(w, r)
+
+	if w.Code != 503 {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+
+	// Replay should also get 503
+	r2 := httptest.NewRequest("POST", "/v1/ask", strings.NewReader(body))
+	r2.Header.Set("Idempotency-Key", "test-key-1")
+	r2 = r2.WithContext(ContextWithRequestID(r2.Context(), "req_test2"))
+	w2 := httptest.NewRecorder()
+	srv.Ask(w2, r2)
+
+	if w2.Code != 503 {
+		t.Fatalf("replay status = %d, want 503", w2.Code)
+	}
+}
+
+func TestToolCall_DedupSafetyNet_Exists(t *testing.T) {
+	dc := NewDedupCache()
+	reg := tools.NewRegistry()
+	tools.RegisterGraphTools(reg)
+	srv := &Server{
+		store:        graphstore.NewStore(),
+		maxBodyBytes: 1 << 20,
+		dedupCache:   dc,
+		askRegistry:  reg,
+	}
+
+	body := `{"trace_id":"nonexistent"}`
+	r := httptest.NewRequest("POST", "/v1/tools/explain_request", strings.NewReader(body))
+	r.Header.Set("Idempotency-Key", "tc-key-1")
+	r = r.WithContext(ContextWithRequestID(r.Context(), "req_test"))
+	w := httptest.NewRecorder()
+	srv.ToolCall(w, r)
+
+	// Replay should return same status
+	r2 := httptest.NewRequest("POST", "/v1/tools/explain_request", strings.NewReader(body))
+	r2.Header.Set("Idempotency-Key", "tc-key-1")
+	r2 = r2.WithContext(ContextWithRequestID(r2.Context(), "req_test2"))
+	w2 := httptest.NewRecorder()
+	srv.ToolCall(w2, r2)
+
+	if w.Code != w2.Code {
+		t.Errorf("replay status %d != original %d", w2.Code, w.Code)
+	}
+}
+
+func TestAsk_WaiterTimeout_Logs(t *testing.T) {
+	dc := NewDedupCache()
+	srv := &Server{store: graphstore.NewStore(), maxBodyBytes: 1 << 20, dedupCache: dc}
+
+	body := `{"prompt":"test"}`
+	// Acquire inflight slot manually to force a waiter
+	dc.AcquireOrWait(context.Background(), "POST", "/v1/ask", "principal", "block-key", []byte(body))
+
+	// Second request with short timeout will abort
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+	time.Sleep(5 * time.Millisecond) // ensure timeout fires
+	r := httptest.NewRequest("POST", "/v1/ask", strings.NewReader(body))
+	r = r.WithContext(ContextWithRequestID(ctx, "req_waiter"))
+	r.Header.Set("Idempotency-Key", "block-key")
+	w := httptest.NewRecorder()
+	srv.Ask(w, r)
+
+	// Should get 504 or no response (canceled)
+	if w.Code != 504 && w.Code != 200 {
+		t.Logf("waiter abort: status=%d (expected 504 or no-write)", w.Code)
+	}
+}
+
+func TestNormalizeErrorCode_ProviderError(t *testing.T) {
+	pe := &llm.ProviderError{Provider: "gemini", StatusCode: 429, Message: "rate limited"}
+	got := normalizeErrorCode(pe)
+	if got != "PROVIDER_ERROR" {
+		t.Errorf("normalizeErrorCode(ProviderError) = %q, want PROVIDER_ERROR", got)
+	}
+}
+
+func TestNormalizeErrorCode_WrappedProviderError(t *testing.T) {
+	pe := &llm.ProviderError{Provider: "gemini", StatusCode: 500, Message: "internal"}
+	wrapped := fmt.Errorf("ask: %w", pe)
+	got := normalizeErrorCode(wrapped)
+	if got != "PROVIDER_ERROR" {
+		t.Errorf("normalizeErrorCode(wrapped ProviderError) = %q, want PROVIDER_ERROR", got)
+	}
+}
+
+func TestAPIKeyMiddleware_RequiresBearerPrefix(t *testing.T) {
+	key := "test-secret-key"
+	handler := APIKeyMiddleware(key, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	// Raw key in Authorization (no Bearer prefix) should be rejected
+	r := httptest.NewRequest("GET", "/test", nil)
+	r.Header.Set("Authorization", key)
+	w := httptest.NewRecorder()
+	handler(w, r)
+	if w.Code != 401 {
+		t.Errorf("raw key in Authorization: status = %d, want 401", w.Code)
+	}
+
+	// Bearer prefix should work (case-insensitive)
+	for _, prefix := range []string{"Bearer ", "bearer ", "BEARER "} {
+		r = httptest.NewRequest("GET", "/test", nil)
+		r.Header.Set("Authorization", prefix+key)
+		w = httptest.NewRecorder()
+		handler(w, r)
+		if w.Code != 200 {
+			t.Errorf("prefix %q: status = %d, want 200", prefix, w.Code)
+		}
+	}
+}
+
+func TestCORSWrap_ExposesHeaders(t *testing.T) {
+	handler := CORSWrap("*", "GET, OPTIONS", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+	r := httptest.NewRequest("OPTIONS", "/test", nil)
+	w := httptest.NewRecorder()
+	handler(w, r)
+
+	allow := w.Header().Get("Access-Control-Allow-Headers")
+	if !strings.Contains(allow, "X-Request-ID") {
+		t.Errorf("Allow-Headers missing X-Request-ID: %q", allow)
+	}
+	expose := w.Header().Get("Access-Control-Expose-Headers")
+	if !strings.Contains(expose, "X-Request-ID") || !strings.Contains(expose, "Waylog-API-Version") {
+		t.Errorf("Expose-Headers missing expected: %q", expose)
+	}
+}
+
+func TestAPIKeyMiddleware_EnvelopeError(t *testing.T) {
+	handler := APIKeyMiddleware("test-key", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	req := httptest.NewRequest("POST", "/v1/ask?envelope=v2", nil)
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	req = req.WithContext(ContextWithRequestID(req.Context(), "req_test"))
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != 401 {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	var env APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("expected JSON envelope, got: %s", w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != "UNAUTHORIZED" {
+		t.Errorf("expected UNAUTHORIZED error code, got %+v", env.Error)
+	}
+}
+
+func TestTools_MethodNotAllowed_EnvelopeError(t *testing.T) {
+	srv := &Server{}
+	req := httptest.NewRequest("POST", "/v1/tools?envelope=v2", nil)
+	req = req.WithContext(ContextWithRequestID(req.Context(), "req_test"))
+	w := httptest.NewRecorder()
+	srv.Tools(w, req)
+
+	if w.Code != 405 {
+		t.Fatalf("status = %d, want 405", w.Code)
+	}
+	var env APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("expected JSON envelope, got: %s", w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != "METHOD_NOT_ALLOWED" {
+		t.Errorf("expected METHOD_NOT_ALLOWED, got %+v", env.Error)
+	}
+}
+
+func TestAsk_Metrics_CountedOnValidationFailure(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	srv := &Server{metrics: m, store: graphstore.NewStore(), maxBodyBytes: 1 << 20}
+
+	// Send invalid JSON — should still count in AskRequestsTotal
+	req := httptest.NewRequest("POST", "/v1/ask", strings.NewReader("not json"))
+	req = req.WithContext(ContextWithRequestID(req.Context(), "req_test"))
+	w := httptest.NewRecorder()
+	srv.Ask(w, req)
+
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+
+	// Gather metrics and check AskRequestsTotal was incremented
+	mfs, _ := reg.Gather()
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() == "waylog_ask_requests_total" {
+			found = true
+			for _, m := range mf.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == "status" && lp.GetValue() != "400" {
+						t.Errorf("expected status=400, got %s", lp.GetValue())
+					}
+				}
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected waylog_ask_requests_total to be emitted on validation failure")
+	}
+}
+
+func TestAsk_Idempotency_NotEnforcedForValidationErrors(t *testing.T) {
+	srv := &Server{
+		store:        graphstore.NewStore(),
+		maxBodyBytes: 1 << 20,
+		dedupCache:   NewDedupCache(),
+	}
+
+	// Send invalid JSON with an Idempotency-Key — twice
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest("POST", "/v1/ask", strings.NewReader("not json"))
+		req.Header.Set("Idempotency-Key", "idem-validation-test")
+		req = req.WithContext(ContextWithRequestID(req.Context(), fmt.Sprintf("req_%d", i)))
+		w := httptest.NewRecorder()
+		srv.Ask(w, req)
+
+		if w.Code != 400 {
+			t.Fatalf("call %d: status = %d, want 400", i, w.Code)
+		}
+	}
+
+	// Cache should be empty — validation errors don't enter dedup
+	if srv.dedupCache.Size() != 0 {
+		t.Errorf("dedup cache size = %d, want 0 (validation errors should not be cached)", srv.dedupCache.Size())
 	}
 }

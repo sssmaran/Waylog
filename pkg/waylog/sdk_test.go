@@ -3,6 +3,7 @@ package waylog_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -17,6 +18,20 @@ import (
 	"github.com/sssmaran/WaylogCLI/pkg/waylog/trace"
 	"github.com/sssmaran/WaylogCLI/pkg/waylog/transport"
 )
+
+// partialTransport succeeds for the first N events in a batch, then fails.
+type partialTransport struct {
+	succeedN int
+}
+
+func (t *partialTransport) Send(_ context.Context, batch []event.WideEvent) (int, error) {
+	if t.succeedN >= len(batch) {
+		return len(batch), nil
+	}
+	return t.succeedN, errors.New("partial failure")
+}
+
+func (t *partialTransport) Close(_ context.Context) error { return nil }
 
 type codedErr struct {
 	code string
@@ -471,6 +486,170 @@ func (r *recordingRoundTripper) Headers() http.Header {
 		return make(http.Header)
 	}
 	return r.headers.Clone()
+}
+
+func TestHTTPTransportEndToEnd(t *testing.T) {
+	var mu sync.Mutex
+	var received []event.WideEvent
+
+	ingest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ev event.WideEvent
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &ev); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, ev)
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer ingest.Close()
+
+	client, err := waylog.New(waylog.Config{
+		Service:   "e2e-service",
+		Env:       "test",
+		IngestURL: ingest.URL,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	handler := wayloghttp.MiddlewareWithClient(client)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = waylog.WithUser(r.Context(), waylog.User{ID: "test-user"})
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	handler.ServeHTTP(rec, req)
+
+	_ = client.Close(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(received) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(received))
+	}
+	ev := received[0]
+	if ev.System.Service != "e2e-service" {
+		t.Fatalf("service = %q, want e2e-service", ev.System.Service)
+	}
+	if ev.Request.TraceID == "" {
+		t.Fatal("expected non-empty trace_id")
+	}
+	if ev.Outcome.StatusCode != 200 {
+		t.Fatalf("status_code = %d, want 200", ev.Outcome.StatusCode)
+	}
+	if err := ev.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
+func TestClassifyErrorFallbackHTTPCode(t *testing.T) {
+	mem := transport.NewInMemoryTransport()
+	client, err := waylog.New(waylog.Config{
+		Service:   "test-service",
+		Env:       "test",
+		Transport: mem,
+		// No ErrorClassifier — should fall back to HTTP_<status>
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	handler := wayloghttp.MiddlewareWithClient(client)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		client.Error(ctx, errors.New("boom"))
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+
+	_ = client.Close(context.Background())
+	events := mem.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Error == nil {
+		t.Fatal("expected error context")
+	}
+	if events[0].Error.Code != "HTTP_502" {
+		t.Fatalf("error code = %q, want HTTP_502", events[0].Error.Code)
+	}
+}
+
+func TestClassifyErrorNilErrWithStatusCode(t *testing.T) {
+	mem := transport.NewInMemoryTransport()
+	client, err := waylog.New(waylog.Config{
+		Service:   "test-service",
+		Env:       "test",
+		Transport: mem,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	handler := wayloghttp.MiddlewareWithClient(client)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+
+	_ = client.Close(context.Background())
+	events := mem.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	// 502 < 500 is false, so success=false. err is nil but classifier should produce HTTP_502
+	if events[0].Error == nil {
+		t.Fatal("expected error context")
+	}
+	if events[0].Error.Code != "HTTP_502" {
+		t.Fatalf("error code = %q, want HTTP_502", events[0].Error.Code)
+	}
+}
+
+func TestPartialSendStatsAccounting(t *testing.T) {
+	pt := &partialTransport{succeedN: 2}
+	client, err := waylog.New(waylog.Config{
+		Service:   "stats-service",
+		Env:       "test",
+		Transport: pt,
+		BatchSize: 5, // large enough to batch all 3 events
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	// Send 3 events through middleware — transport will succeed on 2, fail on 1
+	for i := 0; i < 3; i++ {
+		handler := wayloghttp.MiddlewareWithClient(client)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = waylog.WithUser(r.Context(), waylog.User{ID: "u1"})
+			w.WriteHeader(http.StatusOK)
+		}))
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		handler.ServeHTTP(rec, req)
+	}
+
+	_ = client.Close(context.Background())
+
+	stats := client.Stats()
+	if stats.EventsEmitted != 2 {
+		t.Fatalf("EventsEmitted = %d, want 2", stats.EventsEmitted)
+	}
+	if stats.EventsDropped != 1 {
+		t.Fatalf("EventsDropped = %d, want 1", stats.EventsDropped)
+	}
+	if stats.TransportErrors != 1 {
+		t.Fatalf("TransportErrors = %d, want 1", stats.TransportErrors)
+	}
 }
 
 func TestTraceContextNormalization(t *testing.T) {

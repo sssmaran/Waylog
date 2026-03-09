@@ -1,12 +1,18 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -109,6 +115,14 @@ type Server struct {
 	prometheusURL       string
 	grafanaURL          string
 	graphUI             bool
+	dedupCache          *DedupCache
+	agentKey            string
+	trustProxy          bool
+
+	// Dashboard rate limiter: per-IP sliding window
+	rateMu         sync.Mutex
+	rateLimit      map[string][]time.Time
+	rateCheckCount int
 
 	// Replay state — set once during startup, read by /healthz.
 	replayStatus      string // "none", "ok", "failed"
@@ -134,6 +148,9 @@ type ServerConfig struct {
 	PrometheusURL       string
 	GrafanaURL          string
 	GraphUI             bool
+	DedupCache          *DedupCache
+	AgentKey            string
+	TrustProxy          bool
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -163,6 +180,10 @@ func NewServer(cfg ServerConfig) *Server {
 		prometheusURL:       cfg.PrometheusURL,
 		grafanaURL:          cfg.GrafanaURL,
 		graphUI:             cfg.GraphUI,
+		dedupCache:          cfg.DedupCache,
+		agentKey:            cfg.AgentKey,
+		trustProxy:          cfg.TrustProxy,
+		rateLimit:           map[string][]time.Time{},
 		replayStatus:        "none",
 	}
 	if s.sampler == nil {
@@ -511,6 +532,7 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 			"max_steps_default": s.askMaxStepsDefault,
 			"max_steps_max":     s.askMaxStepsMax,
 		},
+		"ask_endpoint": "/ui/ask",
 		"dashboard": map[string]any{
 			"refresh_interval_sec": s.dashboardRefreshSec,
 		},
@@ -525,7 +547,7 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 // Tools handles GET /v1/tools — returns available graph tools with examples.
 func (s *Server) Tools(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		respondError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", false, APIMeta{RequestID: RequestIDFromContext(r.Context())})
 		return
 	}
 
@@ -533,39 +555,56 @@ func (s *Server) Tools(w http.ResponseWriter, r *http.Request) {
 	if registry == nil {
 		registry = tools.NewRegistry()
 		if err := tools.RegisterGraphTools(registry); err != nil {
-			http.Error(w, "tool registry unavailable", http.StatusInternalServerError)
+			respondError(w, r, http.StatusInternalServerError, "INTERNAL", "tool registry unavailable", true, APIMeta{RequestID: RequestIDFromContext(r.Context())})
 			return
 		}
 	}
 
 	type toolEntry struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		InputSchema json.RawMessage `json:"input_schema,omitempty"`
-		Examples    []string        `json:"examples,omitempty"`
+		Name         string          `json:"name"`
+		Description  string          `json:"description"`
+		Version      string          `json:"version,omitempty"`
+		InputSchema  json.RawMessage `json:"input_schema,omitempty"`
+		OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+		Examples     []string        `json:"examples,omitempty"`
 	}
 
 	list := registry.List()
 	entries := make([]toolEntry, len(list))
 	for i, t := range list {
 		entries[i] = toolEntry{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-			Examples:    t.Examples,
+			Name:         t.Name,
+			Description:  t.Description,
+			Version:      t.Version,
+			InputSchema:  t.InputSchema,
+			OutputSchema: t.OutputSchema,
+			Examples:     t.Examples,
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	data := map[string]any{
 		"tools": entries,
 		"count": len(entries),
-	})
+	}
+
+	if wantsEnvelope(r) {
+		reqID := RequestIDFromContext(r.Context())
+		writeJSON(w, http.StatusOK, data, APIMeta{
+			RequestID:  reqID,
+			DataStatus: "complete",
+		}, nil)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
 }
 
 type askRequest struct {
-	Prompt   string `json:"prompt"`
-	MaxSteps int    `json:"max_steps,omitempty"`
+	Prompt        string `json:"prompt"`
+	MaxSteps      int    `json:"max_steps,omitempty"`
+	ErrorStrategy string `json:"error_strategy,omitempty"`
+	TimeoutMs     int    `json:"timeout_ms,omitempty"`
 }
 
 type askResponse struct {
@@ -602,31 +641,107 @@ type overviewRollup struct {
 // Ask handles POST /v1/ask and returns an LLM answer backed by graph tools.
 func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		respondError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", false, APIMeta{RequestID: RequestIDFromContext(r.Context())})
 		return
 	}
 	if s.store == nil {
-		http.Error(w, "store not configured", http.StatusServiceUnavailable)
+		respondError(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "store not configured", true, APIMeta{RequestID: RequestIDFromContext(r.Context())})
 		return
 	}
 
+	reqID := RequestIDFromContext(r.Context())
+
+	start := time.Now()
+	var askHTTPStatus int
+	var askErrCode = "none"
+	defer func() {
+		if s.metrics != nil && askHTTPStatus != 0 {
+			if askErrCode != "none" && !allowedErrorLabels[askErrCode] {
+				askErrCode = "INTERNAL"
+			}
+			s.metrics.AskRequestsTotal.WithLabelValues(strconv.Itoa(askHTTPStatus), askErrCode).Inc()
+			s.metrics.AskDuration.Observe(time.Since(start).Seconds())
+		}
+	}()
+
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
-	var req askRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	body, readErr := io.ReadAll(r.Body)
+	if readErr != nil {
 		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		if errors.As(readErr, &maxErr) {
+			askHTTPStatus = http.StatusRequestEntityTooLarge
+			askErrCode = "PAYLOAD_TOO_LARGE"
+			respondError(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "request body too large", false, APIMeta{RequestID: reqID})
 			return
 		}
-		http.Error(w, "invalid json", http.StatusBadRequest)
+		askHTTPStatus = http.StatusBadRequest
+		askErrCode = "INVALID_PARAMS"
+		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "failed to read body", false, APIMeta{RequestID: reqID})
+		return
+	}
+
+	var req askRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		askHTTPStatus = http.StatusBadRequest
+		askErrCode = "INVALID_PARAMS"
+		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "invalid json", false, APIMeta{RequestID: reqID})
 		return
 	}
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	if req.Prompt == "" {
-		http.Error(w, "prompt is required", http.StatusBadRequest)
+		askHTTPStatus = http.StatusBadRequest
+		askErrCode = "INVALID_PARAMS"
+		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "prompt is required", false, APIMeta{RequestID: reqID})
 		return
+	}
+
+	// Idempotency state — set by dedup block, read by completion paths
+	var dedupIsExecutor, dedupCompleted bool
+
+	// Idempotency check
+	idempKey := r.Header.Get("Idempotency-Key")
+	if idempKey != "" && s.dedupCache != nil {
+		principal := s.dedupPrincipal(r)
+		result, conflict, waitAborted := s.dedupCache.AcquireOrWait(r.Context(), r.Method, r.URL.Path, principal, idempKey, body)
+		if waitAborted {
+			keyHash := fmt.Sprintf("%.8s", fmt.Sprintf("%x", sha256.Sum256([]byte(idempKey))))
+			if r.Context().Err() == context.DeadlineExceeded {
+				askHTTPStatus = http.StatusGatewayTimeout
+				askErrCode = "TIMEOUT"
+				slog.Warn("dedup_waiter_timeout", "request_id", reqID, "method", r.Method, "path", r.URL.Path, "idempotency_key_hash", keyHash)
+				respondError(w, r, http.StatusGatewayTimeout, "TIMEOUT", "request timeout while waiting for inflight request", true, APIMeta{RequestID: reqID})
+			} else {
+				slog.Warn("dedup_waiter_canceled", "request_id", reqID, "method", r.Method, "path", r.URL.Path, "idempotency_key_hash", keyHash)
+				// Client canceled — no response write; askHTTPStatus stays 0 to skip counting
+			}
+			return
+		} else if conflict {
+			askHTTPStatus = http.StatusConflict
+			askErrCode = "CONFLICT"
+			respondError(w, r, http.StatusConflict, "CONFLICT", "idempotency key conflict: same key, different body", false, APIMeta{RequestID: reqID})
+			return
+		} else if result != nil {
+			// Replay — don't count as a new request; askHTTPStatus stays 0
+			if s.metrics != nil {
+				s.metrics.DedupReplayTotal.Inc()
+				s.metrics.DedupCacheSize.Set(float64(s.dedupCache.Size()))
+			}
+			s.replayDedupEntry(w, r, result, reqID)
+			return
+		}
+		// Safety net: if we return before explicitly calling Complete,
+		// release the inflight slot so waiters don't hang forever.
+		dedupIsExecutor = true
+		defer func() {
+			if !dedupCompleted {
+				principal := s.dedupPrincipal(r)
+				s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body,
+					http.StatusInternalServerError, nil, &APIError{Code: "INTERNAL", Message: "executor failed before completion", Retryable: true}, 0)
+			}
+			if s.metrics != nil {
+				s.metrics.DedupCacheSize.Set(float64(s.dedupCache.Size()))
+			}
+		}()
 	}
 
 	var (
@@ -640,7 +755,15 @@ func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 	} else {
 		provider, model, toolMode, err = s.askProviderFromEnv()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			askHTTPStatus = http.StatusServiceUnavailable
+			askErrCode = "SERVICE_UNAVAILABLE"
+			if dedupIsExecutor {
+				dedupCompleted = true
+				principal := s.dedupPrincipal(r)
+				s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body,
+					http.StatusServiceUnavailable, nil, &APIError{Code: "SERVICE_UNAVAILABLE", Message: err.Error(), Retryable: true}, 0)
+			}
+			respondError(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", err.Error(), true, APIMeta{RequestID: reqID})
 			return
 		}
 	}
@@ -650,7 +773,15 @@ func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 		registry = tools.NewRegistry()
 		if err := tools.RegisterGraphTools(registry); err != nil {
 			slog.Error("ask tool registry init failed", "err", err)
-			http.Error(w, "tool registry unavailable", http.StatusInternalServerError)
+			askHTTPStatus = http.StatusInternalServerError
+			askErrCode = "INTERNAL"
+			if dedupIsExecutor {
+				dedupCompleted = true
+				principal := s.dedupPrincipal(r)
+				s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body,
+					http.StatusInternalServerError, nil, &APIError{Code: "INTERNAL", Message: "tool registry unavailable", Retryable: true}, 0)
+			}
+			respondError(w, r, http.StatusInternalServerError, "INTERNAL", "tool registry unavailable", true, APIMeta{RequestID: reqID})
 			return
 		}
 	}
@@ -675,33 +806,70 @@ func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 		maxSteps = s.askMaxStepsMax
 	}
 
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// Clamp timeout: default 30s, min 5s, max 60s
+	timeoutMs := req.TimeoutMs
+	if timeoutMs <= 0 {
+		timeoutMs = 30000
+	}
+	if timeoutMs < 5000 {
+		timeoutMs = 5000
+	}
+	if timeoutMs > 60000 {
+		timeoutMs = 60000
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
-	steps := make([]askToolStep, 0, maxSteps)
-	answer, err := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
-		stepStart := time.Now()
+
+	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store}
+	answer, toolRecords, askErr := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
+		return registry.Call(ctx, fs, name, params)
+	}), req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: req.ErrorStrategy})
+
+	// Convert ToolCallRecords to askToolSteps
+	steps := make([]askToolStep, 0, len(toolRecords))
+	for i, rec := range toolRecords {
 		step := askToolStep{
-			Index:  len(steps) + 1,
-			Tool:   name,
-			Params: decodeJSONRaw(params),
+			Index:      i + 1,
+			Tool:       rec.Name,
+			DurationMs: rec.DurationMs,
+			Params:     decodeJSONRaw(rec.Params),
+			Error:      rec.Error,
 		}
-		result, callErr := registry.Call(ctx, s.store, name, params)
-		step.DurationMs = time.Since(stepStart).Milliseconds()
-		if callErr != nil {
-			step.Error = callErr.Error()
-			steps = append(steps, step)
-			return nil, callErr
+		if rec.Result != nil {
+			step.Result = normalizeJSONValue(rec.Result)
 		}
-		step.Result = normalizeJSONValue(result)
 		steps = append(steps, step)
-		return result, nil
-	}), req.Prompt, maxSteps)
-	if err != nil {
-		slog.Warn("ask failed", "err", err)
-		http.Error(w, "ask failed: "+err.Error(), http.StatusBadGateway)
+	}
+
+	// Emit per-tool-call metrics (inline, not deferred — these are per-step)
+	if s.metrics != nil {
+		for _, rec := range toolRecords {
+			toolStatus := "ok"
+			if rec.Error != "" {
+				toolStatus = "error"
+			}
+			s.metrics.AskToolCallsTotal.WithLabelValues(rec.Name, toolStatus).Inc()
+			s.metrics.AskToolDuration.WithLabelValues(rec.Name).Observe(float64(rec.DurationMs) / 1000.0)
+		}
+	}
+
+	if askErr != nil {
+		askHTTPStatus = http.StatusBadGateway
+		askErrCode = normalizeErrorCode(askErr)
+		slog.Warn("ask failed", "err", askErr)
+		errMsg := "ask failed: " + askErr.Error()
+		if dedupIsExecutor {
+			dedupCompleted = true
+			principal := s.dedupPrincipal(r)
+			s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body, http.StatusBadGateway,
+				nil, &APIError{Code: askErrCode, Message: errMsg, Retryable: true}, time.Since(start).Milliseconds())
+		}
+		respondError(w, r, http.StatusBadGateway, askErrCode, errMsg, true, APIMeta{RequestID: reqID, DurationMs: time.Since(start).Milliseconds(), DataStatus: "error"})
 		return
 	}
+
+	askHTTPStatus = http.StatusOK
 
 	resp := askResponse{
 		Answer:     answer,
@@ -709,6 +877,21 @@ func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 		ToolMode:   toolMode,
 		DurationMs: time.Since(start).Milliseconds(),
 		Steps:      steps,
+	}
+
+	if dedupIsExecutor {
+		dedupCompleted = true
+		principal := s.dedupPrincipal(r)
+		s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body, http.StatusOK, resp, nil, time.Since(start).Milliseconds())
+	}
+
+	if wantsEnvelope(r) {
+		writeJSON(w, http.StatusOK, resp, APIMeta{
+			RequestID:  reqID,
+			DurationMs: time.Since(start).Milliseconds(),
+			DataStatus: "complete",
+		}, nil)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -1337,33 +1520,55 @@ func (s *Server) GraphTopology(w http.ResponseWriter, r *http.Request) {
 // APIKeyMiddleware rejects requests that don't provide a valid API key
 // via Authorization: Bearer <key> or X-API-Key header.
 func APIKeyMiddleware(key string, next http.HandlerFunc) http.HandlerFunc {
+	keyBytes := []byte(key)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if auth := r.Header.Get("Authorization"); auth != "" {
-			if strings.TrimPrefix(auth, "Bearer ") == key {
+			if idx := strings.IndexByte(auth, ' '); idx > 0 {
+				scheme, token := auth[:idx], auth[idx+1:]
+				if strings.EqualFold(scheme, "bearer") && subtle.ConstantTimeCompare([]byte(token), keyBytes) == 1 {
+					next(w, r)
+					return
+				}
+			}
+		}
+		if xKey := r.Header.Get("X-API-Key"); xKey != "" {
+			if subtle.ConstantTimeCompare([]byte(xKey), keyBytes) == 1 {
 				next(w, r)
 				return
 			}
 		}
-		if r.Header.Get("X-API-Key") == key {
-			next(w, r)
-			return
-		}
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		respondError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", false, APIMeta{RequestID: RequestIDFromContext(r.Context())})
 	}
 }
 
-// CORSWrap wraps a handler with CORS headers scoped to read endpoints.
-func CORSWrap(allowOrigin string, h http.HandlerFunc) http.HandlerFunc {
+// CORSWrap wraps a handler with CORS headers.
+// methods should be e.g. "GET, OPTIONS" or "POST, OPTIONS".
+func CORSWrap(allowOrigin string, methods string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+		w.Header().Set("Access-Control-Allow-Methods", methods)
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Idempotency-Key, X-API-Key, X-Request-ID")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, Waylog-API-Version")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 		h(w, r)
 	}
+}
+
+// CorrelationIDMiddleware reads X-Request-ID or generates one, stores in context,
+// and sets X-Request-ID on the response.
+func CorrelationIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("X-Request-ID")
+		if id == "" {
+			id = generateRequestID()
+		}
+		w.Header().Set("X-Request-ID", id)
+		ctx := ContextWithRequestID(r.Context(), id)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func parseBoundedPositiveInt(q url.Values, key string, def, max int) int {
@@ -1665,4 +1870,443 @@ func (s *Server) snapshotOrServiceUnavailable(w http.ResponseWriter) (*core.Grap
 		return nil, false
 	}
 	return s.store.Snapshot(), true
+}
+
+// frozenStore captures a snapshot once and reuses it across tool calls within a single request.
+type frozenStore struct {
+	snap *core.Graph
+	real *store.Store
+}
+
+func (f *frozenStore) Snapshot() *core.Graph { return f.snap }
+func (f *frozenStore) SummarizeWindow(start, end time.Time) store.WindowSummary {
+	return f.real.SummarizeWindow(start, end)
+}
+func (f *frozenStore) ForEachRequestFact(start, end time.Time, fn func(store.RequestFacts)) {
+	f.real.ForEachRequestFact(start, end, fn)
+}
+func (f *frozenStore) ErrorIndex(errorCode string) ([]string, bool) {
+	return f.real.ErrorIndex(errorCode)
+}
+
+func toolErrorToHTTPStatus(te *tools.ToolError) int {
+	switch te.Code {
+	case tools.CodeInvalidParams:
+		return http.StatusBadRequest
+	case tools.CodeNotFound:
+		return http.StatusNotFound
+	case tools.CodeEmptyResult:
+		return http.StatusOK
+	case tools.CodeTimeout:
+		return http.StatusGatewayTimeout
+	case tools.CodeInternal:
+		return http.StatusInternalServerError
+	case tools.CodeGraphEmpty:
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// dedupPrincipal returns a principal identifier for idempotency grouping.
+func (s *Server) dedupPrincipal(r *http.Request) string {
+	if s.agentKey != "" {
+		h := sha256.Sum256([]byte(s.agentKey))
+		return hex.EncodeToString(h[:])
+	}
+	return clientIP(r, s.trustProxy)
+}
+
+// normalizeErrorCode extracts a metric-safe error code label from an error.
+// allowedErrorLabels is the bounded set of error code metric labels.
+var allowedErrorLabels = map[string]bool{
+	tools.CodeInvalidParams: true,
+	tools.CodeNotFound:      true,
+	tools.CodeEmptyResult:   true,
+	tools.CodeTimeout:       true,
+	tools.CodeInternal:      true,
+	tools.CodeGraphEmpty:    true,
+	"PROVIDER_ERROR":        true,
+	"PAYLOAD_TOO_LARGE":     true,
+	"CONFLICT":              true,
+	"SERVICE_UNAVAILABLE":   true,
+	"METHOD_NOT_ALLOWED":    true,
+	"UNAUTHORIZED":          true,
+}
+
+func normalizeErrorCode(err error) string {
+	var pe *llm.ProviderError
+	if errors.As(err, &pe) {
+		return "PROVIDER_ERROR"
+	}
+	if te, ok := tools.AsToolError(err); ok {
+		if allowedErrorLabels[te.Code] {
+			return te.Code
+		}
+		return "INTERNAL"
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "TIMEOUT"
+	}
+	return "INTERNAL"
+}
+
+// ToolCall handles POST /v1/tools/{name} — direct tool invocation.
+func (s *Server) ToolCall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", false, APIMeta{RequestID: RequestIDFromContext(r.Context())})
+		return
+	}
+	if s.store == nil {
+		respondError(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "store not configured", true, APIMeta{RequestID: RequestIDFromContext(r.Context())})
+		return
+	}
+
+	toolName := strings.TrimPrefix(r.URL.Path, "/v1/tools/")
+	if toolName == "" {
+		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "tool name required", false, APIMeta{RequestID: RequestIDFromContext(r.Context())})
+		return
+	}
+
+	registry := s.askRegistry
+	if registry == nil {
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL", "tool registry unavailable", true, APIMeta{RequestID: RequestIDFromContext(r.Context())})
+		return
+	}
+
+	reqID := RequestIDFromContext(r.Context())
+
+	start := time.Now()
+	var toolHTTPStatus int
+	var toolStatusLabel = "ok"
+	defer func() {
+		if s.metrics != nil && toolHTTPStatus != 0 {
+			s.metrics.ToolDirectCallsTotal.WithLabelValues(toolName, toolStatusLabel).Inc()
+		}
+	}()
+
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
+	body, readErr := io.ReadAll(r.Body)
+	if readErr != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(readErr, &maxErr) {
+			toolHTTPStatus = http.StatusRequestEntityTooLarge
+			toolStatusLabel = "error"
+			respondError(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "request body too large", false, APIMeta{RequestID: reqID})
+			return
+		}
+		toolHTTPStatus = http.StatusBadRequest
+		toolStatusLabel = "error"
+		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "failed to read body", false, APIMeta{RequestID: reqID})
+		return
+	}
+
+	var params json.RawMessage
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		params = json.RawMessage(`{}`)
+	} else {
+		if trimmed[0] != '{' {
+			toolHTTPStatus = http.StatusBadRequest
+			toolStatusLabel = "error"
+			respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "params must be a JSON object", false, APIMeta{RequestID: reqID})
+			return
+		}
+		if err := json.Unmarshal(trimmed, &params); err != nil {
+			toolHTTPStatus = http.StatusBadRequest
+			toolStatusLabel = "error"
+			respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "invalid json body", false, APIMeta{RequestID: reqID})
+			return
+		}
+	}
+
+	// Idempotency state — set by dedup block, read by completion paths
+	var dedupIsExecutor, dedupCompleted bool
+
+	// Idempotency check
+	idempKey := r.Header.Get("Idempotency-Key")
+	if idempKey != "" && s.dedupCache != nil {
+		principal := s.dedupPrincipal(r)
+		result, conflict, waitAborted := s.dedupCache.AcquireOrWait(r.Context(), r.Method, r.URL.Path, principal, idempKey, body)
+		if waitAborted {
+			keyHash := fmt.Sprintf("%.8s", fmt.Sprintf("%x", sha256.Sum256([]byte(idempKey))))
+			if r.Context().Err() == context.DeadlineExceeded {
+				toolHTTPStatus = http.StatusGatewayTimeout
+				toolStatusLabel = "error"
+				slog.Warn("dedup_waiter_timeout", "request_id", reqID, "method", r.Method, "path", r.URL.Path, "idempotency_key_hash", keyHash)
+				respondError(w, r, http.StatusGatewayTimeout, "TIMEOUT", "request timeout while waiting for inflight request", true, APIMeta{RequestID: reqID})
+			} else {
+				slog.Warn("dedup_waiter_canceled", "request_id", reqID, "method", r.Method, "path", r.URL.Path, "idempotency_key_hash", keyHash)
+				// Client canceled — no response write; toolHTTPStatus stays 0 to skip counting
+			}
+			return
+		} else if conflict {
+			toolHTTPStatus = http.StatusConflict
+			toolStatusLabel = "error"
+			respondError(w, r, http.StatusConflict, "CONFLICT", "idempotency key conflict: same key, different body", false, APIMeta{RequestID: reqID})
+			return
+		} else if result != nil {
+			// Replay — don't count as a new request; toolHTTPStatus stays 0
+			if s.metrics != nil {
+				s.metrics.DedupReplayTotal.Inc()
+				s.metrics.DedupCacheSize.Set(float64(s.dedupCache.Size()))
+			}
+			s.replayDedupEntry(w, r, result, reqID)
+			return
+		}
+		// Safety net: if we return before explicitly calling Complete,
+		// release the inflight slot so waiters don't hang forever.
+		dedupIsExecutor = true
+		defer func() {
+			if !dedupCompleted {
+				principal := s.dedupPrincipal(r)
+				s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body,
+					http.StatusInternalServerError, nil, &APIError{Code: "INTERNAL", Message: "executor failed before completion", Retryable: true}, 0)
+			}
+			if s.metrics != nil {
+				s.metrics.DedupCacheSize.Set(float64(s.dedupCache.Size()))
+			}
+		}()
+	}
+
+	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store}
+	result, err := registry.Call(r.Context(), fs, toolName, params)
+	duration := time.Since(start).Milliseconds()
+
+	if err != nil {
+		toolStatusLabel = "error"
+		te, ok := tools.AsToolError(err)
+		if !ok {
+			te = &tools.ToolError{Code: tools.CodeInternal, Message: err.Error()}
+		}
+		toolHTTPStatus = toolErrorToHTTPStatus(te)
+		if dedupIsExecutor {
+			dedupCompleted = true
+			principal := s.dedupPrincipal(r)
+			s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body, toolHTTPStatus, nil, &APIError{
+				Code: te.Code, Message: te.Message, Retryable: te.Retryable,
+			}, duration)
+		}
+		respondError(w, r, toolHTTPStatus, te.Code, te.Message, te.Retryable, APIMeta{
+			RequestID:  reqID,
+			DurationMs: duration,
+			DataStatus: "error",
+		})
+		return
+	}
+
+	toolHTTPStatus = http.StatusOK
+
+	if dedupIsExecutor {
+		dedupCompleted = true
+		principal := s.dedupPrincipal(r)
+		s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body, http.StatusOK, result, nil, duration)
+	}
+
+	if wantsEnvelope(r) {
+		writeJSON(w, http.StatusOK, result, APIMeta{
+			RequestID:  reqID,
+			DurationMs: duration,
+			DataStatus: "complete",
+		}, nil)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
+// replayDedupEntry writes a cached dedup entry back to the client.
+func (s *Server) replayDedupEntry(w http.ResponseWriter, r *http.Request, entry *dedupEntry, reqID string) {
+	meta := APIMeta{
+		RequestID:  reqID,
+		DurationMs: entry.DurationMs,
+		DataStatus: "complete",
+		Cached:     true,
+	}
+	if entry.Err != nil {
+		meta.DataStatus = "error"
+	}
+	if wantsEnvelope(r) {
+		writeJSON(w, entry.Status, entry.Data, meta, entry.Err)
+		return
+	}
+	// Non-envelope: replay error as plain text (matching http.Error semantics)
+	if entry.Err != nil {
+		http.Error(w, entry.Err.Message, entry.Status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(entry.Status)
+	json.NewEncoder(w).Encode(entry.Data)
+}
+
+// DashboardAsk handles POST /ui/ask — rate-limited ask proxy for the web dashboard.
+func (s *Server) DashboardAsk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Per-IP rate limit: 5 req/min
+	ip := clientIP(r, s.trustProxy)
+	if !s.checkRateLimit(ip) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	if s.store == nil {
+		http.Error(w, "store not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
+	var req askRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.Prompt == "" {
+		http.Error(w, "prompt is required", http.StatusBadRequest)
+		return
+	}
+
+	var (
+		provider llm.Provider
+		model    string
+		toolMode string
+		err      error
+	)
+	if s.askProvider != nil {
+		provider = s.askProvider
+	} else {
+		provider, model, toolMode, err = s.askProviderFromEnv()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+	}
+
+	registry := s.askRegistry
+	if registry == nil {
+		http.Error(w, "tool registry unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	defs := make([]llm.ToolDefinition, 0, len(registry.List()))
+	for _, t := range registry.List() {
+		defs = append(defs, llm.ToolDefinition{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+
+	// Force max_steps=5, abort on error
+	maxSteps := 5
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store}
+	answer, toolRecords, askErr := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
+		return registry.Call(ctx, fs, name, params)
+	}), req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: "abort"})
+
+	steps := make([]askToolStep, 0, len(toolRecords))
+	for i, rec := range toolRecords {
+		step := askToolStep{
+			Index:      i + 1,
+			Tool:       rec.Name,
+			DurationMs: rec.DurationMs,
+			Params:     decodeJSONRaw(rec.Params),
+			Error:      rec.Error,
+		}
+		if rec.Result != nil {
+			step.Result = normalizeJSONValue(rec.Result)
+		}
+		steps = append(steps, step)
+	}
+
+	if askErr != nil {
+		slog.Warn("dashboard ask failed", "err", askErr)
+		http.Error(w, "ask failed: "+askErr.Error(), http.StatusBadGateway)
+		return
+	}
+
+	resp := askResponse{
+		Answer:     answer,
+		Model:      model,
+		ToolMode:   toolMode,
+		DurationMs: time.Since(start).Milliseconds(),
+		Steps:      steps,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func clientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if parts := strings.SplitN(xff, ",", 2); len(parts) > 0 {
+				return strings.TrimSpace(parts[0])
+			}
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func (s *Server) checkRateLimit(ip string) bool {
+	now := time.Now()
+	cutoff := now.Add(-time.Minute)
+
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+
+	// Periodic global prune every 100 calls
+	s.rateCheckCount++
+	if s.rateCheckCount%100 == 0 {
+		for k, v := range s.rateLimit {
+			allStale := true
+			for _, ts := range v {
+				if ts.After(cutoff) {
+					allStale = false
+					break
+				}
+			}
+			if allStale {
+				delete(s.rateLimit, k)
+			}
+		}
+	}
+
+	// Hard bound: reject if map still too large after pruning
+	if len(s.rateLimit) > 10000 {
+		return false
+	}
+
+	// Prune stale entries for this IP
+	timestamps := s.rateLimit[ip]
+	valid := timestamps[:0]
+	for _, ts := range timestamps {
+		if ts.After(cutoff) {
+			valid = append(valid, ts)
+		}
+	}
+
+	if len(valid) >= 5 {
+		s.rateLimit[ip] = valid
+		return false
+	}
+
+	s.rateLimit[ip] = append(valid, now)
+	return true
 }

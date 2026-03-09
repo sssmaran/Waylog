@@ -1130,6 +1130,7 @@
         let tracesShowAll = false;
         let refreshIntervalMs = 10000;
         let askMaxStepsDefault = 0;
+        let askEndpoint = "/ui/ask";
         const routeWindowText = {
           "5m": "5 minutes",
           "30m": "30 minutes",
@@ -1161,7 +1162,7 @@
           if (typeof maxSteps === "number" && maxSteps > 0) {
             payload.max_steps = maxSteps;
           }
-          const r = await fetch("/v1/ask", {
+          const r = await fetch(askEndpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -1170,7 +1171,12 @@
             const msg = await r.text();
             throw new Error(msg || "request failed");
           }
-          return r.json();
+          const body = await r.json();
+          // Handle both legacy and envelope response formats
+          if (body.data && body.meta) {
+            return body.data;
+          }
+          return body;
         }
 
         function prettyJSON(value) {
@@ -1406,6 +1412,9 @@
             }
             if (caps.ask && typeof caps.ask.max_steps_default === "number") {
               askMaxStepsDefault = caps.ask.max_steps_default;
+            }
+            if (caps.ask_endpoint) {
+              askEndpoint = caps.ask_endpoint;
             }
 
             if (caps.links) {

@@ -22,6 +22,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolGraphStatsName,
 		Description:  "Return entity and relationship counts for the current graph snapshot.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(graphStatsInputSchema),
 		OutputSchema: json.RawMessage(graphStatsOutputSchema),
 		Handler:      handleGraphStats,
@@ -32,6 +33,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolExplainReqName,
 		Description:  "Explain why a request failed using deterministic graph evidence.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(explainRequestInputSchema),
 		OutputSchema: json.RawMessage(explainRequestOutputSchema),
 		Handler:      handleExplainRequest,
@@ -42,6 +44,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolTraceGraphName,
 		Description:  "Return the span tree for a trace ID from the graph snapshot.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(traceGraphInputSchema),
 		OutputSchema: json.RawMessage(traceGraphOutputSchema),
 		Handler:      handleTraceGraph,
@@ -52,6 +55,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolTraceSummaryName,
 		Description:  "Summarize a trace with request type, latency, and service path.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(traceSummaryInputSchema),
 		OutputSchema: json.RawMessage(traceSummaryOutputSchema),
 		Handler:      handleTraceSummary,
@@ -62,6 +66,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolFailuresName,
 		Description:  "List failed requests with optional tier filtering.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(failuresInputSchema),
 		OutputSchema: json.RawMessage(failuresOutputSchema),
 		Handler:      handleFailures,
@@ -72,6 +77,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolPatternsName,
 		Description:  "Detect recurring failure patterns in the graph or a time window.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(patternsInputSchema),
 		OutputSchema: json.RawMessage(patternsOutputSchema),
 		Handler:      handleFailurePatterns,
@@ -82,6 +88,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolBlastName,
 		Description:  "Compute the blast radius for a specific error code.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(blastInputSchema),
 		OutputSchema: json.RawMessage(blastOutputSchema),
 		Handler:      handleBlastRadius,
@@ -92,6 +99,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolChainName,
 		Description:  "Return the downstream service chain for a request.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(chainInputSchema),
 		OutputSchema: json.RawMessage(chainOutputSchema),
 		Handler:      handleFailureChain,
@@ -102,6 +110,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolQueryName,
 		Description:  "Evaluate a query expression over a time window.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(queryInputSchema),
 		OutputSchema: json.RawMessage(queryOutputSchema),
 		Handler:      handleGraphQuery,
@@ -112,6 +121,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolDiffName,
 		Description:  "Compare error counts between two time windows.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(diffInputSchema),
 		OutputSchema: json.RawMessage(diffOutputSchema),
 		Handler:      handleCompareWindows,
@@ -122,6 +132,7 @@ func RegisterGraphTools(reg *Registry) error {
 	if err := reg.Register(Tool{
 		Name:         toolInsightsName,
 		Description:  "Summarize failures with top errors and services.",
+		Version:      "1.0",
 		InputSchema:  json.RawMessage(insightsInputSchema),
 		OutputSchema: json.RawMessage(insightsOutputSchema),
 		Handler:      handleInsights,
