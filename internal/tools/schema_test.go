@@ -186,13 +186,32 @@ func TestHandlerOutputMatchesSchema(t *testing.T) {
 			}
 
 			// Validate
-			validateObject(t, "", output, schema)
+			validateObject(t, "", output, schema, schema)
 		})
 	}
 }
 
+// resolveRef resolves a $ref like "#/$defs/span_node" against the root schema.
+func resolveRef(schema map[string]any, root map[string]any) map[string]any {
+	ref, ok := schema["$ref"].(string)
+	if !ok || root == nil {
+		return schema
+	}
+	// Only support "#/$defs/<name>" format
+	const prefix = "#/$defs/"
+	if len(ref) <= len(prefix) || ref[:len(prefix)] != prefix {
+		return schema
+	}
+	name := ref[len(prefix):]
+	defs, _ := root["$defs"].(map[string]any)
+	if resolved, ok := defs[name].(map[string]any); ok {
+		return resolved
+	}
+	return schema
+}
+
 // validateObject checks that output matches the schema at the given path.
-func validateObject(t *testing.T, path string, output map[string]any, schema map[string]any) {
+func validateObject(t *testing.T, path string, output map[string]any, schema map[string]any, root map[string]any) {
 	t.Helper()
 	props, _ := schema["properties"].(map[string]any)
 
@@ -238,12 +257,12 @@ func validateObject(t *testing.T, path string, output map[string]any, schema map
 		if path != "" {
 			fieldPath = path + "." + key
 		}
-		validateType(t, fieldPath, val, propMap)
+		validateType(t, fieldPath, val, resolveRef(propMap, root), root)
 	}
 }
 
 // validateType checks that val matches the declared schema type.
-func validateType(t *testing.T, path string, val any, schema map[string]any) {
+func validateType(t *testing.T, path string, val any, schema map[string]any, root map[string]any) {
 	t.Helper()
 	schemaType := schema["type"]
 	if schemaType == nil {
@@ -252,7 +271,7 @@ func validateType(t *testing.T, path string, val any, schema map[string]any) {
 
 	switch st := schemaType.(type) {
 	case string:
-		checkSingleType(t, path, val, st, schema)
+		checkSingleType(t, path, val, st, schema, root)
 	case []any:
 		// Nullable: e.g. ["string", "null"]
 		if val == nil {
@@ -282,7 +301,7 @@ func validateType(t *testing.T, path string, val any, schema map[string]any) {
 	}
 }
 
-func checkSingleType(t *testing.T, path string, val any, typ string, schema map[string]any) {
+func checkSingleType(t *testing.T, path string, val any, typ string, schema map[string]any, root map[string]any) {
 	t.Helper()
 	if val == nil {
 		t.Errorf("%s: got null for non-nullable type %q", path, typ)
@@ -302,6 +321,7 @@ func checkSingleType(t *testing.T, path string, val any, typ string, schema map[
 		if items == nil {
 			return
 		}
+		items = resolveRef(items, root)
 		for i, elem := range arr {
 			elemPath := fmt.Sprintf("%s[%d]", path, i)
 			if itemType, _ := items["type"].(string); itemType == "object" {
@@ -310,9 +330,9 @@ func checkSingleType(t *testing.T, path string, val any, typ string, schema map[
 					t.Errorf("%s: expected object, got %T", elemPath, elem)
 					continue
 				}
-				validateObject(t, elemPath, m, items)
+				validateObject(t, elemPath, m, items, root)
 			} else {
-				validateType(t, elemPath, elem, items)
+				validateType(t, elemPath, elem, items, root)
 			}
 		}
 	}
@@ -340,4 +360,33 @@ func typMatches(val any, typ string) bool {
 		return ok
 	}
 	return false
+}
+
+func TestTraceGraphOutputSchema_RecursiveDefs(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(traceGraphOutputSchema), &schema); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	defs, ok := schema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatal("expected $defs in schema")
+	}
+	spanNode, ok := defs["span_node"].(map[string]any)
+	if !ok {
+		t.Fatal("expected span_node in $defs")
+	}
+	// Verify children self-references
+	props := spanNode["properties"].(map[string]any)
+	children := props["children"].(map[string]any)
+	items := children["items"].(map[string]any)
+	if ref, ok := items["$ref"]; !ok || ref != "#/$defs/span_node" {
+		t.Errorf("children.items.$ref = %v, want #/$defs/span_node", ref)
+	}
+	// Verify roots uses $ref
+	rootProps := schema["properties"].(map[string]any)
+	roots := rootProps["roots"].(map[string]any)
+	rootItems := roots["items"].(map[string]any)
+	if ref, ok := rootItems["$ref"]; !ok || ref != "#/$defs/span_node" {
+		t.Errorf("roots.items.$ref = %v, want #/$defs/span_node", ref)
+	}
 }

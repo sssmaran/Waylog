@@ -75,16 +75,21 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt string, tools []Tool
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return Result{}, err
+		return Result{}, &ProviderError{Provider: "gemini", Retryable: true, Message: err.Error(), Cause: err}
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Result{}, err
+		return Result{}, &ProviderError{Provider: "gemini", Retryable: true, Message: err.Error(), Cause: err}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Result{}, fmt.Errorf("gemini error: %s", string(body))
+		return Result{}, &ProviderError{
+			Provider:   "gemini",
+			StatusCode: resp.StatusCode,
+			Retryable:  resp.StatusCode == 429 || resp.StatusCode >= 500,
+			Message:    string(body),
+		}
 	}
 
 	if mode == "text" {

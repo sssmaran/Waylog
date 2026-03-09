@@ -35,7 +35,7 @@ type Metrics struct {
 	AskToolCallsTotal    *prometheus.CounterVec
 	AskToolDuration      *prometheus.HistogramVec
 	ToolDirectCallsTotal *prometheus.CounterVec
-	DedupCacheHitsTotal  prometheus.Counter
+	DedupReplayTotal     prometheus.Counter
 	DedupCacheSize       prometheus.Gauge
 }
 
@@ -129,9 +129,11 @@ func New(reg *prometheus.Registry) *Metrics {
 		Name: "waylog_tool_direct_calls_total",
 		Help: "Direct tool endpoint calls.",
 	}, []string{"tool", "status"})
-	m.DedupCacheHitsTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "waylog_dedup_cache_hits_total",
-		Help: "Idempotency cache hits.",
+	// Renamed from waylog_dedup_cache_hits_total → waylog_dedup_replay_total
+	// to reflect that this counts both cache-hit replays and inflight-wait replays.
+	m.DedupReplayTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_dedup_replay_total",
+		Help: "Idempotency replay responses (cache hit or inflight wait).",
 	})
 	m.DedupCacheSize = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "waylog_dedup_cache_size",
@@ -147,7 +149,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.GraphNodes, m.GraphEdges, m.GraphPrunedTotal,
 		m.AskRequestsTotal, m.AskDuration,
 		m.AskToolCallsTotal, m.AskToolDuration,
-		m.ToolDirectCallsTotal, m.DedupCacheHitsTotal, m.DedupCacheSize,
+		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
 	)
 
 	return m

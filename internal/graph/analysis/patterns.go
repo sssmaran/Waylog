@@ -74,6 +74,9 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 			}
 		}
 
+		if flags == nil {
+			flags = []string{}
+		}
 		key := fmt.Sprintf("%s|%s|%s|%v", errorCode, flow, userTier, flags)
 
 		if _, ok := patterns[key]; !ok {

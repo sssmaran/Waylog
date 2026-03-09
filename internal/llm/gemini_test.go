@@ -1,7 +1,11 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -450,6 +454,51 @@ func TestIsUUID(t *testing.T) {
 				t.Fatalf("isUUID(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGeminiGenerate_NonOK_ReturnsProviderError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+	}))
+	defer ts.Close()
+
+	c := &GeminiClient{APIKey: "test", BaseURL: ts.URL, Model: "test-model"}
+	_, err := c.Generate(context.Background(), "hello", nil, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var pe *ProviderError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected ProviderError, got %T: %v", err, err)
+	}
+	if pe.Provider != "gemini" {
+		t.Errorf("Provider = %q, want gemini", pe.Provider)
+	}
+	if pe.StatusCode != 429 {
+		t.Errorf("StatusCode = %d, want 429", pe.StatusCode)
+	}
+	if !pe.Retryable {
+		t.Error("expected Retryable=true for 429")
+	}
+}
+
+func TestGeminiGenerate_TransportError_ReturnsProviderError(t *testing.T) {
+	c := &GeminiClient{APIKey: "test", BaseURL: "http://localhost:1", Model: "test-model"}
+	_, err := c.Generate(context.Background(), "hello", nil, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var pe *ProviderError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected ProviderError, got %T: %v", err, err)
+	}
+	if pe.StatusCode != 0 {
+		t.Errorf("StatusCode = %d, want 0 for transport error", pe.StatusCode)
+	}
+	if !pe.Retryable {
+		t.Error("expected Retryable=true for transport error")
 	}
 }
 

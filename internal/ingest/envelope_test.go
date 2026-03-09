@@ -110,3 +110,37 @@ func TestRequestIDFromContext_Empty(t *testing.T) {
 		t.Errorf("got %q, want empty", got)
 	}
 }
+
+func TestRespondError_Envelope(t *testing.T) {
+	r := httptest.NewRequest("GET", "/test?envelope=v2", nil)
+	w := httptest.NewRecorder()
+	meta := APIMeta{RequestID: "req_test1"}
+	respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "bad input", false, meta)
+
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Error == nil || resp.Error.Code != "INVALID_PARAMS" {
+		t.Errorf("expected INVALID_PARAMS error, got %+v", resp.Error)
+	}
+	if resp.Error.Message != "bad input" {
+		t.Errorf("message = %q, want %q", resp.Error.Message, "bad input")
+	}
+}
+
+func TestRespondError_Legacy(t *testing.T) {
+	r := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	meta := APIMeta{RequestID: "req_test2"}
+	respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "bad input", false, meta)
+
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	body := strings.TrimSpace(w.Body.String())
+	if body != "bad input" {
+		t.Errorf("body = %q, want %q", body, "bad input")
+	}
+}

@@ -47,7 +47,7 @@ const explainRequestOutputSchema = `{
     "service": { "type": ["string", "null"] },
     "error_code": { "type": ["string", "null"] },
     "error_msg": { "type": ["string", "null"] },
-    "span_chain": { "type": "array", "items": { "type": "object" } }
+    "span_chain": { "type": "array", "items": { "type": "object", "properties": { "span_id": { "type": "string" }, "service": { "type": "string" }, "error_code": { "type": "string" }, "latency_ms": { "type": ["number", "null"] }, "depth": { "type": "integer" } }, "required": ["span_id", "service", "depth"], "additionalProperties": false } }
   },
   "required": ["schema_version", "request_id"],
   "additionalProperties": false
@@ -64,21 +64,21 @@ const traceGraphInputSchema = `{
 
 const traceGraphOutputSchema = `{
   "type": "object",
+  "$defs": {
+    "span_node": {
+      "type": "object",
+      "properties": {
+        "span_id": { "type": "string" },
+        "service": { "type": ["string", "null"] },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/span_node" } }
+      },
+      "additionalProperties": false
+    }
+  },
   "properties": {
     "schema_version": { "type": "string" },
     "trace_id": { "type": "string" },
-    "roots": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "span_id": { "type": "string" },
-          "service": { "type": ["string", "null"] },
-          "children": { "type": "array" }
-        },
-        "additionalProperties": false
-      }
-    }
+    "roots": { "type": "array", "items": { "$ref": "#/$defs/span_node" } }
   },
   "required": ["schema_version", "trace_id", "roots"],
   "additionalProperties": false
@@ -163,7 +163,7 @@ const patternsOutputSchema = `{
           "error_code": { "type": "string" },
           "flow": { "type": "string" },
           "user_tier": { "type": "string" },
-          "feature_flags": { "type": ["array", "null"], "items": { "type": "string" } },
+          "feature_flags": { "type": "array", "items": { "type": "string" } },
           "count": { "type": "integer" }
         },
         "additionalProperties": false

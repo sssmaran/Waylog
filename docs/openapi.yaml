@@ -6,6 +6,19 @@ info:
 
     Write endpoints require authentication via API key.
     Read endpoints are open (protected by CORS only).
+
+    ## Metrics Contract v2
+
+    **Breaking changes from v1:**
+
+    - `waylog_dedup_cache_hits_total` renamed to `waylog_dedup_replay_total`
+      (now counts both cache-hit replays and inflight-wait replays).
+
+    **`waylog_ask_requests_total` error_code label bounded set:**
+    `INVALID_PARAMS`, `NOT_FOUND`, `EMPTY_RESULT`, `TIMEOUT`, `INTERNAL`,
+    `GRAPH_EMPTY`, `PROVIDER_ERROR`, `PAYLOAD_TOO_LARGE`, `CONFLICT`,
+    `SERVICE_UNAVAILABLE`, `METHOD_NOT_ALLOWED`, `UNAUTHORIZED`, `none`.
+    Any unlisted error code is normalized to `INTERNAL`.
   version: 0.2.0
 servers:
   - url: /
@@ -556,6 +569,13 @@ paths:
       description: |
         Executes a natural-language query against the live graph using the
         configured Gemini provider and built-in graph tools.
+
+        **Idempotency:** Supports `Idempotency-Key` header for at-most-once
+        execution semantics. Scope is post-validation only — body parse errors
+        (400) and payload-too-large (413) are stateless and re-evaluated on
+        every request regardless of the key. Idempotency covers the execution
+        path: provider calls, tool calls, and result assembly.
+      x-idempotency-scope: post-validation
       requestBody:
         required: true
         content:
@@ -631,6 +651,55 @@ paths:
           description: Upstream/provider/tool execution failure
         '503':
           description: LLM provider not configured or store unavailable
+
+  /v1/tools/{name}:
+    post:
+      summary: Direct tool call
+      description: |
+        Executes a registered graph tool by name with the given parameters.
+        Returns the tool's structured output directly.
+
+        **Idempotency:** Supports `Idempotency-Key` header for at-most-once
+        execution semantics. Scope is post-validation only — body parse errors
+        (400) and payload-too-large (413) are stateless and re-evaluated on
+        every request regardless of the key.
+      x-idempotency-scope: post-validation
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Tool name (e.g. graph_stats, explain_request)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              description: Tool-specific parameters as a JSON object. Empty object or empty body for tools with no required params.
+      responses:
+        '200':
+          description: Tool executed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                description: Tool-specific structured output. All tools include schema_version field.
+        '400':
+          description: Invalid params or missing tool name
+        '404':
+          description: Tool not found
+        '405':
+          description: Method Not Allowed
+        '413':
+          description: Request Entity Too Large
+        '422':
+          description: Tool execution failed (invalid params, empty result)
+        '503':
+          description: Store not configured
 
   /healthz:
     get:

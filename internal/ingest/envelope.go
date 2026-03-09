@@ -3,11 +3,16 @@ package ingest
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 const apiVersion = "2026-03-02"
@@ -58,6 +63,15 @@ func writeError(w http.ResponseWriter, status int, code, msg string, retryable b
 	})
 }
 
+// respondError writes an error response, using envelope format if the client opted in.
+func respondError(w http.ResponseWriter, r *http.Request, status int, code, msg string, retryable bool, meta APIMeta) {
+	if wantsEnvelope(r) {
+		writeError(w, status, code, msg, retryable, meta)
+		return
+	}
+	http.Error(w, msg, status)
+}
+
 // wantsEnvelope returns true if the client opted into the v2 envelope format.
 // Checks Accept header for application/json;envelope=v2, or ?envelope=v2 query param.
 func wantsEnvelope(r *http.Request) bool {
@@ -81,10 +95,20 @@ func wantsEnvelope(r *http.Request) bool {
 	return false
 }
 
+var reqIDCounter uint64
+
 // generateRequestID creates a unique request ID: req_ + 16 hex chars.
+// Degrades gracefully to time+counter hash if crypto/rand fails.
 func generateRequestID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		slog.Warn("crypto/rand failed, using fallback", "err", err)
+		var buf [16]byte
+		binary.BigEndian.PutUint64(buf[:8], uint64(time.Now().UnixNano()))
+		binary.BigEndian.PutUint64(buf[8:], atomic.AddUint64(&reqIDCounter, 1))
+		h := sha256.Sum256(buf[:])
+		return "req_" + hex.EncodeToString(h[:8])
+	}
 	return "req_" + hex.EncodeToString(b)
 }
 

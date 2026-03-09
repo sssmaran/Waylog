@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -14,14 +16,16 @@ import (
 const (
 	dedupMaxEntries    = 1000
 	dedupEvictInterval = 30 * time.Second
+	dedupCopyRetries   = 2
 )
 
 type dedupEntry struct {
-	Status    int
-	Data      any
-	Err       *APIError
-	BodyHash  [32]byte
-	ExpiresAt time.Time
+	Status     int
+	Data       any
+	Err        *APIError
+	DurationMs int64
+	BodyHash   [32]byte
+	ExpiresAt  time.Time
 }
 
 type dedupCacheEntry struct {
@@ -114,32 +118,6 @@ func isCacheable(status int) bool {
 	return dedupTTL(status) > 0
 }
 
-// Check looks up the cache for an existing entry.
-// Returns (entry, false) on hit+match, (nil, true) on body conflict, (nil, false) on miss.
-func (c *DedupCache) Check(method, path, principal, key string, body []byte) (*dedupEntry, bool) {
-	cacheKey := dedupCacheKey(method, path, principal, key)
-	bodyHash := sha256.Sum256(body)
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	elem, ok := c.entries[cacheKey]
-	if !ok {
-		return nil, false
-	}
-	ce := elem.Value.(*dedupCacheEntry)
-	if ce.entry.ExpiresAt.Before(time.Now()) {
-		delete(c.entries, cacheKey)
-		c.order.Remove(elem)
-		return nil, false
-	}
-	if ce.entry.BodyHash != bodyHash {
-		return nil, true // conflict
-	}
-	c.order.MoveToBack(elem)
-	return deepCopyEntry(ce.entry), false
-}
-
 // Store caches a result for future replay.
 func (c *DedupCache) Store(method, path, principal, key string, body []byte, status int, data any, apiErr *APIError) {
 	ttl := dedupTTL(status)
@@ -181,47 +159,94 @@ func (c *DedupCache) Store(method, path, principal, key string, body []byte, sta
 	c.entries[cacheKey] = elem
 }
 
-// AcquireOrWait either acquires inflight ownership or waits for the first caller.
+// AcquireOrWait atomically checks cache, checks/creates inflight, or waits.
 // Returns:
-//   - (nil, false, false): acquired ownership, caller should execute
-//   - (entry, false, false): waited and got result (matching body)
-//   - (nil, true, false): waited but body hash conflict
+//   - (entry, false, false): cache hit or waited and got result
+//   - (nil, true, false): body hash conflict (cache or inflight)
 //   - (nil, false, true): ctx was canceled/timed out while waiting
+//   - (nil, false, false): acquired ownership, caller should execute
 func (c *DedupCache) AcquireOrWait(ctx context.Context, method, path, principal, key string, body []byte) (*dedupEntry, bool, bool) {
 	cacheKey := dedupCacheKey(method, path, principal, key)
 	bodyHash := sha256.Sum256(body)
 
-	c.mu.Lock()
-	ifl, exists := c.pending[cacheKey]
-	if !exists {
-		ifl = &inflight{
-			done:     make(chan struct{}),
-			bodyHash: bodyHash,
-		}
-		c.pending[cacheKey] = ifl
-		c.mu.Unlock()
-		return nil, false, false // caller is the executor
-	}
-	c.mu.Unlock()
+	for attempt := 0; ; attempt++ {
+		c.mu.Lock()
 
-	// Wait for first caller to finish
-	select {
-	case <-ifl.done:
-		if ifl.bodyHash != bodyHash {
-			return nil, true, false
+		// 1. Check cache
+		if elem, ok := c.entries[cacheKey]; ok {
+			ce := elem.Value.(*dedupCacheEntry)
+			if ce.entry.ExpiresAt.After(time.Now()) {
+				if ce.entry.BodyHash != bodyHash {
+					c.mu.Unlock()
+					return nil, true, false // conflict
+				}
+				c.order.MoveToBack(elem)
+				raw := ce.entry // capture immutable pointer under lock
+				c.mu.Unlock()
+
+				cp, err := deepCopyEntry(raw)
+				if err != nil {
+					slog.Warn("dedup_cache_copy_failed", "err", err)
+					// Conditional delete: only if entry hasn't been replaced
+					c.mu.Lock()
+					if elem2, ok := c.entries[cacheKey]; ok {
+						if elem2.Value.(*dedupCacheEntry).entry == raw {
+							delete(c.entries, cacheKey)
+							c.order.Remove(elem2)
+						}
+					}
+					c.mu.Unlock()
+					if attempt < dedupCopyRetries {
+						continue // retry — will miss cache, fall to acquire/pending
+					}
+					// Exhausted retries — loop once more to acquire/pending under lock
+					continue
+				} else {
+					return cp, false, false // cache hit
+				}
+			} else {
+				// Expired — remove and fall through
+				delete(c.entries, cacheKey)
+				c.order.Remove(elem)
+			}
 		}
-		if ifl.entry != nil {
-			return deepCopyEntry(ifl.entry), false, false
+
+		// 2. Check/create pending
+		ifl, exists := c.pending[cacheKey]
+		if !exists {
+			ifl = &inflight{
+				done:     make(chan struct{}),
+				bodyHash: bodyHash,
+			}
+			c.pending[cacheKey] = ifl
+			c.mu.Unlock()
+			return nil, false, false // caller is the executor
 		}
-		// entry nil means Complete was never called or set no entry — treat as miss
-		return nil, false, false
-	case <-ctx.Done():
-		return nil, false, true
+		c.mu.Unlock()
+
+		// 3. Wait for executor
+		select {
+		case <-ifl.done:
+			if ifl.bodyHash != bodyHash {
+				return nil, true, false
+			}
+			if ifl.entry != nil {
+				cp, err := deepCopyEntry(ifl.entry)
+				if err != nil {
+					slog.Warn("dedup_inflight_copy_failed", "err", err)
+					return nil, false, false // treat as miss — caller re-executes
+				}
+				return cp, false, false
+			}
+			return nil, false, false
+		case <-ctx.Done():
+			return nil, false, true
+		}
 	}
 }
 
 // Complete finalizes an inflight request and stores in cache if cacheable.
-func (c *DedupCache) Complete(method, path, principal, key string, body []byte, status int, data any, apiErr *APIError) {
+func (c *DedupCache) Complete(method, path, principal, key string, body []byte, status int, data any, apiErr *APIError, durationMs int64) {
 	cacheKey := dedupCacheKey(method, path, principal, key)
 	bodyHash := sha256.Sum256(body)
 
@@ -233,10 +258,11 @@ func (c *DedupCache) Complete(method, path, principal, key string, body []byte, 
 	}
 
 	entry := &dedupEntry{
-		Status:   status,
-		Data:     data,
-		Err:      apiErr,
-		BodyHash: bodyHash,
+		Status:     status,
+		Data:       data,
+		DurationMs: durationMs,
+		Err:        apiErr,
+		BodyHash:   bodyHash,
 	}
 	if isCacheable(status) {
 		entry.ExpiresAt = time.Now().Add(dedupTTL(status))
@@ -272,26 +298,32 @@ func (c *DedupCache) storeLocked(cacheKey string, entry *dedupEntry) {
 	c.entries[cacheKey] = elem
 }
 
-func deepCopyEntry(e *dedupEntry) *dedupEntry {
+func deepCopyEntry(e *dedupEntry) (*dedupEntry, error) {
 	if e == nil {
-		return nil
+		return nil, nil
 	}
 	cp := &dedupEntry{
-		Status:    e.Status,
-		BodyHash:  e.BodyHash,
-		ExpiresAt: e.ExpiresAt,
+		Status:     e.Status,
+		DurationMs: e.DurationMs,
+		BodyHash:   e.BodyHash,
+		ExpiresAt:  e.ExpiresAt,
 	}
 	if e.Data != nil {
-		b, _ := json.Marshal(e.Data)
+		b, err := json.Marshal(e.Data)
+		if err != nil {
+			return nil, fmt.Errorf("marshal dedup entry data: %w", err)
+		}
 		var d any
-		json.Unmarshal(b, &d)
+		if err := json.Unmarshal(b, &d); err != nil {
+			return nil, fmt.Errorf("unmarshal dedup entry data: %w", err)
+		}
 		cp.Data = d
 	}
 	if e.Err != nil {
 		errCp := *e.Err
 		cp.Err = &errCp
 	}
-	return cp
+	return cp, nil
 }
 
 // Size returns the number of cached entries (for metrics).
