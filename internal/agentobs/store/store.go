@@ -512,6 +512,92 @@ func (s *Store) MarkAbandoned(sessionID string) {
 	sess.State = agentobs.StateAbandoned
 }
 
+type SnapshotData struct {
+	Runs          map[string]*RunInfo     `json:"runs"`
+	Sessions      map[string]*SessionInfo `json:"sessions"`
+	Steps         map[string]*StepInfo    `json:"steps"`
+	RunSessions   map[string][]string     `json:"run_sessions"`
+	SessionSteps  map[string][]string     `json:"session_steps"`
+	ChildSessions map[string][]string     `json:"child_sessions"`
+}
+
+func (s *Store) Snapshot() *SnapshotData {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	runs := make(map[string]*RunInfo, len(s.runs))
+	for k, v := range s.runs {
+		cp := *v
+		runs[k] = &cp
+	}
+
+	sessions := make(map[string]*SessionInfo, len(s.sessions))
+	for k, v := range s.sessions {
+		cp := *v
+		sessions[k] = &cp
+	}
+
+	steps := make(map[string]*StepInfo, len(s.steps))
+	for k, v := range s.steps {
+		cp := *v
+		steps[k] = &cp
+	}
+
+	runSessions := make(map[string][]string, len(s.runSessions))
+	for k, v := range s.runSessions {
+		cp := make([]string, len(v))
+		copy(cp, v)
+		runSessions[k] = cp
+	}
+
+	sessionSteps := make(map[string][]string, len(s.sessionSteps))
+	for k, v := range s.sessionSteps {
+		cp := make([]string, len(v))
+		copy(cp, v)
+		sessionSteps[k] = cp
+	}
+
+	childSessions := make(map[string][]string, len(s.childSessions))
+	for k, v := range s.childSessions {
+		cp := make([]string, len(v))
+		copy(cp, v)
+		childSessions[k] = cp
+	}
+
+	return &SnapshotData{
+		Runs:          runs,
+		Sessions:      sessions,
+		Steps:         steps,
+		RunSessions:   runSessions,
+		SessionSteps:  sessionSteps,
+		ChildSessions: childSessions,
+	}
+}
+
+func (s *Store) Restore(data *SnapshotData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if data.Runs != nil {
+		s.runs = data.Runs
+	}
+	if data.Sessions != nil {
+		s.sessions = data.Sessions
+	}
+	if data.Steps != nil {
+		s.steps = data.Steps
+	}
+	if data.RunSessions != nil {
+		s.runSessions = data.RunSessions
+	}
+	if data.SessionSteps != nil {
+		s.sessionSteps = data.SessionSteps
+	}
+	if data.ChildSessions != nil {
+		s.childSessions = data.ChildSessions
+	}
+}
+
 func (s *Store) PruneOlderThan(retention time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
