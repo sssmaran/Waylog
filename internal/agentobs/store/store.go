@@ -598,6 +598,200 @@ func (s *Store) Restore(data *SnapshotData) {
 	}
 }
 
+// --- Query Methods ---
+
+func (s *Store) ListRuns(limit int, status string, before time.Time) []RunInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var all []RunInfo
+	for _, run := range s.runs {
+		if status != "" && run.State != status {
+			continue
+		}
+		if !before.IsZero() && !run.StartTime.Before(before) {
+			continue
+		}
+		all = append(all, *run)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].StartTime.After(all[j].StartTime)
+	})
+	if limit > 0 && len(all) > limit {
+		all = all[:limit]
+	}
+	return all
+}
+
+func (s *Store) GetRunSessions(runID string) []SessionInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sids := s.runSessions[runID]
+	out := make([]SessionInfo, 0, len(sids))
+	for _, sid := range sids {
+		if sess, ok := s.sessions[sid]; ok {
+			out = append(out, *sess)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].StartTime.Before(out[j].StartTime)
+	})
+	return out
+}
+
+func (s *Store) ScanAbandoned(threshold time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().Add(-threshold)
+	for _, sess := range s.sessions {
+		if sess.State == agentobs.StateActive && sess.LastEventAt.Before(cutoff) {
+			sess.State = agentobs.StateAbandoned
+		}
+	}
+	for _, run := range s.runs {
+		if run.State == agentobs.StateActive && run.LastEventAt.Before(cutoff) {
+			run.State = agentobs.StateAbandoned
+		}
+	}
+}
+
+type Stats struct {
+	RunCount      int     `json:"run_count"`
+	SessionCount  int     `json:"session_count"`
+	StepCount     int     `json:"step_count"`
+	AvgTokensIn   float64 `json:"avg_tokens_in"`
+	AvgTokensOut  float64 `json:"avg_tokens_out"`
+	AvgDurationMs float64 `json:"avg_duration_ms"`
+}
+
+func (s *Store) AggregateStats(window time.Duration) Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cutoff := time.Now().Add(-window)
+	var st Stats
+	var totalTokensIn, totalTokensOut, totalDuration int64
+	var durationCount int
+	for _, run := range s.runs {
+		if run.StartTime.Before(cutoff) {
+			continue
+		}
+		st.RunCount++
+		if run.DurationMs > 0 {
+			totalDuration += run.DurationMs
+			durationCount++
+		}
+	}
+	for _, sess := range s.sessions {
+		if sess.StartTime.Before(cutoff) {
+			continue
+		}
+		st.SessionCount++
+		totalTokensIn += int64(sess.ExclusiveTokensIn)
+		totalTokensOut += int64(sess.ExclusiveTokensOut)
+	}
+	for _, step := range s.steps {
+		sess, ok := s.sessions[step.SessionID]
+		if !ok || sess.StartTime.Before(cutoff) {
+			continue
+		}
+		st.StepCount++
+	}
+	if st.SessionCount > 0 {
+		st.AvgTokensIn = float64(totalTokensIn) / float64(st.SessionCount)
+		st.AvgTokensOut = float64(totalTokensOut) / float64(st.SessionCount)
+	}
+	if durationCount > 0 {
+		st.AvgDurationMs = float64(totalDuration) / float64(durationCount)
+	}
+	return st
+}
+
+type ToolStat struct {
+	ToolName     string  `json:"tool_name"`
+	CallCount    int     `json:"call_count"`
+	SuccessCount int     `json:"success_count"`
+	SuccessRate  float64 `json:"success_rate"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	P95LatencyMs float64 `json:"p95_latency_ms"`
+}
+
+func (s *Store) ToolAnalytics(window time.Duration) []ToolStat {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cutoff := time.Now().Add(-window)
+	type toolAccum struct {
+		calls     int
+		success   int
+		latencies []float64
+	}
+	accum := make(map[string]*toolAccum)
+	for _, step := range s.steps {
+		if step.ToolName == "" || !step.Ended {
+			continue
+		}
+		sess, ok := s.sessions[step.SessionID]
+		if !ok || sess.StartTime.Before(cutoff) {
+			continue
+		}
+		a, ok := accum[step.ToolName]
+		if !ok {
+			a = &toolAccum{}
+			accum[step.ToolName] = a
+		}
+		a.calls++
+		if step.ToolError == "" {
+			a.success++
+		}
+		a.latencies = append(a.latencies, float64(step.LatencyMs))
+	}
+	out := make([]ToolStat, 0, len(accum))
+	for name, a := range accum {
+		ts := ToolStat{ToolName: name, CallCount: a.calls, SuccessCount: a.success}
+		if a.calls > 0 {
+			ts.SuccessRate = float64(a.success) / float64(a.calls)
+			var sum float64
+			for _, l := range a.latencies {
+				sum += l
+			}
+			ts.AvgLatencyMs = sum / float64(a.calls)
+			sort.Float64s(a.latencies)
+			idx := int(float64(len(a.latencies)) * 0.95)
+			if idx >= len(a.latencies) {
+				idx = len(a.latencies) - 1
+			}
+			ts.P95LatencyMs = a.latencies[idx]
+		}
+		out = append(out, ts)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CallCount > out[j].CallCount })
+	return out
+}
+
+type TokenCount struct {
+	TokensIn  int `json:"tokens_in"`
+	TokensOut int `json:"tokens_out"`
+}
+
+func (s *Store) TokensByModel(window time.Duration) map[string]TokenCount {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cutoff := time.Now().Add(-window)
+	result := make(map[string]TokenCount)
+	for _, step := range s.steps {
+		if step.Model == "" || !step.Ended {
+			continue
+		}
+		sess, ok := s.sessions[step.SessionID]
+		if !ok || sess.StartTime.Before(cutoff) {
+			continue
+		}
+		tc := result[step.Model]
+		tc.TokensIn += step.TokensIn
+		tc.TokensOut += step.TokensOut
+		result[step.Model] = tc
+	}
+	return result
+}
+
 func (s *Store) PruneOlderThan(retention time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
