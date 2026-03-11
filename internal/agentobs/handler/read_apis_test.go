@@ -249,36 +249,6 @@ func TestGetToolAnalytics(t *testing.T) {
 	}
 }
 
-func TestReadHandlers_MethodNotAllowed(t *testing.T) {
-	s := store.New()
-	h := NewHandler(s, nil, nil, HandlerConfig{})
-
-	handlers := []struct {
-		name    string
-		handler http.HandlerFunc
-		path    string
-	}{
-		{"ListRuns", h.ListRuns, "/v1/agent/runs"},
-		{"GetRun", h.GetRun, "/v1/agent/runs/r1"},
-		{"GetSession", h.GetSession, "/v1/agent/sessions/s1"},
-		{"GetWaterfall", h.GetWaterfall, "/v1/agent/sessions/s1/waterfall"},
-		{"GetStats", h.GetStats, "/v1/agent/stats"},
-		{"GetCost", h.GetCost, "/v1/agent/cost"},
-		{"GetToolAnalytics", h.GetToolAnalytics, "/v1/agent/tools"},
-	}
-
-	for _, tc := range handlers {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
-			rr := httptest.NewRecorder()
-			tc.handler(rr, req)
-			if rr.Code != http.StatusMethodNotAllowed {
-				t.Fatalf("expected 405, got %d", rr.Code)
-			}
-		})
-	}
-}
-
 func TestListRuns_InvalidCursor(t *testing.T) {
 	s := store.New()
 	h := NewHandler(s, nil, nil, HandlerConfig{})

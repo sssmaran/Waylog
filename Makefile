@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race lint ci fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod
+.PHONY: help build build-examples build-agentobs ingest ingest-mcp waylog waylog-live checkout agentobs test test-race lint ci fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod
 
 help:
 	@echo "Targets:"
@@ -34,6 +34,12 @@ build:
 	go build ./cmd/waylog
 	go build ./cmd/bridge
 	go build ./cmd/waylog-live
+
+build-agentobs:
+	go build -o bin/waylog-agentobs ./cmd/waylog-agentobs
+
+agentobs: build-agentobs
+	./bin/waylog-agentobs
 
 build-examples:
 	go build ./examples/cmd/api-gateway

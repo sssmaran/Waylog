@@ -36,6 +36,7 @@ go.work.sum
 *.md
 
 # Local runtime/build artifacts
+/bin/
 /ingest
 /checkout
 /waylog

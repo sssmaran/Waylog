@@ -41,10 +41,6 @@ func parseLimit(r *http.Request) int {
 
 // GET /v1/agent/runs
 func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	limit := parseLimit(r)
 	status := r.URL.Query().Get("status")
 
@@ -76,10 +72,6 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/agent/runs/{id}
 func (h *Handler) GetRun(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	id := r.PathValue("id")
 	run, ok := h.store.GetRun(id)
 	if !ok {
@@ -92,10 +84,6 @@ func (h *Handler) GetRun(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/agent/sessions/{id}
 func (h *Handler) GetSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	id := r.PathValue("id")
 	sess, ok := h.store.GetSession(id)
 	if !ok {
@@ -131,10 +119,6 @@ type WaterfallEntry struct {
 
 // GET /v1/agent/sessions/{id}/waterfall
 func (h *Handler) GetWaterfall(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	sessionID := r.PathValue("id")
 	sess, ok := h.store.GetSession(sessionID)
 	if !ok {
@@ -179,10 +163,6 @@ func (h *Handler) GetWaterfall(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/agent/stats
 func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	window := parseWindow(r)
 	stats := h.store.AggregateStats(window)
 	writeJSON(w, stats)
@@ -190,10 +170,6 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/agent/cost
 func (h *Handler) GetCost(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	window := parseWindow(r)
 	tokens := h.store.TokensByModel(window)
 
@@ -233,10 +209,6 @@ func (h *Handler) GetCost(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/agent/tools
 func (h *Handler) GetToolAnalytics(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	window := parseWindow(r)
 	tools := h.store.ToolAnalytics(window)
 	writeJSON(w, map[string]any{"tools": tools})
