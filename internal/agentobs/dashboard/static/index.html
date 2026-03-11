@@ -1,0 +1,1157 @@
+<!doctype html>
+<html lang="en" style="color-scheme: dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <title>Agent Observability</title>
+    <!-- System font stack — no external dependencies -->
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      :root {
+        --bg: #0a0a0a;
+        --bg-card: #111;
+        --bg-elevated: #1a1a1a;
+        --fg: #ededed;
+        --fg-secondary: #888;
+        --fg-muted: #666;
+        --border: #333;
+        --border-hover: #444;
+        --blue: #0070f3;
+        --red: #f31260;
+        --green: #17c964;
+        --amber: #f5a623;
+        --purple: #7928ca;
+        --radius-card: 8px;
+        --radius-badge: 6px;
+        --radius-inline: 4px;
+        --shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.05), 0 4px 12px rgba(0, 0, 0, 0.4);
+        --font-sans: "Geist", system-ui, -apple-system, sans-serif;
+        --font-mono: "Geist Mono", "SF Mono", monospace;
+      }
+      html {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      body {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 16px 24px 48px;
+      }
+      a {
+        color: var(--blue);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      a:focus-visible,
+      button:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 2px;
+        border-radius: var(--radius-inline);
+      }
+
+      /* Header */
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 16px;
+      }
+      .header h1 {
+        font-size: 18px;
+        font-weight: 600;
+      }
+      .header-meta {
+        font-size: 12px;
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+      }
+
+      /* Tab bar */
+      .tab-bar {
+        display: flex;
+        gap: 0;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 24px;
+      }
+      .tab-bar [role="tab"] {
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--fg-secondary);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        font-weight: 500;
+        padding: 8px 16px;
+        cursor: pointer;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      .tab-bar [role="tab"]:hover {
+        color: var(--fg);
+      }
+      .tab-bar [role="tab"][aria-selected="true"] {
+        color: var(--fg);
+        border-bottom-color: var(--blue);
+      }
+      .tab-panel[hidden] {
+        display: none;
+      }
+
+      /* Summary cards */
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 16px;
+        box-shadow: var(--shadow);
+      }
+      .card-label {
+        font-size: 12px;
+        color: var(--fg-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 4px;
+      }
+      .card-value {
+        font-size: 24px;
+        font-weight: 600;
+        font-family: var(--font-mono);
+      }
+
+      /* Table */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th {
+        text-align: left;
+        font-weight: 500;
+        color: var(--fg-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-size: 11px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      tr:hover td {
+        background: var(--bg-elevated);
+      }
+      tr.clickable {
+        cursor: pointer;
+      }
+
+      /* Status badge */
+      .badge {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 500;
+        padding: 2px 8px;
+        border-radius: var(--radius-badge);
+        text-transform: capitalize;
+      }
+      .badge-active {
+        background: rgba(0, 112, 243, 0.15);
+        color: var(--blue);
+      }
+      .badge-completed {
+        background: rgba(23, 201, 100, 0.15);
+        color: var(--green);
+      }
+      .badge-failed {
+        background: rgba(243, 18, 96, 0.15);
+        color: var(--red);
+      }
+      .badge-abandoned {
+        background: rgba(245, 166, 35, 0.15);
+        color: var(--amber);
+      }
+
+      /* Mono text */
+      .mono {
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+
+      /* Button */
+      .btn {
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        color: var(--fg);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        padding: 8px 16px;
+        cursor: pointer;
+        transition: border-color 0.15s;
+      }
+      .btn:hover {
+        border-color: var(--border-hover);
+      }
+      .btn:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .load-more {
+        display: block;
+        margin: 16px auto 0;
+      }
+
+      /* Empty state */
+      .empty {
+        text-align: center;
+        color: var(--fg-muted);
+        padding: 48px 0;
+      }
+
+      /* Duration helper */
+      .dim {
+        color: var(--fg-muted);
+      }
+
+      /* Run detail view */
+      .detail-view[hidden] {
+        display: none;
+      }
+      .back-btn {
+        background: none;
+        border: none;
+        color: var(--fg-secondary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        cursor: pointer;
+        padding: 4px 0;
+        margin-bottom: 16px;
+      }
+      .back-btn:hover {
+        color: var(--fg);
+      }
+      .detail-header {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      .detail-header .card-value {
+        font-size: 16px;
+      }
+
+      /* Waterfall */
+      .waterfall-container {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 16px;
+        margin-bottom: 24px;
+        overflow-x: auto;
+      }
+      .waterfall-title {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--fg-secondary);
+        margin-bottom: 12px;
+      }
+      .wf-lane {
+        display: flex;
+        align-items: center;
+        margin-bottom: 6px;
+        min-height: 28px;
+      }
+      .wf-lane-label {
+        width: 120px;
+        flex-shrink: 0;
+        font-size: 11px;
+        font-family: var(--font-mono);
+        color: var(--fg-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .wf-lane-track {
+        flex: 1;
+        position: relative;
+        height: 24px;
+        background: var(--bg-elevated);
+        border-radius: 3px;
+      }
+      .wf-bar {
+        position: absolute;
+        height: 20px;
+        top: 2px;
+        border-radius: 3px;
+        cursor: pointer;
+        min-width: 4px;
+        font-size: 10px;
+        font-family: var(--font-mono);
+        color: var(--fg);
+        line-height: 20px;
+        padding: 0 4px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        transition: opacity 0.15s;
+      }
+      .wf-bar:hover {
+        opacity: 0.8;
+      }
+      .wf-bar-llm {
+        background: rgba(0, 112, 243, 0.6);
+        border: 1px solid var(--blue);
+      }
+      .wf-bar-tool {
+        background: rgba(23, 201, 100, 0.4);
+        border: 1px solid var(--green);
+      }
+      .wf-bar-error {
+        background: rgba(243, 18, 96, 0.4);
+        border: 1px solid var(--red);
+      }
+      .wf-timescale {
+        display: flex;
+        margin-left: 120px;
+        margin-top: 4px;
+        font-size: 10px;
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+        justify-content: space-between;
+      }
+
+      /* Step detail pane */
+      .step-detail {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 16px;
+      }
+      .step-detail[hidden] {
+        display: none;
+      }
+      .step-detail h3 {
+        font-size: 14px;
+        font-weight: 500;
+        margin-bottom: 12px;
+      }
+      .step-detail-grid {
+        display: grid;
+        grid-template-columns: 120px 1fr;
+        gap: 4px 12px;
+        font-size: 13px;
+      }
+      .step-detail-grid dt {
+        color: var(--fg-muted);
+      }
+      .step-detail-grid dd {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        word-break: break-all;
+      }
+      .step-payload {
+        margin-top: 12px;
+        padding: 8px 12px;
+        background: var(--bg-elevated);
+        border-radius: var(--radius-inline);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 200px;
+        overflow-y: auto;
+        color: var(--fg-secondary);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>Agent Observability</h1>
+      <span class="header-meta" id="refresh-indicator"></span>
+    </div>
+
+    <div class="tab-bar" role="tablist">
+      <button role="tab" aria-selected="true" data-tab="runs">Runs</button>
+      <button role="tab" aria-selected="false" data-tab="cost">Cost</button>
+      <button role="tab" aria-selected="false" data-tab="tools">Tools</button>
+    </div>
+
+    <!-- Runs Tab -->
+    <div class="tab-panel" id="tab-runs" role="tabpanel">
+      <div class="cards" id="stats-cards">
+        <div class="card">
+          <div class="card-label">Active</div>
+          <div class="card-value" id="stat-active">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Completed</div>
+          <div class="card-value" id="stat-completed">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Failed</div>
+          <div class="card-value" id="stat-failed">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Sessions</div>
+          <div class="card-value" id="stat-sessions">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Steps</div>
+          <div class="card-value" id="stat-steps">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Avg Duration</div>
+          <div class="card-value" id="stat-duration">-</div>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Run ID</th>
+            <th>Status</th>
+            <th>Started</th>
+            <th>Duration</th>
+            <th>Sessions</th>
+          </tr>
+        </thead>
+        <tbody id="runs-tbody"></tbody>
+      </table>
+      <button class="btn load-more" id="load-more-btn" hidden>
+        Load More
+      </button>
+      <div class="empty" id="runs-empty" hidden>No runs yet</div>
+    </div>
+
+    <!-- Run Detail View -->
+    <div class="detail-view" id="run-detail" hidden>
+      <button class="back-btn" id="back-to-runs">&larr; Back to Runs</button>
+      <div class="detail-header" id="detail-header"></div>
+      <div class="waterfall-container">
+        <div class="waterfall-title">Waterfall</div>
+        <div id="waterfall-lanes"></div>
+        <div class="wf-timescale" id="waterfall-timescale"></div>
+      </div>
+      <div class="step-detail" id="step-detail" hidden>
+        <h3 id="step-detail-title">Step Detail</h3>
+        <dl class="step-detail-grid" id="step-detail-grid"></dl>
+        <div class="step-payload" id="step-payload" hidden></div>
+      </div>
+    </div>
+
+    <!-- Cost Tab -->
+    <div class="tab-panel" id="tab-cost" role="tabpanel" hidden>
+      <div class="cards" id="cost-cards">
+        <div class="card">
+          <div class="card-label">Total Cost</div>
+          <div class="card-value" id="cost-total">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Total Tokens In</div>
+          <div class="card-value" id="cost-tokens-in">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Total Tokens Out</div>
+          <div class="card-value" id="cost-tokens-out">-</div>
+        </div>
+      </div>
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;margin-bottom:24px">
+        <canvas id="cost-chart" height="200"></canvas>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Tokens In</th>
+            <th>Tokens Out</th>
+            <th>Cost In</th>
+            <th>Cost Out</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody id="cost-tbody"></tbody>
+      </table>
+      <div class="empty" id="cost-empty" hidden>No cost data yet</div>
+    </div>
+
+    <!-- Tools Tab -->
+    <div class="tab-panel" id="tab-tools" role="tabpanel" hidden>
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;margin-bottom:24px">
+        <canvas id="tools-chart" height="200"></canvas>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th>Calls</th>
+            <th>Success Rate</th>
+            <th>Avg Latency</th>
+            <th>P95 Latency</th>
+          </tr>
+        </thead>
+        <tbody id="tools-tbody"></tbody>
+      </table>
+      <div class="empty" id="tools-empty" hidden>No tool data yet</div>
+    </div>
+
+    <script src="chart.umd.min.js"></script>
+    <script>
+      /* ── State ─────────────────────────────────────────── */
+      let nextCursor = null;
+      let refreshTimer = null;
+      const REFRESH_MS = 10000;
+
+      /* ── Tab Switching ─────────────────────────────────── */
+      const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+      const panels = document.querySelectorAll(".tab-panel");
+
+      function switchTab(tab) {
+        tabs.forEach((t) => {
+          t.setAttribute("aria-selected", "false");
+          t.tabIndex = -1;
+        });
+        tab.setAttribute("aria-selected", "true");
+        tab.tabIndex = 0;
+        tab.focus();
+        panels.forEach((p) => (p.hidden = true));
+        document.getElementById("tab-" + tab.dataset.tab).hidden = false;
+        history.replaceState(null, "", "#" + tab.dataset.tab);
+      }
+
+      tabs.forEach((tab, i) => {
+        tab.tabIndex = i === 0 ? 0 : -1;
+        tab.setAttribute("aria-controls", "tab-" + tab.dataset.tab);
+        tab.addEventListener("click", () => switchTab(tab));
+        tab.addEventListener("keydown", (e) => {
+          let idx = tabs.indexOf(tab);
+          if (e.key === "ArrowRight") idx = (idx + 1) % tabs.length;
+          else if (e.key === "ArrowLeft") idx = (idx - 1 + tabs.length) % tabs.length;
+          else if (e.key === "Home") idx = 0;
+          else if (e.key === "End") idx = tabs.length - 1;
+          else return;
+          e.preventDefault();
+          switchTab(tabs[idx]);
+        });
+      });
+
+      // Link panels to tabs
+      panels.forEach((p) => {
+        const tabId = p.id.replace("tab-", "");
+        const tab = document.querySelector(`[data-tab="${tabId}"]`);
+        if (tab) {
+          tab.id = "tab-btn-" + tabId;
+          p.setAttribute("aria-labelledby", "tab-btn-" + tabId);
+        }
+      });
+
+      // Restore tab from URL hash
+      const hash = location.hash.slice(1);
+      const hashTab = document.querySelector(`[data-tab="${hash}"]`);
+      if (hashTab) switchTab(hashTab);
+
+      /* ── Helpers ───────────────────────────────────────── */
+      function fmtDuration(ms) {
+        if (!ms || ms <= 0) return "-";
+        if (ms < 1000) return ms + "ms";
+        const s = ms / 1000;
+        if (s < 60) return s.toFixed(1) + "s";
+        const m = Math.floor(s / 60);
+        return m + "m " + Math.round(s % 60) + "s";
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return "-";
+        const d = new Date(ts);
+        return d.toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+      }
+
+      function badgeClass(state) {
+        return "badge badge-" + (state || "active");
+      }
+
+      function truncId(id) {
+        if (!id) return "-";
+        return id.length > 12 ? id.slice(0, 12) + "\u2026" : id;
+      }
+
+      /* ── Fetch Stats ───────────────────────────────────── */
+      async function fetchStats() {
+        try {
+          const res = await fetch("/v1/agent/stats?window=1h");
+          const data = await res.json();
+          hasActiveRuns = (data.active_count || 0) > 0;
+          document.getElementById("stat-active").textContent =
+            data.active_count || 0;
+          document.getElementById("stat-completed").textContent =
+            data.completed_count || 0;
+          document.getElementById("stat-failed").textContent =
+            data.failed_count || 0;
+          document.getElementById("stat-sessions").textContent =
+            data.session_count || 0;
+          document.getElementById("stat-steps").textContent =
+            data.step_count || 0;
+          document.getElementById("stat-duration").textContent = fmtDuration(
+            data.avg_duration_ms
+          );
+        } catch (e) {
+          console.error("Stats fetch failed:", e);
+        }
+      }
+
+      /* ── Fetch Runs ────────────────────────────────────── */
+      async function fetchRuns(append) {
+        try {
+          let url = "/v1/agent/runs?limit=50";
+          if (append && nextCursor) {
+            url += "&before=" + encodeURIComponent(nextCursor);
+          }
+          const res = await fetch(url);
+          const data = await res.json();
+          const runs = data.runs || [];
+          nextCursor = data.next_cursor || null;
+
+          const tbody = document.getElementById("runs-tbody");
+          if (!append) tbody.innerHTML = "";
+
+          if (runs.length === 0 && !append) {
+            document.getElementById("runs-empty").hidden = false;
+          } else {
+            document.getElementById("runs-empty").hidden = true;
+          }
+
+          for (const run of runs) {
+            const tr = document.createElement("tr");
+            tr.className = "clickable";
+            tr.tabIndex = 0;
+            tr.setAttribute("role", "button");
+            tr.addEventListener("click", () => showRunDetail(run.run_id));
+            tr.addEventListener("keydown", (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                showRunDetail(run.run_id);
+              }
+            });
+            const cells = [
+              { text: truncId(run.run_id), cls: "mono" },
+              { html: true, state: run.state },
+              { text: fmtTime(run.start_time) },
+              { text: fmtDuration(run.duration_ms) },
+              { text: String(run.session_count || 0) },
+            ];
+            for (const c of cells) {
+              const td = document.createElement("td");
+              if (c.html) {
+                const span = document.createElement("span");
+                span.className = badgeClass(c.state);
+                span.textContent = c.state || "active";
+                td.appendChild(span);
+              } else {
+                if (c.cls) td.className = c.cls;
+                td.textContent = c.text;
+              }
+              tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+          }
+
+          document.getElementById("load-more-btn").hidden = !nextCursor;
+        } catch (e) {
+          console.error("Runs fetch failed:", e);
+        }
+      }
+
+      /* ── Run Detail View ──────────────────────────────── */
+      let currentRunId = null;
+      let waterfallData = [];
+
+      function showRunDetail(runId) {
+        currentRunId = runId;
+        document.getElementById("tab-runs").hidden = true;
+        document.querySelector(".tab-bar").hidden = true;
+        document.getElementById("run-detail").hidden = false;
+        document.getElementById("step-detail").hidden = true;
+        clearTimeout(refreshTimer);
+        fetchRunDetail(runId);
+      }
+
+      function hideRunDetail() {
+        currentRunId = null;
+        document.getElementById("run-detail").hidden = true;
+        document.querySelector(".tab-bar").hidden = false;
+        document.getElementById("tab-runs").hidden = false;
+        scheduleRefresh();
+      }
+
+      document
+        .getElementById("back-to-runs")
+        .addEventListener("click", hideRunDetail);
+
+      async function fetchRunDetail(runId) {
+        try {
+          // Fetch run data first to get session IDs
+          const runRes = await fetch("/v1/agent/runs/" + encodeURIComponent(runId));
+          const runData = await runRes.json();
+          const run = runData.run;
+          const sessions = runData.sessions || [];
+
+          // Render header cards
+          const hdr = document.getElementById("detail-header");
+          hdr.innerHTML = "";
+          const fields = [
+            ["Run ID", run.run_id, "mono"],
+            ["Status", run.state],
+            ["Started", fmtTime(run.start_time)],
+            ["Duration", fmtDuration(run.duration_ms)],
+            ["Sessions", String(sessions.length)],
+          ];
+          for (const [label, value, cls] of fields) {
+            const card = document.createElement("div");
+            card.className = "card";
+            const lbl = document.createElement("div");
+            lbl.className = "card-label";
+            lbl.textContent = label;
+            const val = document.createElement("div");
+            val.className = "card-value" + (cls ? " " + cls : "");
+            if (label === "Status") {
+              const span = document.createElement("span");
+              span.className = badgeClass(value);
+              span.textContent = value || "active";
+              val.appendChild(span);
+            } else {
+              val.textContent = value || "-";
+            }
+            card.appendChild(lbl);
+            card.appendChild(val);
+            hdr.appendChild(card);
+          }
+
+          // Waterfall — use first session's ID (the API expects a session ID)
+          let wfData = { waterfall: [] };
+          if (sessions.length > 0) {
+            const wfRes = await fetch(
+              "/v1/agent/sessions/" +
+                encodeURIComponent(sessions[0].session_id) +
+                "/waterfall"
+            );
+            if (wfRes.ok) {
+              wfData = await wfRes.json();
+            }
+          }
+
+          waterfallData = wfData.waterfall || [];
+          renderWaterfall(waterfallData, sessions);
+        } catch (e) {
+          console.error("Run detail fetch failed:", e);
+        }
+      }
+
+      function renderWaterfall(entries, sessions) {
+        const container = document.getElementById("waterfall-lanes");
+        container.innerHTML = "";
+        const tsContainer = document.getElementById("waterfall-timescale");
+        tsContainer.innerHTML = "";
+
+        if (entries.length === 0) {
+          container.textContent = "No steps recorded";
+          return;
+        }
+
+        // Compute time range
+        let maxEnd = 0;
+        for (const e of entries) {
+          const end = (e.offset_ms || 0) + (e.duration_ms || 0);
+          if (end > maxEnd) maxEnd = end;
+        }
+        if (maxEnd === 0) maxEnd = 1000;
+
+        // Group by lane
+        const lanes = new Map();
+        for (const e of entries) {
+          if (!lanes.has(e.lane)) lanes.set(e.lane, []);
+          lanes.get(e.lane).push(e);
+        }
+
+        // Session name lookup
+        const sessNames = {};
+        for (const s of sessions) {
+          sessNames[s.session_id] =
+            s.agent_name || truncId(s.session_id);
+        }
+
+        // Render each lane
+        const sortedLanes = [...lanes.keys()].sort((a, b) => a - b);
+        for (const laneIdx of sortedLanes) {
+          const steps = lanes.get(laneIdx);
+          const sessId = steps[0].session_id;
+          const lane = document.createElement("div");
+          lane.className = "wf-lane";
+
+          const label = document.createElement("div");
+          label.className = "wf-lane-label";
+          label.textContent = sessNames[sessId] || "session " + laneIdx;
+          label.title = sessId;
+          lane.appendChild(label);
+
+          const track = document.createElement("div");
+          track.className = "wf-lane-track";
+
+          for (const step of steps) {
+            const bar = document.createElement("div");
+            const leftPct = ((step.offset_ms || 0) / maxEnd) * 100;
+            const widthPct = Math.max(
+              ((step.duration_ms || 0) / maxEnd) * 100,
+              0.5
+            );
+            bar.className =
+              "wf-bar " +
+              (step.status === "error"
+                ? "wf-bar-error"
+                : step.tool_name
+                  ? "wf-bar-tool"
+                  : "wf-bar-llm");
+            bar.style.left = leftPct + "%";
+            bar.style.width = widthPct + "%";
+            bar.textContent =
+              step.tool_name || step.model || "step " + step.step_index;
+            bar.title =
+              (step.tool_name || step.model || "") +
+              " " +
+              fmtDuration(step.duration_ms);
+            bar.tabIndex = 0;
+            bar.setAttribute("role", "button");
+            bar.addEventListener("click", () => showStepDetail(step));
+            bar.addEventListener("keydown", (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                showStepDetail(step);
+              }
+            });
+            track.appendChild(bar);
+          }
+
+          lane.appendChild(track);
+          container.appendChild(lane);
+        }
+
+        // Timescale
+        const ticks = 5;
+        for (let i = 0; i <= ticks; i++) {
+          const span = document.createElement("span");
+          span.textContent = fmtDuration(Math.round((maxEnd / ticks) * i));
+          tsContainer.appendChild(span);
+        }
+      }
+
+      function showStepDetail(step) {
+        const pane = document.getElementById("step-detail");
+        pane.hidden = false;
+        document.getElementById("step-detail-title").textContent =
+          "Step " + step.step_index + (step.tool_name ? " — " + step.tool_name : "");
+
+        const grid = document.getElementById("step-detail-grid");
+        grid.innerHTML = "";
+        const fields = [
+          ["Step ID", step.step_id],
+          ["Session", truncId(step.session_id)],
+          ["Model", step.model],
+          ["Tool", step.tool_name],
+          ["Status", step.status],
+          ["Offset", fmtDuration(step.offset_ms)],
+          ["Duration", fmtDuration(step.duration_ms)],
+        ];
+        for (const [label, value] of fields) {
+          if (!value) continue;
+          const dt = document.createElement("dt");
+          dt.textContent = label;
+          const dd = document.createElement("dd");
+          dd.textContent = value;
+          grid.appendChild(dt);
+          grid.appendChild(dd);
+        }
+
+        const payload = document.getElementById("step-payload");
+        payload.hidden = true;
+      }
+
+      /* ── Load More ─────────────────────────────────────── */
+      document
+        .getElementById("load-more-btn")
+        .addEventListener("click", () => fetchRuns(true));
+
+      /* ── Cost Tab ─────────────────────────────────────── */
+      let costChart = null;
+
+      async function fetchCost() {
+        try {
+          const res = await fetch("/v1/agent/cost?window=1h");
+          const data = await res.json();
+          const models = data.models || [];
+
+          // Summary cards
+          let totalIn = 0,
+            totalOut = 0;
+          for (const m of models) {
+            totalIn += m.tokens_in || 0;
+            totalOut += m.tokens_out || 0;
+          }
+          document.getElementById("cost-total").textContent =
+            data.total_cost != null ? "$" + data.total_cost.toFixed(4) : "-";
+          document.getElementById("cost-tokens-in").textContent =
+            totalIn.toLocaleString();
+          document.getElementById("cost-tokens-out").textContent =
+            totalOut.toLocaleString();
+
+          // Table
+          const tbody = document.getElementById("cost-tbody");
+          tbody.innerHTML = "";
+          if (models.length === 0) {
+            document.getElementById("cost-empty").hidden = false;
+          } else {
+            document.getElementById("cost-empty").hidden = true;
+            for (const m of models) {
+              const tr = document.createElement("tr");
+              const cells = [
+                m.model,
+                (m.tokens_in || 0).toLocaleString(),
+                (m.tokens_out || 0).toLocaleString(),
+                "$" + (m.cost_in || 0).toFixed(4),
+                "$" + (m.cost_out || 0).toFixed(4),
+                "$" + (m.total || 0).toFixed(4),
+              ];
+              for (const text of cells) {
+                const td = document.createElement("td");
+                td.textContent = text;
+                tr.appendChild(td);
+              }
+              tbody.appendChild(tr);
+            }
+          }
+
+          // Chart — update in place if already created
+          if (models.length > 0) {
+            const labels = models.map((m) => m.model);
+            const tokensIn = models.map((m) => m.tokens_in || 0);
+            const tokensOut = models.map((m) => m.tokens_out || 0);
+            if (costChart) {
+              costChart.data.labels = labels;
+              costChart.data.datasets[0].data = tokensIn;
+              costChart.data.datasets[1].data = tokensOut;
+              costChart.update();
+            } else {
+              const ctx = document.getElementById("cost-chart").getContext("2d");
+              costChart = new Chart(ctx, {
+                type: "bar",
+                data: {
+                  labels,
+                  datasets: [
+                    {
+                      label: "Tokens In",
+                      data: tokensIn,
+                      backgroundColor: "rgba(0, 112, 243, 0.6)",
+                      borderColor: "rgba(0, 112, 243, 1)",
+                      borderWidth: 1,
+                    },
+                    {
+                      label: "Tokens Out",
+                      data: tokensOut,
+                      backgroundColor: "rgba(121, 40, 202, 0.6)",
+                      borderColor: "rgba(121, 40, 202, 1)",
+                      borderWidth: 1,
+                    },
+                  ],
+                },
+                options: {
+                  responsive: true,
+                  plugins: {
+                    legend: { labels: { color: "#888" } },
+                  },
+                  scales: {
+                    x: { ticks: { color: "#666" }, grid: { color: "#222" } },
+                    y: { ticks: { color: "#666" }, grid: { color: "#222" } },
+                  },
+                },
+              });
+            }
+          }
+        } catch (e) {
+          console.error("Cost fetch failed:", e);
+        }
+      }
+
+      /* ── Tools Tab ─────────────────────────────────────── */
+      let toolsChart = null;
+
+      async function fetchTools() {
+        try {
+          const res = await fetch("/v1/agent/tools?window=1h");
+          const data = await res.json();
+          const tools = data.tools || [];
+
+          // Table
+          const tbody = document.getElementById("tools-tbody");
+          tbody.innerHTML = "";
+          if (tools.length === 0) {
+            document.getElementById("tools-empty").hidden = false;
+          } else {
+            document.getElementById("tools-empty").hidden = true;
+            for (const t of tools) {
+              const rate =
+                t.call_count > 0
+                  ? ((t.success_count / t.call_count) * 100).toFixed(0) + "%"
+                  : "-";
+              const tr = document.createElement("tr");
+              const cells = [
+                t.tool_name,
+                String(t.call_count),
+                rate,
+                fmtDuration(t.avg_latency_ms),
+                fmtDuration(t.p95_latency_ms),
+              ];
+              for (const text of cells) {
+                const td = document.createElement("td");
+                td.textContent = text;
+                tr.appendChild(td);
+              }
+              tbody.appendChild(tr);
+            }
+          }
+
+          // Chart — update in place if already created
+          if (tools.length > 0) {
+            const labels = tools.map((t) => t.tool_name);
+            const calls = tools.map((t) => t.call_count);
+            const successRates = tools.map((t) =>
+              t.call_count > 0 ? (t.success_count / t.call_count) * 100 : 0
+            );
+            if (toolsChart) {
+              toolsChart.data.labels = labels;
+              toolsChart.data.datasets[0].data = calls;
+              toolsChart.data.datasets[1].data = successRates;
+              toolsChart.update();
+            } else {
+              const ctx = document.getElementById("tools-chart").getContext("2d");
+              toolsChart = new Chart(ctx, {
+                type: "bar",
+                data: {
+                  labels,
+                  datasets: [
+                    {
+                      label: "Calls",
+                      data: calls,
+                      backgroundColor: "rgba(23, 201, 100, 0.6)",
+                      borderColor: "rgba(23, 201, 100, 1)",
+                      borderWidth: 1,
+                      yAxisID: "y",
+                    },
+                    {
+                      label: "Success %",
+                      data: successRates,
+                      backgroundColor: "rgba(0, 112, 243, 0.4)",
+                      borderColor: "rgba(0, 112, 243, 1)",
+                      borderWidth: 1,
+                      yAxisID: "y1",
+                    },
+                  ],
+                },
+                options: {
+                  responsive: true,
+                  plugins: {
+                    legend: { labels: { color: "#888" } },
+                  },
+                  scales: {
+                    x: { ticks: { color: "#666" }, grid: { color: "#222" } },
+                    y: {
+                      position: "left",
+                      ticks: { color: "#666" },
+                      grid: { color: "#222" },
+                      title: {
+                        display: true,
+                        text: "Calls",
+                        color: "#666",
+                      },
+                    },
+                    y1: {
+                      position: "right",
+                      min: 0,
+                      max: 100,
+                      ticks: { color: "#666" },
+                      grid: { drawOnChartArea: false },
+                      title: {
+                        display: true,
+                        text: "Success %",
+                        color: "#666",
+                      },
+                    },
+                  },
+                },
+              });
+            }
+          }
+        } catch (e) {
+          console.error("Tools fetch failed:", e);
+        }
+      }
+
+      /* ── Auto Refresh ──────────────────────────────────── */
+      let hasActiveRuns = false;
+
+      function scheduleRefresh() {
+        clearTimeout(refreshTimer);
+        const interval = hasActiveRuns ? 3000 : REFRESH_MS;
+        refreshTimer = setTimeout(async () => {
+          const now = new Date().toLocaleTimeString();
+          document.getElementById("refresh-indicator").textContent =
+            "updated " + now;
+          await refreshAll();
+          scheduleRefresh();
+        }, interval);
+      }
+
+      async function refreshAll() {
+        const activeTab = document.querySelector('[role="tab"][aria-selected="true"]')?.dataset.tab || "runs";
+        const tasks = [fetchStats()];
+        if (activeTab === "runs") tasks.push(fetchRuns(false));
+        if (activeTab === "cost") tasks.push(fetchCost());
+        if (activeTab === "tools") tasks.push(fetchTools());
+        await Promise.all(tasks);
+      }
+
+      /* ── Init ──────────────────────────────────────────── */
+      (async () => {
+        await refreshAll();
+        const now = new Date().toLocaleTimeString();
+        document.getElementById("refresh-indicator").textContent =
+          "updated " + now;
+        scheduleRefresh();
+      })();
+    </script>
+  </body>
+</html>

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	agentdash "github.com/sssmaran/WaylogCLI/internal/agentobs/dashboard"
 	"github.com/sssmaran/WaylogCLI/internal/agentobs/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/agentobs/handler"
 	"github.com/sssmaran/WaylogCLI/internal/agentobs/metrics"
@@ -103,6 +104,7 @@ func main() {
 	mux.HandleFunc("GET /readyz", h.Readyz)
 	mux.HandleFunc("GET /healthz", h.Healthz)
 	mux.Handle("GET /metrics", m.Handler())
+	mux.Handle("/ui/", http.StripPrefix("/ui/", agentdash.Handler()))
 
 	// 7. Server — CORS middleware wraps the mux so OPTIONS preflight reaches all paths
 	srv := &http.Server{

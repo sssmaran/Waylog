@@ -656,6 +656,9 @@ func (s *Store) ScanAbandoned(threshold time.Duration) {
 
 type Stats struct {
 	RunCount      int     `json:"run_count"`
+	ActiveCount   int     `json:"active_count"`
+	CompletedCount int    `json:"completed_count"`
+	FailedCount   int     `json:"failed_count"`
 	SessionCount  int     `json:"session_count"`
 	StepCount     int     `json:"step_count"`
 	AvgTokensIn   float64 `json:"avg_tokens_in"`
@@ -675,6 +678,14 @@ func (s *Store) AggregateStats(window time.Duration) Stats {
 			continue
 		}
 		st.RunCount++
+		switch run.State {
+		case agentobs.StateActive:
+			st.ActiveCount++
+		case agentobs.StateCompleted:
+			st.CompletedCount++
+		case agentobs.StateFailed:
+			st.FailedCount++
+		}
 		if run.DurationMs > 0 {
 			totalDuration += run.DurationMs
 			durationCount++
