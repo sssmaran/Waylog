@@ -397,7 +397,6 @@
 
     <div class="tab-bar" role="tablist">
       <button role="tab" aria-selected="true" data-tab="runs">Runs</button>
-      <button role="tab" aria-selected="false" data-tab="cost">Cost</button>
       <button role="tab" aria-selected="false" data-tab="tools">Tools</button>
     </div>
 
@@ -461,41 +460,6 @@
         <dl class="step-detail-grid" id="step-detail-grid"></dl>
         <div class="step-payload" id="step-payload" hidden></div>
       </div>
-    </div>
-
-    <!-- Cost Tab -->
-    <div class="tab-panel" id="tab-cost" role="tabpanel" hidden>
-      <div class="cards" id="cost-cards">
-        <div class="card">
-          <div class="card-label">Total Cost</div>
-          <div class="card-value" id="cost-total">-</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Total Tokens In</div>
-          <div class="card-value" id="cost-tokens-in">-</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Total Tokens Out</div>
-          <div class="card-value" id="cost-tokens-out">-</div>
-        </div>
-      </div>
-      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;margin-bottom:24px">
-        <canvas id="cost-chart" height="200"></canvas>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Model</th>
-            <th>Tokens In</th>
-            <th>Tokens Out</th>
-            <th>Cost In</th>
-            <th>Cost Out</th>
-            <th>Total</th>
-          </tr>
-        </thead>
-        <tbody id="cost-tbody"></tbody>
-      </table>
-      <div class="empty" id="cost-empty" hidden>No cost data yet</div>
     </div>
 
     <!-- Tools Tab -->
@@ -906,106 +870,6 @@
         .getElementById("load-more-btn")
         .addEventListener("click", () => fetchRuns(true));
 
-      /* ── Cost Tab ─────────────────────────────────────── */
-      let costChart = null;
-
-      async function fetchCost() {
-        try {
-          const res = await fetch("/v1/agent/cost?window=1h");
-          const data = await res.json();
-          const models = data.models || [];
-
-          // Summary cards
-          let totalIn = 0,
-            totalOut = 0;
-          for (const m of models) {
-            totalIn += m.tokens_in || 0;
-            totalOut += m.tokens_out || 0;
-          }
-          document.getElementById("cost-total").textContent =
-            data.total_cost != null ? "$" + data.total_cost.toFixed(4) : "-";
-          document.getElementById("cost-tokens-in").textContent =
-            totalIn.toLocaleString();
-          document.getElementById("cost-tokens-out").textContent =
-            totalOut.toLocaleString();
-
-          // Table
-          const tbody = document.getElementById("cost-tbody");
-          tbody.innerHTML = "";
-          if (models.length === 0) {
-            document.getElementById("cost-empty").hidden = false;
-          } else {
-            document.getElementById("cost-empty").hidden = true;
-            for (const m of models) {
-              const tr = document.createElement("tr");
-              const cells = [
-                m.model,
-                (m.tokens_in || 0).toLocaleString(),
-                (m.tokens_out || 0).toLocaleString(),
-                "$" + (m.cost_in || 0).toFixed(4),
-                "$" + (m.cost_out || 0).toFixed(4),
-                "$" + (m.total || 0).toFixed(4),
-              ];
-              for (const text of cells) {
-                const td = document.createElement("td");
-                td.textContent = text;
-                tr.appendChild(td);
-              }
-              tbody.appendChild(tr);
-            }
-          }
-
-          // Chart — update in place if already created
-          if (models.length > 0) {
-            const labels = models.map((m) => m.model);
-            const tokensIn = models.map((m) => m.tokens_in || 0);
-            const tokensOut = models.map((m) => m.tokens_out || 0);
-            if (costChart) {
-              costChart.data.labels = labels;
-              costChart.data.datasets[0].data = tokensIn;
-              costChart.data.datasets[1].data = tokensOut;
-              costChart.update();
-            } else {
-              const ctx = document.getElementById("cost-chart").getContext("2d");
-              costChart = new Chart(ctx, {
-                type: "bar",
-                data: {
-                  labels,
-                  datasets: [
-                    {
-                      label: "Tokens In",
-                      data: tokensIn,
-                      backgroundColor: "rgba(0, 112, 243, 0.6)",
-                      borderColor: "rgba(0, 112, 243, 1)",
-                      borderWidth: 1,
-                    },
-                    {
-                      label: "Tokens Out",
-                      data: tokensOut,
-                      backgroundColor: "rgba(121, 40, 202, 0.6)",
-                      borderColor: "rgba(121, 40, 202, 1)",
-                      borderWidth: 1,
-                    },
-                  ],
-                },
-                options: {
-                  responsive: true,
-                  plugins: {
-                    legend: { labels: { color: "#888" } },
-                  },
-                  scales: {
-                    x: { ticks: { color: "#666" }, grid: { color: "#222" } },
-                    y: { ticks: { color: "#666" }, grid: { color: "#222" } },
-                  },
-                },
-              });
-            }
-          }
-        } catch (e) {
-          console.error("Cost fetch failed:", e);
-        }
-      }
-
       /* ── Tools Tab ─────────────────────────────────────── */
       let toolsChart = null;
 
@@ -1139,7 +1003,6 @@
         const activeTab = document.querySelector('[role="tab"][aria-selected="true"]')?.dataset.tab || "runs";
         const tasks = [fetchStats()];
         if (activeTab === "runs") tasks.push(fetchRuns(false));
-        if (activeTab === "cost") tasks.push(fetchCost());
         if (activeTab === "tools") tasks.push(fetchTools());
         await Promise.all(tasks);
       }

@@ -98,8 +98,8 @@ func (e *AgentEvent) Validate() error {
 		if e.StepIndex < 0 {
 			return fmt.Errorf("step_index must be >= 0 for %s", e.EventType)
 		}
-		if e.LatencyMs <= 0 {
-			return fmt.Errorf("latency_ms required for %s", e.EventType)
+		if e.LatencyMs < 0 {
+			return fmt.Errorf("latency_ms must be >= 0 for %s", e.EventType)
 		}
 	default:
 		return fmt.Errorf("unknown event_type %q", e.EventType)

@@ -23,6 +23,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/persist"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
+	"github.com/sssmaran/WaylogCLI/pkg/agentobs"
 )
 
 var graphStore *graphstore.Store
@@ -85,6 +86,18 @@ func main() {
 
 	dedupCache := ingest.NewDedupCache()
 
+	// Optional agent-obs instrumentation for /v1/ask
+	agentObsURL := config.Getenv("AGENT_OBS_URL", "")
+	var agentObsClient *agentobs.Client
+	if agentObsURL != "" {
+		var aobsOpts []agentobs.ClientOption
+		if k := config.Getenv("AGENT_OBS_API_KEY", ""); k != "" {
+			aobsOpts = append(aobsOpts, agentobs.WithAPIKey(k))
+		}
+		agentObsClient = agentobs.NewClient(agentObsURL, aobsOpts...)
+		slog.Info("agent-obs enabled", "url", agentObsURL)
+	}
+
 	reg := tools.NewRegistry()
 	if err := tools.RegisterGraphTools(reg); err != nil {
 		slog.Error("mcp tools init failed", "err", err)
@@ -112,6 +125,7 @@ func main() {
 		DedupCache:          dedupCache,
 		AgentKey:            agentKey,
 		TrustProxy:          trustProxy,
+		AgentObsClient:      agentObsClient,
 	})
 
 	// Optional append-only event log
@@ -361,6 +375,16 @@ func main() {
 			"nodes", len(g.Nodes),
 			"edges", len(g.Edges),
 		)
+	}
+
+	if agentObsClient != nil {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer closeCancel()
+		if err := agentObsClient.Close(closeCtx); err != nil {
+			slog.Warn("agent-obs client close error", "err", err)
+		} else {
+			slog.Info("agent-obs client flushed")
+		}
 	}
 }
 

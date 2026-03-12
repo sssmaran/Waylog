@@ -10,56 +10,56 @@ import (
 )
 
 type RunInfo struct {
-	RunID              string
-	RootSessionID      string
-	StartTime          time.Time
-	EndTime            time.Time
-	State              string
-	LastEventAt        time.Time
-	DurationMs         int64
-	InclusiveTokensIn  int
-	InclusiveTokensOut int
-	SessionCount       int
-	Success            bool
+	RunID              string    `json:"run_id"`
+	RootSessionID      string    `json:"root_session_id"`
+	StartTime          time.Time `json:"start_time"`
+	EndTime            time.Time `json:"end_time"`
+	State              string    `json:"state"`
+	LastEventAt        time.Time `json:"last_event_at"`
+	DurationMs         int64     `json:"duration_ms"`
+	InclusiveTokensIn  int       `json:"inclusive_tokens_in"`
+	InclusiveTokensOut int       `json:"inclusive_tokens_out"`
+	SessionCount       int       `json:"session_count"`
+	Success            bool      `json:"success"`
 }
 
 type SessionInfo struct {
-	SessionID          string
-	RunID              string
-	ParentSessionID    string
-	TriggerStepID      string
-	AgentName          string
-	AgentVersion       string
-	Prompt             string
-	StartTime          time.Time
-	EndTime            time.Time
-	State              string
-	LastEventAt        time.Time
-	DurationMs         int64
-	ExclusiveTokensIn  int
-	ExclusiveTokensOut int
-	InclusiveTokensIn  int
-	InclusiveTokensOut int
-	TotalSteps         int
-	Success            bool
+	SessionID          string    `json:"session_id"`
+	RunID              string    `json:"run_id"`
+	ParentSessionID    string    `json:"parent_session_id"`
+	TriggerStepID      string    `json:"trigger_step_id"`
+	AgentName          string    `json:"agent_name"`
+	AgentVersion       string    `json:"agent_version"`
+	Prompt             string    `json:"prompt"`
+	StartTime          time.Time `json:"start_time"`
+	EndTime            time.Time `json:"end_time"`
+	State              string    `json:"state"`
+	LastEventAt        time.Time `json:"last_event_at"`
+	DurationMs         int64     `json:"duration_ms"`
+	ExclusiveTokensIn  int       `json:"exclusive_tokens_in"`
+	ExclusiveTokensOut int       `json:"exclusive_tokens_out"`
+	InclusiveTokensIn  int       `json:"inclusive_tokens_in"`
+	InclusiveTokensOut int       `json:"inclusive_tokens_out"`
+	TotalSteps         int       `json:"total_steps"`
+	Success            bool      `json:"success"`
 }
 
 type StepInfo struct {
-	StepID     string
-	StepName   string
-	SessionID  string
-	StepIndex  int
-	Model      string
-	TokensIn   int
-	TokensOut  int
-	ToolName   string
-	ToolInput  string
-	ToolOutput string
-	ToolError  string
-	LatencyMs  int64
-	OffsetMs   int64
-	Started    bool
-	Ended      bool
+	StepID     string `json:"step_id"`
+	StepName   string `json:"step_name"`
+	SessionID  string `json:"session_id"`
+	StepIndex  int    `json:"step_index"`
+	Model      string `json:"model"`
+	TokensIn   int    `json:"tokens_in"`
+	TokensOut  int    `json:"tokens_out"`
+	ToolName   string `json:"tool_name"`
+	ToolInput  string `json:"tool_input"`
+	ToolOutput string `json:"tool_output"`
+	ToolError  string `json:"tool_error"`
+	LatencyMs  int64  `json:"latency_ms"`
+	OffsetMs   int64  `json:"offset_ms"`
+	Started    bool   `json:"started"`
+	Ended      bool   `json:"ended"`
 }
 
 type Store struct {

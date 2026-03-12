@@ -826,9 +826,36 @@ func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store}
-	answer, toolRecords, askErr := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
+
+	var askProvider llm.Provider = provider
+	var askExec llm.ToolExecutor = llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
 		return registry.Call(ctx, fs, name, params)
-	}), req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: req.ErrorStrategy})
+	})
+
+	var aobsRun *agentobs.Run
+	var aobsSession *agentobs.Session
+	if s.agentObsClient != nil {
+		aobsRun = s.agentObsClient.StartRun(ctx, "waylog-ask")
+		agentName := model
+		if agentName == "" {
+			agentName = "llm"
+		}
+		aobsSession = aobsRun.StartSession(ctx, agentName)
+		askProvider = &observedProvider{inner: provider, session: aobsSession, model: model}
+		askExec = &observedExecutor{inner: askExec, session: aobsSession}
+	}
+
+	answer, toolRecords, askErr := llm.Ask(ctx, askProvider, defs, askExec, req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: req.ErrorStrategy})
+
+	if aobsSession != nil {
+		success := askErr == nil
+		errMsg := ""
+		if !success {
+			errMsg = askErr.Error()
+		}
+		aobsSession.End(ctx, success, errMsg)
+		aobsRun.End(ctx, success, errMsg)
+	}
 
 	// Convert ToolCallRecords to askToolSteps
 	steps := make([]askToolStep, 0, len(toolRecords))
@@ -1893,6 +1920,38 @@ func (f *frozenStore) ErrorIndex(errorCode string) ([]string, bool) {
 	return f.real.ErrorIndex(errorCode)
 }
 
+// observedProvider wraps an llm.Provider to emit agent-obs steps for each Generate call.
+type observedProvider struct {
+	inner   llm.Provider
+	session *agentobs.Session
+	model   string
+}
+
+func (o *observedProvider) Generate(ctx context.Context, prompt string, tools []llm.ToolDefinition, history []llm.Turn) (llm.Result, error) {
+	step := o.session.Step("llm-generate")
+	step.SetModel(o.model)
+	result, err := o.inner.Generate(ctx, prompt, tools, history)
+	if err != nil {
+		step.SetError(err.Error())
+	}
+	step.End(ctx)
+	return result, err
+}
+
+// observedExecutor wraps an llm.ToolExecutor to emit agent-obs steps for each tool call.
+type observedExecutor struct {
+	inner   llm.ToolExecutor
+	session *agentobs.Session
+}
+
+func (o *observedExecutor) Call(ctx context.Context, name string, params json.RawMessage) (any, error) {
+	step := o.session.Step(name)
+	result, err := o.inner.Call(ctx, name, params)
+	step.RecordToolCall(name, params, result, err)
+	step.End(ctx)
+	return result, err
+}
+
 func toolErrorToHTTPStatus(te *tools.ToolError) int {
 	switch te.Code {
 	case tools.CodeInvalidParams:
@@ -2217,9 +2276,36 @@ func (s *Server) DashboardAsk(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store}
-	answer, toolRecords, askErr := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
+
+	var dashProvider llm.Provider = provider
+	var dashExec llm.ToolExecutor = llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
 		return registry.Call(ctx, fs, name, params)
-	}), req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: "abort"})
+	})
+
+	var dashRun *agentobs.Run
+	var dashSession *agentobs.Session
+	if s.agentObsClient != nil {
+		dashRun = s.agentObsClient.StartRun(ctx, "waylog-ask")
+		dashAgentName := model
+		if dashAgentName == "" {
+			dashAgentName = "llm"
+		}
+		dashSession = dashRun.StartSession(ctx, dashAgentName)
+		dashProvider = &observedProvider{inner: provider, session: dashSession, model: model}
+		dashExec = &observedExecutor{inner: dashExec, session: dashSession}
+	}
+
+	answer, toolRecords, askErr := llm.Ask(ctx, dashProvider, defs, dashExec, req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: "abort"})
+
+	if dashSession != nil {
+		success := askErr == nil
+		errMsg := ""
+		if !success {
+			errMsg = askErr.Error()
+		}
+		dashSession.End(ctx, success, errMsg)
+		dashRun.End(ctx, success, errMsg)
+	}
 
 	steps := make([]askToolStep, 0, len(toolRecords))
 	for i, rec := range toolRecords {

@@ -87,15 +87,27 @@ func TestAgentEvent_Validate_StepStart_NegativeStepIndex(t *testing.T) {
 	}
 }
 
-func TestAgentEvent_Validate_StepEnd_MissingLatencyMs(t *testing.T) {
+func TestAgentEvent_Validate_StepEnd_NegativeLatencyMs(t *testing.T) {
+	e := validBase()
+	e.EventType = EventStepEnd
+	e.SessionID = "sess-001"
+	e.StepID = "step-001"
+	e.StepIndex = 0
+	e.LatencyMs = -1
+	if err := e.Validate(); err == nil {
+		t.Fatal("expected error for negative latency_ms on step.end")
+	}
+}
+
+func TestAgentEvent_Validate_StepEnd_ZeroLatencyMs(t *testing.T) {
 	e := validBase()
 	e.EventType = EventStepEnd
 	e.SessionID = "sess-001"
 	e.StepID = "step-001"
 	e.StepIndex = 0
 	e.LatencyMs = 0
-	if err := e.Validate(); err == nil {
-		t.Fatal("expected error for missing latency_ms on step.end")
+	if err := e.Validate(); err != nil {
+		t.Fatalf("zero latency_ms should be valid, got: %v", err)
 	}
 }
 

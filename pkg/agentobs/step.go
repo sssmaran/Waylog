@@ -27,9 +27,10 @@ type Step struct {
 	endOnce    sync.Once
 }
 
-func (st *Step) SetModel(m string)  { st.model = m }
-func (st *Step) SetTokensIn(n int)  { st.tokensIn = n }
-func (st *Step) SetTokensOut(n int) { st.tokensOut = n }
+func (st *Step) SetModel(m string)    { st.model = m }
+func (st *Step) SetTokensIn(n int)    { st.tokensIn = n }
+func (st *Step) SetTokensOut(n int)   { st.tokensOut = n }
+func (st *Step) SetError(msg string)  { st.toolError = msg }
 
 func (st *Step) RecordToolCall(name string, input any, output any, err error) {
 	st.toolName = name

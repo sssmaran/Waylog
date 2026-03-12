@@ -74,6 +74,12 @@ vet:
 test-race:
 	go test -race ./...
 
+test-agentobs:
+	go test ./internal/agentobs/... ./pkg/agentobs/... -v
+
+test-agentobs-race:
+	go test ./internal/agentobs/... ./pkg/agentobs/... -race -v
+
 lint:
 	@which golangci-lint > /dev/null 2>&1 && golangci-lint run ./... || echo "golangci-lint not installed, skipping"
 

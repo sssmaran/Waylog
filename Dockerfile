@@ -24,6 +24,9 @@ RUN CGO_ENABLED=0 go build -o /bin/payment-demo ./examples/cmd/payment-demo
 FROM builder AS build-db-demo
 RUN CGO_ENABLED=0 go build -o /bin/db-demo ./examples/cmd/db-demo
 
+FROM builder AS build-agentobs
+RUN CGO_ENABLED=0 go build -o /bin/waylog-agentobs ./cmd/waylog-agentobs
+
 # ---- minimal runtime images ----
 FROM alpine:3.21 AS ingest
 RUN apk add --no-cache ca-certificates
@@ -59,3 +62,9 @@ RUN apk add --no-cache ca-certificates
 COPY --from=build-db-demo /bin/db-demo /bin/db-demo
 EXPOSE 9084
 ENTRYPOINT ["/bin/db-demo"]
+
+FROM alpine:3.21 AS waylog-agentobs
+RUN apk add --no-cache ca-certificates
+COPY --from=build-agentobs /bin/waylog-agentobs /bin/waylog-agentobs
+EXPOSE 9091
+ENTRYPOINT ["/bin/waylog-agentobs"]

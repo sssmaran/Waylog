@@ -50,11 +50,16 @@ services:
       GEMINI_MODEL: ${GEMINI_MODEL:-}
       GEMINI_API_BASE: ${GEMINI_API_BASE:-}
       GEMINI_TOOL_MODE: ${GEMINI_TOOL_MODE:-text}
+      AGENT_OBS_URL: http://waylog-agentobs:9091
+      AGENT_OBS_API_KEY: ${AGENT_OBS_API_KEY:-}
       ASK_MAX_STEPS_DEFAULT: ${ASK_MAX_STEPS_DEFAULT:-5}
       ASK_MAX_STEPS_MAX: ${ASK_MAX_STEPS_MAX:-8}
       DASHBOARD_REFRESH_SEC: ${DASHBOARD_REFRESH_SEC:-10}
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://localhost:9090}
       GRAFANA_URL: ${GRAFANA_URL:-http://localhost:3000}
+    depends_on:
+      waylog-agentobs:
+        condition: service_healthy
     volumes:
       - ./data:/data
     healthcheck:
@@ -131,6 +136,26 @@ services:
       KAFKA_BROKERS: kafka:29092
       KAFKA_TOPIC: wide_events
 
+  waylog-agentobs:
+    build:
+      context: .
+      target: waylog-agentobs
+    ports:
+      - "9091:9091"
+    environment:
+      AGENT_OBS_ADDR: ":9091"
+      AGENT_OBS_EVENT_LOG_DIR: /data/agent_events
+      AGENT_OBS_SNAPSHOT_PATH: /data/agent_snapshot.json
+      AGENT_OBS_RETENTION: "24h"
+      AGENT_OBS_CORS_ORIGIN: "*"
+    volumes:
+      - agentobs-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9091/livez"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   prometheus:
     image: prom/prometheus:v2.53.0
     depends_on:
@@ -163,5 +188,6 @@ services:
 
 volumes:
   bridge-data:
+  agentobs-data:
   prometheus-data:
   grafana-data:
