@@ -32,6 +32,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/sampler"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 	"github.com/sssmaran/WaylogCLI/internal/tracestory"
+	"github.com/sssmaran/WaylogCLI/pkg/agentobs"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
@@ -118,6 +119,7 @@ type Server struct {
 	dedupCache          *DedupCache
 	agentKey            string
 	trustProxy          bool
+	agentObsClient      *agentobs.Client
 
 	// Dashboard rate limiter: per-IP sliding window
 	rateMu         sync.Mutex
@@ -151,6 +153,7 @@ type ServerConfig struct {
 	DedupCache          *DedupCache
 	AgentKey            string
 	TrustProxy          bool
+	AgentObsClient      *agentobs.Client
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -183,6 +186,7 @@ func NewServer(cfg ServerConfig) *Server {
 		dedupCache:          cfg.DedupCache,
 		agentKey:            cfg.AgentKey,
 		trustProxy:          cfg.TrustProxy,
+		agentObsClient:      cfg.AgentObsClient,
 		rateLimit:           map[string][]time.Time{},
 		replayStatus:        "none",
 	}
