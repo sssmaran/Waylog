@@ -37,6 +37,10 @@ type Metrics struct {
 	ToolDirectCallsTotal *prometheus.CounterVec
 	DedupReplayTotal     prometheus.Counter
 	DedupCacheSize       prometheus.Gauge
+
+	ColdEventsWritten prometheus.Counter
+	ColdEventsDropped prometheus.Counter
+	ColdBatchLatency  prometheus.Histogram
 }
 
 // New creates a Metrics instance and registers all collectors with the given registry.
@@ -140,6 +144,20 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help: "Current dedup cache entry count.",
 	})
 
+	m.ColdEventsWritten = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_cold_events_written_total",
+		Help: "Events successfully written to cold store.",
+	})
+	m.ColdEventsDropped = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_cold_events_dropped_total",
+		Help: "Events dropped due to full cold store queue.",
+	})
+	m.ColdBatchLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_cold_batch_latency_seconds",
+		Help:    "Cold store batch insert latency.",
+		Buckets: defaultBuckets,
+	})
+
 	reg.MustRegister(
 		m.IngestLatency, m.MergeLatency,
 		m.EventsAccepted, m.EventsRejected, m.EventlogFails,
@@ -150,6 +168,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.AskRequestsTotal, m.AskDuration,
 		m.AskToolCallsTotal, m.AskToolDuration,
 		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
+		m.ColdEventsWritten, m.ColdEventsDropped, m.ColdBatchLatency,
 	)
 
 	return m

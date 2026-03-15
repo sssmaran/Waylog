@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/coldstore"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
@@ -118,6 +119,8 @@ type Server struct {
 	dedupCache          *DedupCache
 	agentKey            string
 	trustProxy          bool
+	coldWriter          *coldstore.BatchWriter
+	coldStore           *coldstore.Store
 
 	// Dashboard rate limiter: per-IP sliding window
 	rateMu         sync.Mutex
@@ -151,6 +154,8 @@ type ServerConfig struct {
 	DedupCache          *DedupCache
 	AgentKey            string
 	TrustProxy          bool
+	ColdWriter          *coldstore.BatchWriter
+	ColdStore           *coldstore.Store
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -183,6 +188,8 @@ func NewServer(cfg ServerConfig) *Server {
 		dedupCache:          cfg.DedupCache,
 		agentKey:            cfg.AgentKey,
 		trustProxy:          cfg.TrustProxy,
+		coldWriter:          cfg.ColdWriter,
+		coldStore:           cfg.ColdStore,
 		rateLimit:           map[string][]time.Time{},
 		replayStatus:        "none",
 	}
@@ -363,6 +370,12 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 	// so rejected events (WAL failure → 503) are never counted.
 	s.counters.Inc(!ev.Outcome.Success)
 
+	// Enqueue ALL accepted events to cold store (before sampling gate)
+	// so /v1/events/search returns complete results regardless of sampling.
+	if s.coldWriter != nil {
+		s.coldWriter.Enqueue(ev)
+	}
+
 	if !sampled {
 		if s.metrics != nil {
 			s.metrics.EventsRejected.WithLabelValues("sampling").Inc()
@@ -445,13 +458,14 @@ func (s *Server) Builder() *build.Builder {
 }
 
 // EventSearch handles GET /v1/events/search.
+// Both cold-store and JSONL paths return the same []coldstore.SearchResult shape.
 func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.EventLogDir == "" {
-		http.Error(w, "event log not configured", http.StatusServiceUnavailable)
+	if s.coldStore == nil && s.EventLogDir == "" {
+		http.Error(w, "event search not configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -466,14 +480,60 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := 50
-	if v := q.Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
+	limit := parseBoundedPositiveInt(q, "limit", 50, 200)
+
+	var startTime, endTime time.Time
+	if v := q.Get("start"); v != "" {
+		t, err := parseFlexibleTime(v)
+		if err != nil {
+			http.Error(w, "invalid start: must be RFC3339", http.StatusBadRequest)
+			return
+		}
+		startTime = t
+	}
+	if v := q.Get("end"); v != "" {
+		t, err := parseFlexibleTime(v)
+		if err != nil {
+			http.Error(w, "invalid end: must be RFC3339", http.StatusBadRequest)
+			return
+		}
+		endTime = t
+	}
+
+	// Prefer cold store (SQLite) over JSONL scan
+	if s.coldStore != nil {
+		results, err := s.coldStore.SearchEvents(coldstore.SearchFilter{
+			TraceID:   traceID,
+			UserID:    userID,
+			Service:   service,
+			ErrorCode: errorCode,
+			Start:     startTime,
+			End:       endTime,
+			Limit:     limit,
+		})
+		if err != nil {
+			slog.Error("cold store search failed", "err", err)
+			if s.EventLogDir == "" {
+				http.Error(w, "search failed", http.StatusInternalServerError)
+				return
+			}
+			// Fall through to JSONL fallback
+		} else {
+			if results == nil {
+				results = []coldstore.SearchResult{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"events": results,
+				"count":  len(results),
+			})
+			return
 		}
 	}
-	if limit > 200 {
-		limit = 200
+
+	if s.EventLogDir == "" {
+		http.Error(w, "event search not configured", http.StatusServiceUnavailable)
+		return
 	}
 
 	f := eventlog.SearchFilter{
@@ -482,24 +542,9 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 		Service:   service,
 		ErrorCode: errorCode,
 		Limit:     limit,
+		Start:     startTime,
+		End:       endTime,
 	}
-	if v := q.Get("start"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			http.Error(w, "invalid start: must be RFC3339", http.StatusBadRequest)
-			return
-		}
-		f.Start = t
-	}
-	if v := q.Get("end"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			http.Error(w, "invalid end: must be RFC3339", http.StatusBadRequest)
-			return
-		}
-		f.End = t
-	}
-
 	events, err := eventlog.Search(s.EventLogDir, f)
 	if err != nil {
 		slog.Error("event search failed", "err", err)
@@ -507,10 +552,36 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Convert WideEvent to SearchResult for consistent API shape.
+	results := make([]coldstore.SearchResult, len(events))
+	for i, ev := range events {
+		var errCode, errMsg string
+		if ev.Error != nil {
+			errCode = ev.Error.Code
+			errMsg = ev.Error.Message
+		}
+		results[i] = coldstore.SearchResult{
+			TraceID:      ev.Request.TraceID,
+			SpanID:       ev.Request.SpanID,
+			EventName:    ev.EventName,
+			Service:      ev.System.Service,
+			Env:          ev.System.Env,
+			Version:      ev.System.Version,
+			DeploymentID: ev.System.DeploymentID,
+			UserID:       ev.User.ID,
+			StatusCode:   ev.Outcome.StatusCode,
+			Success:      ev.Outcome.Success,
+			ErrorCode:    errCode,
+			ErrorMessage: errMsg,
+			LatencyMs:    ev.Metrics.LatencyMs,
+			Timestamp:    ev.Timestamp,
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"events": events,
-		"count":  len(events),
+		"events": results,
+		"count":  len(results),
 	})
 }
 
@@ -1592,6 +1663,14 @@ func parseLooseDuration(q url.Values, key string, def time.Duration) time.Durati
 		}
 	}
 	return d
+}
+
+// parseFlexibleTime accepts both RFC3339 and RFC3339Nano (fractional seconds).
+func parseFlexibleTime(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, s)
 }
 
 func parseOptionalBool(q url.Values, key string) bool {

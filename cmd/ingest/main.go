@@ -14,6 +14,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sssmaran/WaylogCLI/internal/cli"
+	"github.com/sssmaran/WaylogCLI/internal/coldstore"
 	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/internal/dashboard"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
@@ -74,6 +75,7 @@ func main() {
 	agentKey := config.Getenv("WAYLOG_AGENT_KEY", "")
 	maxBody := int64(config.GetenvInt("MAX_BODY_BYTES", 1<<20))
 	eventLogDir := config.Getenv("EVENT_LOG_DIR", "")
+	sqlitePath := config.Getenv("SQLITE_PATH", "")
 	askMaxStepsDefault := config.GetenvInt("ASK_MAX_STEPS_DEFAULT", 5)
 	askMaxStepsMax := config.GetenvInt("ASK_MAX_STEPS_MAX", 8)
 	dashboardRefreshSec := config.GetenvInt("DASHBOARD_REFRESH_SEC", 10)
@@ -95,6 +97,32 @@ func main() {
 	promReg := prometheus.NewRegistry()
 	m := metrics.New(promReg)
 
+	// Optional SQLite cold store
+	var coldDB *coldstore.Store
+	var coldWriter *coldstore.BatchWriter
+	if sqlitePath != "" {
+		if eventLogDir == "" {
+			slog.Warn("SQLITE_PATH set without EVENT_LOG_DIR — cold store is async-only, "+
+				"events may be lost on crash. Set EVENT_LOG_DIR for durable writes")
+		}
+		var err error
+		coldDB, err = coldstore.Open(sqlitePath)
+		if err != nil {
+			slog.Error("coldstore init failed", "err", err)
+			os.Exit(1)
+		}
+		defer coldDB.Close()
+
+		coldWriter = coldstore.NewBatchWriter(coldDB, coldstore.BatchWriterConfig{
+			QueueSize:     config.GetenvInt("SQLITE_MAX_QUEUE", 10000),
+			BatchSize:     config.GetenvInt("SQLITE_BATCH_SIZE", 100),
+			FlushInterval: config.GetenvDuration("SQLITE_FLUSH_INTERVAL", 500*time.Millisecond),
+		}, m)
+		coldWriter.Start()
+
+		slog.Info("coldstore enabled", "path", sqlitePath)
+	}
+
 	// Create ingest server with the store
 	ingestServer := ingest.NewServer(ingest.ServerConfig{
 		Store:               graphStore,
@@ -112,6 +140,8 @@ func main() {
 		DedupCache:          dedupCache,
 		AgentKey:            agentKey,
 		TrustProxy:          trustProxy,
+		ColdWriter:          coldWriter,
+		ColdStore:           coldDB,
 	})
 
 	// Optional append-only event log
@@ -348,6 +378,11 @@ func main() {
 		slog.Error("ingest graceful shutdown failed", "err", err)
 	} else {
 		slog.Info("ingest shutdown complete")
+	}
+
+	if coldWriter != nil {
+		coldWriter.Stop()
+		slog.Info("coldstore writer drained")
 	}
 
 	// Final snapshot on shutdown
