@@ -142,6 +142,7 @@ func main() {
 		TrustProxy:          trustProxy,
 		ColdWriter:          coldWriter,
 		ColdStore:           coldDB,
+		APIKey:              apiKey,
 	})
 
 	// Optional append-only event log
@@ -231,6 +232,7 @@ func main() {
 	mux.HandleFunc("/v1/overview/timeseries", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.OverviewTimeseries))
 	mux.HandleFunc("/v1/routes", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Routes))
 	mux.HandleFunc("/v1/capabilities", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Capabilities))
+	mux.HandleFunc("/v1/deployments", ingest.CORSWrap(corsOrigin, "GET, POST, OPTIONS", ingestServer.DeployRoute))
 
 	// Agent-authenticated endpoints: CORS outermost, then auth
 	if agentKey != "" {

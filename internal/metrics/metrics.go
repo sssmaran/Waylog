@@ -41,6 +41,9 @@ type Metrics struct {
 	ColdEventsWritten prometheus.Counter
 	ColdEventsDropped prometheus.Counter
 	ColdBatchLatency  prometheus.Histogram
+
+	DeployUpsertsTotal  prometheus.Counter
+	DeployUpsertErrors  prometheus.Counter
 }
 
 // New creates a Metrics instance and registers all collectors with the given registry.
@@ -158,6 +161,15 @@ func New(reg *prometheus.Registry) *Metrics {
 		Buckets: defaultBuckets,
 	})
 
+	m.DeployUpsertsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_deploy_upserts_total",
+		Help: "Successful deployment upserts.",
+	})
+	m.DeployUpsertErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_deploy_upsert_errors_total",
+		Help: "Failed deployment upserts (non-env-conflict).",
+	})
+
 	reg.MustRegister(
 		m.IngestLatency, m.MergeLatency,
 		m.EventsAccepted, m.EventsRejected, m.EventlogFails,
@@ -169,6 +181,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.AskToolCallsTotal, m.AskToolDuration,
 		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
 		m.ColdEventsWritten, m.ColdEventsDropped, m.ColdBatchLatency,
+		m.DeployUpsertsTotal, m.DeployUpsertErrors,
 	)
 
 	return m

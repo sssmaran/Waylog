@@ -937,6 +937,8 @@
         </div>
       </section>
 
+      <div id="what-changed" style="display:none;margin:16px 0;padding:12px;background:#1a1a1a;border-radius:8px;border:1px solid #333"></div>
+
       <!-- Routes table -->
       <section aria-label="Routes">
         <div class="section-head">
@@ -1078,6 +1080,7 @@
     </div>
 
     <script src="chart.umd.min.js"></script>
+    <script src="chartjs-plugin-annotation.min.js"></script>
     <script src="cytoscape.min.js"></script>
     <script>
       (function () {
@@ -1125,6 +1128,7 @@
 
         let tsChart = null;
         let lastTriggerEl = null;
+        let currentDeployments = [];
         let routeWindow = "1h";
         let routeFailuresOnly = false;
         let tracesShowAll = false;
@@ -1537,6 +1541,7 @@
               tsChart.data.datasets[0].data = totals;
               tsChart.data.datasets[1].data = errRates;
               tsChart.update("none");
+              refreshDeployOverlay();
               return;
             }
 
@@ -1635,6 +1640,7 @@
                 },
               },
             });
+            refreshDeployOverlay();
           } catch (e) {
             console.error("Chart fetch error:", e);
           }
@@ -1824,6 +1830,102 @@
           var d = document.createElement("div");
           d.appendChild(document.createTextNode(s));
           return d.innerHTML;
+        }
+
+        // --- Deployments / What Changed ---
+
+        function refreshDeployOverlay() {
+          fetchDeployments("1h").then(function(deploys) {
+            currentDeployments = deploys;
+            renderWhatChanged(deploys);
+            if (tsChart) {
+              tsChart.options.plugins = tsChart.options.plugins || {};
+              tsChart.options.plugins.annotation = {
+                annotations: makeDeployAnnotations(deploys)
+              };
+              tsChart.update('none');
+            }
+          });
+        }
+
+        async function fetchDeployments(windowParam) {
+          try {
+            var resp = await fetch('/v1/deployments?window=' + windowParam);
+            if (!resp.ok) return [];
+            var data = await resp.json();
+            return data.deployments || [];
+          } catch (e) {
+            return [];
+          }
+        }
+
+        function makeDeployAnnotations(deployments) {
+          if (!deployments || !deployments.length) return {};
+          var annotations = {};
+          deployments.forEach(function(d, i) {
+            var isHot = d.error_rate_change != null && d.error_rate_change > 2.0;
+            annotations['deploy_' + i] = {
+              type: 'line',
+              xMin: new Date(d.first_seen).getTime(),
+              xMax: new Date(d.first_seen).getTime(),
+              borderColor: isHot ? '#f5a623' : '#666',
+              borderWidth: 1,
+              borderDash: [4, 4],
+              label: {
+                display: true,
+                content: d.id + ' (' + d.service + (d.version ? ' ' + d.version : '') + ')',
+                position: 'start',
+                backgroundColor: isHot ? 'rgba(245,166,35,0.8)' : 'rgba(102,102,102,0.8)',
+                color: '#fff',
+                font: { size: 10 }
+              }
+            };
+          });
+          return annotations;
+        }
+
+        function renderWhatChanged(deployments) {
+          var container = document.getElementById('what-changed');
+          if (!container) return;
+          if (!deployments || !deployments.length) {
+            container.style.display = 'none';
+            return;
+          }
+          container.style.display = 'block';
+          var html = '<h3 style="color:#ededed;margin:0 0 8px">Recent Deployments</h3>';
+          html += '<div style="display:flex;flex-direction:column;gap:4px">';
+          for (var i = 0; i < deployments.length; i++) {
+            var d = deployments[i];
+            var ago = deployTimeAgo(new Date(d.first_seen));
+            var isHot = d.error_rate_change != null && d.error_rate_change > 2.0;
+            var newErrors = d.after_error_rate != null && d.after_error_rate > 0 &&
+              (d.before_error_rate == null || d.before_error_rate === 0);
+            var color = isHot ? '#f5a623' : (newErrors ? '#f5a623' : '#888');
+            var rateText = '';
+            if (d.error_rate_change != null) {
+              rateText = '<span style="color:' + color + '">' + d.error_rate_change.toFixed(1) + 'x error rate</span>';
+            } else if (newErrors) {
+              rateText = '<span style="color:#f5a623">new errors appeared</span>';
+            } else {
+              rateText = '<span style="color:#555">insufficient data</span>';
+            }
+            html += '<div style="display:flex;align-items:center;gap:8px;font-size:13px">' +
+              '<span style="background:#333;padding:2px 6px;border-radius:3px;color:#ccc">' + esc(d.service) + '</span>' +
+              '<span style="color:#aaa">' + esc(d.version || '') + '</span>' +
+              '<span style="color:#666">' + esc(ago) + '</span>' +
+              rateText +
+              '</div>';
+          }
+          html += '</div>';
+          container.innerHTML = html;
+        }
+
+        function deployTimeAgo(date) {
+          var mins = Math.floor((Date.now() - date.getTime()) / 60000);
+          if (mins < 1) return 'just now';
+          if (mins < 60) return mins + ' min ago';
+          var hrs = Math.floor(mins / 60);
+          return hrs + 'h ' + (mins % 60) + 'm ago';
         }
 
         // --- Trace drilldown modal ---

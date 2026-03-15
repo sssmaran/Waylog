@@ -279,9 +279,10 @@ const diffInputSchema = `{
   "properties": {
     "current": { "type": "string" },
     "baseline": { "type": "string" },
-    "offset": { "type": "string" }
+    "offset": { "type": "string" },
+    "anchor": { "type": "string", "description": "ISO 8601 timestamp to anchor windows around (mutually exclusive with offset)" }
   },
-  "required": ["current", "baseline", "offset"],
+  "required": ["current", "baseline"],
   "additionalProperties": false
 }`
 

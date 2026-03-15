@@ -118,6 +118,7 @@ type Server struct {
 	graphUI             bool
 	dedupCache          *DedupCache
 	agentKey            string
+	apiKey              string
 	trustProxy          bool
 	coldWriter          *coldstore.BatchWriter
 	coldStore           *coldstore.Store
@@ -153,6 +154,7 @@ type ServerConfig struct {
 	GraphUI             bool
 	DedupCache          *DedupCache
 	AgentKey            string
+	APIKey              string
 	TrustProxy          bool
 	ColdWriter          *coldstore.BatchWriter
 	ColdStore           *coldstore.Store
@@ -187,6 +189,7 @@ func NewServer(cfg ServerConfig) *Server {
 		graphUI:             cfg.GraphUI,
 		dedupCache:          cfg.DedupCache,
 		agentKey:            cfg.AgentKey,
+		apiKey:              cfg.APIKey,
 		trustProxy:          cfg.TrustProxy,
 		coldWriter:          cfg.ColdWriter,
 		coldStore:           cfg.ColdStore,
@@ -374,6 +377,33 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 	// so /v1/events/search returns complete results regardless of sampling.
 	if s.coldWriter != nil {
 		s.coldWriter.Enqueue(ev)
+	}
+
+	// Auto-extract deployment from event (post-WAL, pre-sampling gate).
+	// Uses detached context: event is already durable in WAL, client disconnect
+	// must not abort the upsert.
+	if ev.System.DeploymentID != "" && s.coldStore != nil {
+		upsertCtx, upsertCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		err := s.coldStore.UpsertDeployment(upsertCtx, coldstore.Deployment{
+			ID:        ev.System.DeploymentID,
+			Service:   ev.System.Service,
+			Version:   ev.System.Version,
+			Env:       ev.System.Env,
+			FirstSeen: ev.Timestamp,
+			LastSeen:  ev.Timestamp,
+		})
+		upsertCancel()
+		if err != nil {
+			if !errors.Is(err, coldstore.ErrEnvConflict) && s.metrics != nil {
+				s.metrics.DeployUpsertErrors.Inc()
+			}
+			slog.Warn("deployment auto-extract failed",
+				"deployment_id", ev.System.DeploymentID,
+				"err", err,
+			)
+		} else if s.metrics != nil {
+			s.metrics.DeployUpsertsTotal.Inc()
+		}
 	}
 
 	if !sampled {

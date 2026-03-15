@@ -60,6 +60,7 @@ type diffInput struct {
 	Current  string `json:"current"`
 	Baseline string `json:"baseline"`
 	Offset   string `json:"offset"`
+	Anchor   string `json:"anchor"`
 }
 
 type diffEntry struct {
@@ -94,8 +95,14 @@ func handleCompareWindows(ctx context.Context, store Store, params json.RawMessa
 	if err := json.Unmarshal(params, &input); err != nil {
 		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
-	if input.Current == "" || input.Baseline == "" || input.Offset == "" {
-		return nil, &ToolError{Code: CodeInvalidParams, Message: "current, baseline, and offset required"}
+	if input.Current == "" || input.Baseline == "" {
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "current and baseline required"}
+	}
+	if input.Anchor == "" && input.Offset == "" {
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "either offset or anchor required"}
+	}
+	if input.Anchor != "" && input.Offset != "" {
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "offset and anchor are mutually exclusive"}
 	}
 
 	currDur, err := time.ParseDuration(input.Current)
@@ -106,16 +113,28 @@ func handleCompareWindows(ctx context.Context, store Store, params json.RawMessa
 	if err != nil {
 		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid baseline: %v", err)}
 	}
-	offDur, err := time.ParseDuration(input.Offset)
-	if err != nil {
-		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid offset: %v", err)}
-	}
 
-	now := time.Now()
-	currEnd := now
-	currStart := currEnd.Add(-currDur)
-	baseEnd := currEnd.Add(-offDur)
-	baseStart := baseEnd.Add(-baseDur)
+	var currStart, currEnd, baseStart, baseEnd time.Time
+	if input.Anchor != "" {
+		anchor, parseErr := time.Parse(time.RFC3339, input.Anchor)
+		if parseErr != nil {
+			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid anchor: %v", parseErr)}
+		}
+		currStart = anchor
+		currEnd = anchor.Add(currDur)
+		baseEnd = anchor
+		baseStart = anchor.Add(-baseDur)
+	} else {
+		offDur, parseErr := time.ParseDuration(input.Offset)
+		if parseErr != nil {
+			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid offset: %v", parseErr)}
+		}
+		now := time.Now()
+		currEnd = now
+		currStart = currEnd.Add(-currDur)
+		baseEnd = currEnd.Add(-offDur)
+		baseStart = baseEnd.Add(-baseDur)
+	}
 
 	curr := store.SummarizeWindow(currStart, currEnd)
 	base := store.SummarizeWindow(baseStart, baseEnd)
