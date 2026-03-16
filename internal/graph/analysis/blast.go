@@ -1,7 +1,6 @@
 package analysis
 
 import (
-	"strings"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
@@ -62,7 +61,7 @@ func ComputeBlastRadius(g *core.Graph, errorCode string, start, end time.Time) B
 
 	for reqID := range matchedRequests {
 		req := g.Nodes[reqID]
-		svc := serviceFromRequest(req)
+		svc := core.ServiceFromNode(req)
 		if svc != "" {
 			services[svc]++
 		}
@@ -83,21 +82,3 @@ func ComputeBlastRadius(g *core.Graph, errorCode string, start, end time.Time) B
 	return result
 }
 
-// serviceFromRequest extracts the canonical service name from a request node.
-// Prefers root_service (set by root span merge), falls back to event_name prefix.
-func serviceFromRequest(n core.Node) string {
-	if n.Attr == nil {
-		return ""
-	}
-	// root_service is the canonical owner, set by graph merge when the root span arrives.
-	if svc, ok := n.Attr["root_service"].(string); ok && svc != "" {
-		return svc
-	}
-	// Fall back to event_name prefix (e.g. "payment.error" -> "payment").
-	if name, ok := n.Attr["event_name"].(string); ok {
-		if idx := strings.IndexByte(name, '.'); idx > 0 {
-			return name[:idx]
-		}
-	}
-	return ""
-}

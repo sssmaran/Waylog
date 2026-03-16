@@ -44,6 +44,11 @@ type Metrics struct {
 
 	DeployUpsertsTotal prometheus.Counter
 	DeployUpsertErrors prometheus.Counter
+
+	CausalRunsTotal   prometheus.Counter
+	CausalRunDuration prometheus.Histogram
+	CausalRunFailures prometheus.Counter
+	CausalClaimsTotal *prometheus.CounterVec // labels: type, tier
 }
 
 // New creates a Metrics instance and registers all collectors with the given registry.
@@ -170,6 +175,24 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help: "Failed deployment upserts (non-env-conflict).",
 	})
 
+	m.CausalRunsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_causal_runs_total",
+		Help: "Total causal inference runs.",
+	})
+	m.CausalRunDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_causal_run_duration_seconds",
+		Help:    "Duration of causal inference runs.",
+		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+	})
+	m.CausalRunFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_causal_run_failures_total",
+		Help: "Total failed causal inference runs.",
+	})
+	m.CausalClaimsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_causal_claims_total",
+		Help: "Total causal claims produced.",
+	}, []string{"type", "tier"})
+
 	reg.MustRegister(
 		m.IngestLatency, m.MergeLatency,
 		m.EventsAccepted, m.EventsRejected, m.EventlogFails,
@@ -182,6 +205,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
 		m.ColdEventsWritten, m.ColdEventsDropped, m.ColdBatchLatency,
 		m.DeployUpsertsTotal, m.DeployUpsertErrors,
+		m.CausalRunsTotal, m.CausalRunDuration, m.CausalRunFailures, m.CausalClaimsTotal,
 	)
 
 	return m

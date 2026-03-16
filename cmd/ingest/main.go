@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/internal/dashboard"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
+	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
@@ -82,6 +84,9 @@ func main() {
 	prometheusURL := config.Getenv("PROMETHEUS_URL", "")
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
 	graphUI := config.GetenvBool("GRAPH_UI", false)
+
+	causalEnabled := config.GetenvBool("CAUSAL_ENABLED", false)
+	causalInterval := config.GetenvDuration("CAUSAL_INTERVAL", 30*time.Second)
 
 	trustProxy := config.GetenvBool("WAYLOG_TRUST_PROXY", false)
 
@@ -148,6 +153,7 @@ func main() {
 	// SSE hub for real-time dashboard updates
 	sseHub := ingest.NewSSEHub(config.GetenvInt("SSE_MAX_CLIENTS", 100))
 	ingestServer.SetSSEHub(sseHub)
+
 
 	// Optional append-only event log
 	eventLogSync := config.GetenvBool("EVENT_LOG_SYNC", true)
@@ -398,6 +404,95 @@ func main() {
 				}
 			}
 		}()
+	}
+
+	// ---------------- Causal inference ticker ----------------
+
+	if causalEnabled && coldDB != nil {
+		ingestServer.SetCausalEnabled()
+		go func() {
+			causalTicker := time.NewTicker(causalInterval)
+			defer causalTicker.Stop()
+			slog.Info("causal engine started", "interval", causalInterval)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-causalTicker.C:
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								slog.Error("causal inference panicked", "recover", r)
+								m.CausalRunFailures.Inc()
+								ingestServer.SetCausalRunResult(fmt.Errorf("panic: %v", r))
+							}
+						}()
+
+						tickCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+						defer cancel()
+
+						now := time.Now().UTC()
+						m.CausalRunsTotal.Inc()
+
+						// Query deployments first — cheap; skip snapshot if none.
+						window := 1 * time.Hour
+						deps, err := coldDB.DeploymentsInWindow(tickCtx, now.Add(-window), now, "")
+						if err != nil {
+							slog.Warn("causal: deployment query failed", "err", err)
+							m.CausalRunFailures.Inc()
+							ingestServer.SetCausalRunResult(err)
+							return
+						}
+						if len(deps) == 0 {
+							ingestServer.SetCausalRunResult(nil)
+							return
+						}
+
+						snap := graphStore.Snapshot()
+						if len(snap.Nodes) == 0 {
+							ingestServer.SetCausalRunResult(nil)
+							return
+						}
+
+						// Convert coldstore.Deployment → causal.DeploymentInfo
+						infos := make([]causal.DeploymentInfo, len(deps))
+						for i, d := range deps {
+							infos[i] = causal.DeploymentInfo{ID: d.ID, Service: d.Service, FirstSeen: d.FirstSeen}
+						}
+
+						claims := causal.InferIntroducedBy(snap, infos, now.Add(-window), now)
+
+						if len(claims) > 0 {
+							if err := coldDB.SaveClaims(tickCtx, claims); err != nil {
+								slog.Warn("causal: save claims failed", "err", err)
+								m.CausalRunFailures.Inc()
+								ingestServer.SetCausalRunResult(err)
+								return
+							}
+							for _, c := range claims {
+								slog.Info("causal claim (shadow)",
+									"type", c.ClaimType,
+									"subject", c.Subject,
+									"target", c.Target,
+									"service", c.Service,
+									"confidence", c.Confidence,
+									"tier", c.Tier,
+								)
+								m.CausalClaimsTotal.With(prometheus.Labels{
+									"type": string(c.ClaimType),
+									"tier": string(c.Tier),
+								}).Inc()
+							}
+						}
+
+						m.CausalRunDuration.Observe(time.Since(now).Seconds())
+						ingestServer.SetCausalRunResult(nil)
+					}()
+				}
+			}
+		}()
+	} else if causalEnabled && coldDB == nil {
+		slog.Warn("CAUSAL_ENABLED=true but SQLITE_PATH not set — causal engine disabled")
 	}
 
 	// ---------------- Shutdown ----------------

@@ -138,10 +138,33 @@ type Server struct {
 	// SSE
 	sseHub               *SSEHub
 	sseHeartbeatInterval time.Duration // configurable for testing, defaults to 15s
+
+	// Causal engine status
+	causalMu        sync.Mutex
+	causalEnabled   bool
+	causalLastRun   time.Time
+	causalLastError string
 }
 
 // SetSSEHub sets the SSE hub for real-time dashboard updates.
 func (s *Server) SetSSEHub(hub *SSEHub) { s.sseHub = hub }
+
+// SetCausalEnabled marks the causal engine as active.
+// Called once at startup before HTTP traffic, no lock needed.
+func (s *Server) SetCausalEnabled() { s.causalEnabled = true }
+
+// SetCausalRunResult records the result of a causal inference tick.
+// Called from the causal goroutine; reads happen from HTTP handlers (/healthz).
+func (s *Server) SetCausalRunResult(err error) {
+	s.causalMu.Lock()
+	s.causalLastRun = time.Now()
+	if err != nil {
+		s.causalLastError = err.Error()
+	} else {
+		s.causalLastError = ""
+	}
+	s.causalMu.Unlock()
+}
 
 // ServerConfig holds configuration for creating a new Server.
 type ServerConfig struct {
@@ -264,6 +287,17 @@ func (s *Server) Health(w http.ResponseWriter, r *http.Request) {
 		replay["last_success"] = s.lastReplaySuccess.Format(time.RFC3339)
 	}
 	resp["replay"] = replay
+
+	s.causalMu.Lock()
+	causal := map[string]any{"enabled": s.causalEnabled}
+	if !s.causalLastRun.IsZero() {
+		causal["last_run"] = s.causalLastRun.Format(time.RFC3339)
+	}
+	if s.causalLastError != "" {
+		causal["last_error"] = s.causalLastError
+	}
+	s.causalMu.Unlock()
+	resp["causal"] = causal
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)

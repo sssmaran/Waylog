@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type NodeType string
 
@@ -21,4 +24,21 @@ type Node struct {
 	//for time-window commands
 	FirstSeen time.Time
 	LastSeen  time.Time
+}
+
+// ServiceFromNode extracts the canonical service name from a request node.
+// Prefers root_service (set by root span merge), falls back to event_name prefix.
+func ServiceFromNode(n Node) string {
+	if n.Attr == nil {
+		return ""
+	}
+	if svc, ok := n.Attr["root_service"].(string); ok && svc != "" {
+		return svc
+	}
+	if name, ok := n.Attr["event_name"].(string); ok {
+		if idx := strings.IndexByte(name, '.'); idx > 0 {
+			return name[:idx]
+		}
+	}
+	return ""
 }
