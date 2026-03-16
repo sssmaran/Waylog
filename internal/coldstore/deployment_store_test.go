@@ -267,8 +267,8 @@ func TestMetadataRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	meta := map[string]string{
-		"region":  "eu-west-1",
-		"cluster": "k8s-prod-7",
+		"region":   "eu-west-1",
+		"cluster":  "k8s-prod-7",
 		"built_by": "ci-pipeline",
 	}
 	if err := s.UpsertDeployment(ctx, Deployment{

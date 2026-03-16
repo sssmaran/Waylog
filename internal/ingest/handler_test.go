@@ -2002,3 +2002,72 @@ func TestAsk_Idempotency_NotEnforcedForValidationErrors(t *testing.T) {
 		t.Errorf("dedup cache size = %d, want 0 (validation errors should not be cached)", srv.dedupCache.Size())
 	}
 }
+
+func TestTopology_ReturnsNodesAndEdges(t *testing.T) {
+	srv := makeTestServer()
+	req := httptest.NewRequest("GET", "/v1/topology?window=1h", nil)
+	w := httptest.NewRecorder()
+	srv.Topology(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("data should be object, got %T", resp.Data)
+	}
+	if _, ok := data["nodes"]; !ok {
+		t.Fatal("missing nodes field")
+	}
+	if _, ok := data["edges"]; !ok {
+		t.Fatal("missing edges field")
+	}
+}
+
+func TestBlastRadiusEndpoint_RequiresErrorCode(t *testing.T) {
+	srv := makeTestServer()
+	req := httptest.NewRequest("GET", "/v1/blast_radius", nil)
+	w := httptest.NewRecorder()
+	srv.BlastRadius(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestBlastRadiusEndpoint_ReturnsResult(t *testing.T) {
+	srv := makeTestServer()
+	req := httptest.NewRequest("GET", "/v1/blast_radius?error_code=DB_TIMEOUT&window=1h", nil)
+	w := httptest.NewRecorder()
+	srv.BlastRadius(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDashboardExplain_MissingTraceID(t *testing.T) {
+	srv := makeTestServer()
+	req := httptest.NewRequest("GET", "/ui/explain", nil)
+	w := httptest.NewRecorder()
+	srv.DashboardExplain(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestOverview_IncludesLatestFailedTraceID(t *testing.T) {
+	srv := makeTestServer()
+	req := httptest.NewRequest("GET", "/v1/overview?window=1h", nil)
+	w := httptest.NewRecorder()
+	srv.Overview(w, req)
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["latest_failed_trace_id"]; !ok {
+		t.Fatal("overview response missing latest_failed_trace_id field")
+	}
+}

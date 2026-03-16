@@ -25,6 +25,7 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
+	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	"github.com/sssmaran/WaylogCLI/internal/graph/store"
@@ -133,7 +134,14 @@ type Server struct {
 	replayError       string
 	lastReplayAttempt time.Time
 	lastReplaySuccess time.Time
+
+	// SSE
+	sseHub               *SSEHub
+	sseHeartbeatInterval time.Duration // configurable for testing, defaults to 15s
 }
+
+// SetSSEHub sets the SSE hub for real-time dashboard updates.
+func (s *Server) SetSSEHub(hub *SSEHub) { s.sseHub = hub }
 
 // ServerConfig holds configuration for creating a new Server.
 type ServerConfig struct {
@@ -426,6 +434,9 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 	g := s.builder.Build(ev)
 	if s.store != nil {
 		s.store.Merge(g)
+	}
+	if s.sseHub != nil {
+		s.sseHub.MarkDirty(TopicOverview, TopicRoutes, TopicTimeseries)
 	}
 	if s.metrics != nil {
 		s.metrics.MergeLatency.Observe(time.Since(mergeStart).Seconds())
@@ -1105,39 +1116,20 @@ func recentTracesFromGraph(g *core.Graph, limit int, failuresOnly bool) []traceE
 	return entries
 }
 
-// Overview handles GET /v1/overview?window=<duration>&limit=<n>.
-func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if s.store == nil {
-		http.Error(w, "store not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	q := r.URL.Query()
-	dur := parseLooseDuration(q, "window", 5*time.Minute)
-	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
-
+// overviewPayload computes the overview data for a given window and trace limit.
+// Shared by the Overview REST handler and SSE computeOverviewJSON.
+func (s *Server) overviewPayload(dur time.Duration, limit int) map[string]any {
 	now := time.Now()
 	start := now.Add(-dur)
 	summary := s.store.SummarizeWindow(start, now)
+	snap := s.store.Snapshot()
 
-	snap, ok := s.snapshotOrServiceUnavailable(w)
-	if !ok {
-		return
-	}
 	recent := recentTracesFromGraph(snap, limit, false)
 	rollup := summarizeOverviewFromGraph(snap, start, now)
 
 	totalRequests := summary.TotalRequests
 	totalFailures := summary.TotalFailures
 
-	// Error rate from windowed unsampled counters (not skewed by sampling).
-	// Falls back to graph-based counts when counters are zero (e.g. after
-	// restart before new traffic arrives).
 	errorRate := 0.0
 	if unsampledTotal, unsampledErrors := s.counters.Sum(dur); unsampledTotal > 0 {
 		errorRate = float64(unsampledErrors) / float64(unsampledTotal) * 100
@@ -1156,19 +1148,151 @@ func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
 		return topErrors[i].Count > topErrors[j].Count
 	})
 
+	latestFailedTraceID := latestFailedTrace(snap, start)
+
+	return map[string]any{
+		"window":                 dur.String(),
+		"total_requests":         totalRequests,
+		"total_failures":         totalFailures,
+		"error_rate":             errorRate,
+		"p50":                    rollup.P50,
+		"p95":                    rollup.P95,
+		"p99":                    rollup.P99,
+		"sampled":                s.sampleRatePct < 100,
+		"top_errors":             topErrors,
+		"recent_traces":          recent,
+		"latest_failed_trace_id": latestFailedTraceID,
+	}
+}
+
+// latestFailedTrace finds the most recent failed trace ID in the snapshot
+// that is newer than start.
+func latestFailedTrace(snap *core.Graph, start time.Time) string {
+	var latestID string
+	var latestTime time.Time
+	for _, n := range snap.Nodes {
+		if n.Type != core.NodeRequest || n.LastSeen.Before(start) {
+			continue
+		}
+		if success, _ := n.Attr["success"].(bool); success {
+			continue
+		}
+		if n.LastSeen.After(latestTime) {
+			latestTime = n.LastSeen
+			if tid, ok := n.Attr["trace_id"].(string); ok {
+				latestID = tid
+			}
+		}
+	}
+	return latestID
+}
+
+// Overview handles GET /v1/overview?window=<duration>&limit=<n>.
+func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.store == nil {
+		http.Error(w, "store not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	q := r.URL.Query()
+	dur := parseLooseDuration(q, "window", 5*time.Minute)
+	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
+
+	payload := s.overviewPayload(dur, limit)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"window":         dur.String(),
-		"total_requests": totalRequests,
-		"total_failures": totalFailures,
-		"error_rate":     errorRate,
-		"p50":            rollup.P50,
-		"p95":            rollup.P95,
-		"p99":            rollup.P99,
-		"sampled":        s.sampleRatePct < 100,
-		"top_errors":     topErrors,
-		"recent_traces":  recent,
-	})
+	json.NewEncoder(w).Encode(payload)
+}
+
+// timeseriesPayload computes bucketed timeseries data for a given window and step.
+// Shared by the OverviewTimeseries REST handler and SSE computeTimeseriesJSON.
+func (s *Server) timeseriesPayload(window, step time.Duration) map[string]any {
+	points := int(window / step)
+
+	snap := s.store.Snapshot()
+	now := time.Now()
+	start := now.Add(-window)
+
+	type bucket struct {
+		Start     time.Time
+		End       time.Time
+		Total     int
+		Failures  int
+		Status2xx int
+		Status4xx int
+		Status5xx int
+		latencies []int64
+	}
+
+	buckets := make([]bucket, points)
+	for i := range buckets {
+		buckets[i].Start = start.Add(time.Duration(i) * step)
+		buckets[i].End = buckets[i].Start.Add(step)
+	}
+
+	for _, n := range snap.Nodes {
+		if n.Type != core.NodeRequest {
+			continue
+		}
+		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
+			continue
+		}
+		idx := int(n.LastSeen.Sub(start) / step)
+		if idx >= points {
+			idx = points - 1
+		}
+		b := &buckets[idx]
+		b.Total++
+		addStatusClassCount(attrToInt(n.Attr["status_code"]), &b.Status2xx, &b.Status4xx, &b.Status5xx)
+		if requestNodeFailed(n) {
+			b.Failures++
+		}
+		if lat := attrToInt64(n.Attr["latency_ms"]); lat > 0 {
+			b.latencies = append(b.latencies, lat)
+		}
+	}
+
+	type bucketOut struct {
+		Start     time.Time `json:"start"`
+		End       time.Time `json:"end"`
+		Total     int       `json:"total"`
+		Failures  int       `json:"failures"`
+		ErrorRate float64   `json:"error_rate"`
+		Status2xx int       `json:"status_2xx"`
+		Status4xx int       `json:"status_4xx"`
+		Status5xx int       `json:"status_5xx"`
+		P50       int64     `json:"p50"`
+		P95       int64     `json:"p95"`
+		P99       int64     `json:"p99"`
+	}
+
+	out := make([]bucketOut, points)
+	for i := range buckets {
+		b := &buckets[i]
+		out[i] = bucketOut{
+			Start: b.Start, End: b.End,
+			Total: b.Total, Failures: b.Failures,
+			Status2xx: b.Status2xx, Status4xx: b.Status4xx, Status5xx: b.Status5xx,
+		}
+		if b.Total > 0 {
+			out[i].ErrorRate = math.Round(float64(b.Failures)/float64(b.Total)*10000) / 100
+		}
+		if len(b.latencies) > 0 {
+			sort.Slice(b.latencies, func(a, c int) bool { return b.latencies[a] < b.latencies[c] })
+			out[i].P50 = percentile(b.latencies, 50)
+			out[i].P95 = percentile(b.latencies, 95)
+			out[i].P99 = percentile(b.latencies, 99)
+		}
+	}
+
+	return map[string]any{
+		"sampled": s.sampleRatePct < 100,
+		"buckets": out,
+	}
 }
 
 // OverviewTimeseries handles GET /v1/overview/timeseries?window=1h&step=5m.
@@ -1218,104 +1342,14 @@ func (s *Server) OverviewTimeseries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snap, ok := s.snapshotOrServiceUnavailable(w)
-	if !ok {
+	if s.store == nil {
+		http.Error(w, "store not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	now := time.Now()
-	start := now.Add(-window)
-
-	type bucket struct {
-		Start     time.Time `json:"start"`
-		End       time.Time `json:"end"`
-		Total     int       `json:"total"`
-		Failures  int       `json:"failures"`
-		ErrorRate float64   `json:"error_rate"`
-		Status2xx int       `json:"status_2xx"`
-		Status4xx int       `json:"status_4xx"`
-		Status5xx int       `json:"status_5xx"`
-		P50       int64     `json:"p50"`
-		P95       int64     `json:"p95"`
-		P99       int64     `json:"p99"`
-		latencies []int64
-	}
-
-	buckets := make([]bucket, points)
-	for i := range buckets {
-		buckets[i].Start = start.Add(time.Duration(i) * step)
-		buckets[i].End = buckets[i].Start.Add(step)
-	}
-
-	for _, n := range snap.Nodes {
-		if n.Type != core.NodeRequest {
-			continue
-		}
-		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
-			continue
-		}
-		idx := int(n.LastSeen.Sub(start) / step)
-		if idx >= points {
-			idx = points - 1
-		}
-		b := &buckets[idx]
-		b.Total++
-
-		addStatusClassCount(
-			attrToInt(n.Attr["status_code"]),
-			&b.Status2xx,
-			&b.Status4xx,
-			&b.Status5xx,
-		)
-
-		if requestNodeFailed(n) {
-			b.Failures++
-		}
-
-		if lat := attrToInt64(n.Attr["latency_ms"]); lat > 0 {
-			b.latencies = append(b.latencies, lat)
-		}
-	}
-
-	// Compute percentiles and error rates.
-	type bucketOut struct {
-		Start     time.Time `json:"start"`
-		End       time.Time `json:"end"`
-		Total     int       `json:"total"`
-		Failures  int       `json:"failures"`
-		ErrorRate float64   `json:"error_rate"`
-		Status2xx int       `json:"status_2xx"`
-		Status4xx int       `json:"status_4xx"`
-		Status5xx int       `json:"status_5xx"`
-		P50       int64     `json:"p50"`
-		P95       int64     `json:"p95"`
-		P99       int64     `json:"p99"`
-	}
-
-	out := make([]bucketOut, points)
-	for i := range buckets {
-		b := &buckets[i]
-		out[i] = bucketOut{
-			Start: b.Start, End: b.End,
-			Total: b.Total, Failures: b.Failures,
-			Status2xx: b.Status2xx, Status4xx: b.Status4xx, Status5xx: b.Status5xx,
-		}
-		if b.Total > 0 {
-			out[i].ErrorRate = math.Round(float64(b.Failures)/float64(b.Total)*10000) / 100
-		}
-		if len(b.latencies) > 0 {
-			sort.Slice(b.latencies, func(a, c int) bool { return b.latencies[a] < b.latencies[c] })
-			out[i].P50 = percentile(b.latencies, 50)
-			out[i].P95 = percentile(b.latencies, 95)
-			out[i].P99 = percentile(b.latencies, 99)
-		}
-	}
-
+	payload := s.timeseriesPayload(window, step)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"sampled": s.sampleRatePct < 100,
-		"buckets": out,
-	})
+	json.NewEncoder(w).Encode(payload)
 }
 
 func summarizeOverviewFromGraph(g *core.Graph, start, end time.Time) overviewRollup {
@@ -1360,24 +1394,10 @@ func percentile(sorted []int64, pct int) int64 {
 	return sorted[idx]
 }
 
-// Routes handles GET /v1/routes?window=5m&limit=20.
-func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	q := r.URL.Query()
-
-	window := parseLooseDuration(q, "window", 5*time.Minute)
-	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
-	failuresOnly := parseOptionalBool(q, "failures_only")
-
-	snap, ok := s.snapshotOrServiceUnavailable(w)
-	if !ok {
-		return
-	}
-
+// routesPayload computes per-route stats for a given window and limit.
+// Shared by the Routes REST handler and SSE computeRoutesJSON.
+func (s *Server) routesPayload(window time.Duration, limit int, failuresOnly bool) map[string]any {
+	snap := s.store.Snapshot()
 	now := time.Now()
 	start := now.Add(-window)
 
@@ -1431,12 +1451,10 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 		}
 
 		rs.Total++
-
 		addStatusClassCount(attrToInt(n.Attr["status_code"]), &rs.Status2xx, &rs.Status4xx, &rs.Status5xx)
 		if failed {
 			rs.Failures++
 		}
-
 		if lat := attrToInt64(n.Attr["latency_ms"]); lat > 0 {
 			rs.latencies = append(rs.latencies, lat)
 		}
@@ -1446,7 +1464,7 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 		Service       string  `json:"service"`
 		Method        string  `json:"method"`
 		RouteTemplate string  `json:"route_template"`
-		Route         string  `json:"route"` // deprecated: alias for route_template
+		Route         string  `json:"route"`
 		Invocations   int     `json:"invocations"`
 		Errors        int     `json:"errors"`
 		ErrorRate     float64 `json:"error_rate"`
@@ -1491,11 +1509,31 @@ func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
 		routes = routes[:limit]
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	return map[string]any{
 		"sampled": s.sampleRatePct < 100,
 		"routes":  routes,
-	})
+	}
+}
+
+// Routes handles GET /v1/routes?window=5m&limit=20.
+func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.snapshotOrServiceUnavailable(w); !ok {
+		return
+	}
+
+	q := r.URL.Query()
+	window := parseLooseDuration(q, "window", 5*time.Minute)
+	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
+	failuresOnly := parseOptionalBool(q, "failures_only")
+
+	payload := s.routesPayload(window, limit, failuresOnly)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(payload)
 }
 
 // GraphTopology handles GET /v1/graph/topology?window=1h.
@@ -1519,103 +1557,11 @@ func (s *Server) GraphTopology(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	start := now.Add(-window)
-
-	type svcStats struct {
-		Invocations int
-		Errors      int
-	}
-	type edgeKey struct {
-		Source, Target string
-	}
-
-	services := map[string]*svcStats{}
-	edgeCounts := map[edgeKey]int{}
-
-	// Derive per-service stats and edges from span nodes.
-	// Each span belongs to exactly one service and carries its own success
-	// flag, so errors are attributed to the service that failed — not the
-	// root service that owns the request node.
-	for _, n := range snap.Nodes {
-		if n.Type != core.NodeSpan {
-			continue
-		}
-		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
-			continue
-		}
-		svc, _ := n.Attr["service"].(string)
-		if svc == "" {
-			continue
-		}
-		ss := services[svc]
-		if ss == nil {
-			ss = &svcStats{}
-			services[svc] = ss
-		}
-		ss.Invocations++
-		if success, ok := n.Attr["success"].(bool); ok && !success {
-			ss.Errors++
-		}
-
-		// Edge: caller_service → service
-		caller, _ := n.Attr["caller_service"].(string)
-		if caller != "" && caller != svc {
-			if services[caller] == nil {
-				services[caller] = &svcStats{}
-			}
-			edgeCounts[edgeKey{caller, svc}]++
-		}
-	}
-
-	type cyNode struct {
-		Data map[string]any `json:"data"`
-	}
-	type cyEdge struct {
-		Data map[string]any `json:"data"`
-	}
-
-	nodes := make([]cyNode, 0, len(services))
-	for name, ss := range services {
-		errRate := 0.0
-		if ss.Invocations > 0 {
-			errRate = math.Round(float64(ss.Errors)/float64(ss.Invocations)*10000) / 100
-		}
-		nodes = append(nodes, cyNode{Data: map[string]any{
-			"id":          name,
-			"label":       name,
-			"type":        "service",
-			"invocations": ss.Invocations,
-			"errors":      ss.Errors,
-			"error_rate":  errRate,
-		}})
-	}
-	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].Data["id"].(string) < nodes[j].Data["id"].(string)
-	})
-
-	edges := make([]cyEdge, 0, len(edgeCounts))
-	for ek, count := range edgeCounts {
-		edges = append(edges, cyEdge{Data: map[string]any{
-			"source": ek.Source,
-			"target": ek.Target,
-			"label":  "calls",
-			"count":  count,
-		}})
-	}
-	sort.Slice(edges, func(i, j int) bool {
-		si := edges[i].Data["source"].(string)
-		sj := edges[j].Data["source"].(string)
-		if si != sj {
-			return si < sj
-		}
-		return edges[i].Data["target"].(string) < edges[j].Data["target"].(string)
-	})
+	result := analysis.BuildTopology(snap, now.Add(-window), now)
+	cyto := analysis.ToCytoscapeFormat(result)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"nodes": nodes,
-		"edges": edges,
-	})
+	json.NewEncoder(w).Encode(cyto)
 }
 
 // APIKeyMiddleware rejects requests that don't provide a valid API key
@@ -2418,4 +2364,118 @@ func (s *Server) checkRateLimit(ip string) bool {
 
 	s.rateLimit[ip] = append(valid, now)
 	return true
+}
+
+// Topology handles GET /v1/topology — service-to-service edges with failure counts.
+func (s *Server) Topology(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	reqStart := time.Now()
+	meta := APIMeta{RequestID: RequestIDFromContext(r.Context()), APIVersion: apiVersion}
+
+	q := r.URL.Query()
+	dur := parseLooseDuration(q, "window", time.Hour)
+	if dur > 24*time.Hour {
+		dur = 24 * time.Hour
+	}
+	snap, ok := s.snapshotOrServiceUnavailable(w)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	result := analysis.BuildTopology(snap, now.Add(-dur), now)
+
+	meta.DurationMs = time.Since(reqStart).Milliseconds()
+	meta.DataStatus = "complete"
+	if len(result.Nodes) == 0 {
+		meta.DataStatus = "empty"
+	}
+	writeJSON(w, http.StatusOK, result, meta, nil)
+}
+
+// BlastRadius handles GET /v1/blast_radius?error_code=X — impact analysis for an error code.
+func (s *Server) BlastRadius(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	reqStart := time.Now()
+	meta := APIMeta{RequestID: RequestIDFromContext(r.Context()), APIVersion: apiVersion}
+
+	errorCode := r.URL.Query().Get("error_code")
+	if errorCode == "" {
+		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "error_code is required", false, meta)
+		return
+	}
+	q := r.URL.Query()
+	dur := parseLooseDuration(q, "window", time.Hour)
+	if dur > 24*time.Hour {
+		dur = 24 * time.Hour
+	}
+	snap, ok := s.snapshotOrServiceUnavailable(w)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	result := analysis.ComputeBlastRadius(snap, errorCode, now.Add(-dur), now)
+
+	meta.DurationMs = time.Since(reqStart).Milliseconds()
+	meta.DataStatus = "complete"
+	if result.AffectedRequests == 0 {
+		meta.DataStatus = "empty"
+	}
+	writeJSON(w, http.StatusOK, result, meta, nil)
+}
+
+// DashboardExplain handles GET /ui/explain?trace_id=X — server-side proxy for explain_request tool.
+// No agent auth required (same pattern as /ui/ask).
+func (s *Server) DashboardExplain(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	meta := APIMeta{RequestID: RequestIDFromContext(r.Context())}
+
+	traceID := r.URL.Query().Get("trace_id")
+	if traceID == "" {
+		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "trace_id is required", false, meta)
+		return
+	}
+
+	if s.askRegistry == nil {
+		respondError(w, r, http.StatusServiceUnavailable, "NOT_AVAILABLE", "tools not available", false, meta)
+		return
+	}
+
+	params, _ := json.Marshal(map[string]string{"trace_id": traceID})
+	result, err := s.askRegistry.Call(r.Context(), s.store, "explain_request", params)
+	if err != nil {
+		var te *tools.ToolError
+		if errors.As(err, &te) {
+			status := http.StatusInternalServerError
+			if te.Code == tools.CodeNotFound {
+				status = http.StatusNotFound
+			} else if te.Code == tools.CodeInvalidParams {
+				status = http.StatusBadRequest
+			}
+			respondError(w, r, status, te.Code, te.Message, te.Retryable, meta)
+			return
+		}
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL", "internal error", true, meta)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }

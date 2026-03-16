@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -103,6 +104,14 @@ func (s *Server) DeployWebhook(w http.ResponseWriter, r *http.Request) {
 		s.metrics.DeployUpsertsTotal.Inc()
 	}
 
+	// Publish SSE event so dashboard clients see the new deployment immediately.
+	if s.sseHub != nil {
+		data := s.ComputeSSETopic(TopicDeployments)
+		if data != nil {
+			s.sseHub.Publish(TopicDeployments, data)
+		}
+	}
+
 	if wantsEnvelope(r) {
 		writeJSON(w, http.StatusCreated, map[string]string{"id": req.ID}, meta, nil)
 	} else {
@@ -112,30 +121,16 @@ func (s *Server) DeployWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Deployments handles GET /v1/deployments.
-func (s *Server) Deployments(w http.ResponseWriter, r *http.Request) {
-	meta := APIMeta{RequestID: RequestIDFromContext(r.Context())}
-
-	if s.coldStore == nil {
-		respondError(w, r, http.StatusServiceUnavailable, "COLD_STORE_UNAVAILABLE", "cold store not configured", false, meta)
-		return
-	}
-
-	q := r.URL.Query()
-	window := parseLooseDuration(q, "window", time.Hour)
-	if window > 24*time.Hour {
-		window = 24 * time.Hour
-	}
-	service := q.Get("service")
-
-	now := time.Now().UTC()
-	start := now.Add(-window)
-
-	deps, err := s.coldStore.DeploymentsInWindow(r.Context(), start, now, service)
+// deploymentsPayload computes the deployment list with error-rate enrichment.
+// Shared between the REST handler and SSE compute path.
+func (s *Server) deploymentsPayload(ctx context.Context, start, now time.Time, service string) ([]deployResponse, error) {
+	deps, err := s.coldStore.DeploymentsInWindow(ctx, start, now, service)
 	if err != nil {
-		respondError(w, r, http.StatusInternalServerError, "QUERY_FAILED", "failed to query deployments", true, meta)
-		return
+		return nil, err
 	}
+
+	const sampleWindow = 5 * time.Minute
+	const minRequests = 10
 
 	out := make([]deployResponse, 0, len(deps))
 	for _, d := range deps {
@@ -149,17 +144,8 @@ func (s *Server) Deployments(w http.ResponseWriter, r *http.Request) {
 			Metadata:  d.Metadata,
 		}
 
-		// Compute error rate change around the deployment's first_seen.
-		const sampleWindow = 5 * time.Minute
-		const minRequests = 10
-
-		beforeStart := d.FirstSeen.Add(-sampleWindow)
-		beforeEnd := d.FirstSeen
-		afterStart := d.FirstSeen
-		afterEnd := d.FirstSeen.Add(sampleWindow)
-
-		beforeRate, berr := s.coldStore.ServiceErrorRateInWindow(r.Context(), d.Service, beforeStart, beforeEnd)
-		afterRate, aerr := s.coldStore.ServiceErrorRateInWindow(r.Context(), d.Service, afterStart, afterEnd)
+		beforeRate, berr := s.coldStore.ServiceErrorRateInWindow(ctx, d.Service, d.FirstSeen.Add(-sampleWindow), d.FirstSeen)
+		afterRate, aerr := s.coldStore.ServiceErrorRateInWindow(ctx, d.Service, d.FirstSeen, d.FirstSeen.Add(sampleWindow))
 
 		resp.BeforeRequests = beforeRate.Total
 		resp.AfterRequests = afterRate.Total
@@ -185,6 +171,33 @@ func (s *Server) Deployments(w http.ResponseWriter, r *http.Request) {
 
 		out = append(out, resp)
 	}
+	return out, nil
+}
+
+// Deployments handles GET /v1/deployments.
+func (s *Server) Deployments(w http.ResponseWriter, r *http.Request) {
+	meta := APIMeta{RequestID: RequestIDFromContext(r.Context())}
+
+	if s.coldStore == nil {
+		respondError(w, r, http.StatusServiceUnavailable, "COLD_STORE_UNAVAILABLE", "cold store not configured", false, meta)
+		return
+	}
+
+	q := r.URL.Query()
+	window := parseLooseDuration(q, "window", time.Hour)
+	if window > 24*time.Hour {
+		window = 24 * time.Hour
+	}
+	service := q.Get("service")
+
+	now := time.Now().UTC()
+	start := now.Add(-window)
+
+	out, err := s.deploymentsPayload(r.Context(), start, now, service)
+	if err != nil {
+		respondError(w, r, http.StatusInternalServerError, "QUERY_FAILED", "failed to query deployments", true, meta)
+		return
+	}
 
 	payload := map[string]any{"deployments": out}
 	if wantsEnvelope(r) {
@@ -194,4 +207,3 @@ func (s *Server) Deployments(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(payload)
 	}
 }
-

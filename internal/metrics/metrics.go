@@ -42,8 +42,8 @@ type Metrics struct {
 	ColdEventsDropped prometheus.Counter
 	ColdBatchLatency  prometheus.Histogram
 
-	DeployUpsertsTotal  prometheus.Counter
-	DeployUpsertErrors  prometheus.Counter
+	DeployUpsertsTotal prometheus.Counter
+	DeployUpsertErrors prometheus.Counter
 }
 
 // New creates a Metrics instance and registers all collectors with the given registry.

@@ -102,7 +102,7 @@ func main() {
 	var coldWriter *coldstore.BatchWriter
 	if sqlitePath != "" {
 		if eventLogDir == "" {
-			slog.Warn("SQLITE_PATH set without EVENT_LOG_DIR — cold store is async-only, "+
+			slog.Warn("SQLITE_PATH set without EVENT_LOG_DIR — cold store is async-only, " +
 				"events may be lost on crash. Set EVENT_LOG_DIR for durable writes")
 		}
 		var err error
@@ -144,6 +144,10 @@ func main() {
 		ColdStore:           coldDB,
 		APIKey:              apiKey,
 	})
+
+	// SSE hub for real-time dashboard updates
+	sseHub := ingest.NewSSEHub(config.GetenvInt("SSE_MAX_CLIENTS", 100))
+	ingestServer.SetSSEHub(sseHub)
 
 	// Optional append-only event log
 	eventLogSync := config.GetenvBool("EVENT_LOG_SYNC", true)
@@ -233,6 +237,9 @@ func main() {
 	mux.HandleFunc("/v1/routes", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Routes))
 	mux.HandleFunc("/v1/capabilities", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Capabilities))
 	mux.HandleFunc("/v1/deployments", ingest.CORSWrap(corsOrigin, "GET, POST, OPTIONS", ingestServer.DeployRoute))
+	mux.HandleFunc("/v1/topology", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Topology))
+	mux.HandleFunc("/v1/blast_radius", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.BlastRadius))
+	mux.HandleFunc("/v1/stream/dashboard", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.SSEStream))
 
 	// Agent-authenticated endpoints: CORS outermost, then auth
 	if agentKey != "" {
@@ -255,6 +262,7 @@ func main() {
 		http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
 	})
 	mux.HandleFunc("/ui/ask", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.DashboardAsk))
+	mux.HandleFunc("/ui/explain", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.DashboardExplain))
 
 	// Wrap mux with CorrelationID middleware
 	handler := ingest.CorrelationIDMiddleware(mux)
@@ -340,6 +348,30 @@ func main() {
 							"edges", len(g.Edges),
 							"path", snapshotPath,
 						)
+					}
+				}
+			}
+		}
+	}()
+
+	// ---------------- SSE recompute ticker ----------------
+
+	go func() {
+		sseTicker := time.NewTicker(1 * time.Second)
+		defer sseTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sseTicker.C:
+				dirty := sseHub.DrainDirty()
+				if len(dirty) == 0 {
+					continue
+				}
+				for _, topic := range dirty {
+					data := ingestServer.ComputeSSETopic(topic)
+					if data != nil {
+						sseHub.Publish(topic, data)
 					}
 				}
 			}

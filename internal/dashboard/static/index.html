@@ -937,7 +937,31 @@
         </div>
       </section>
 
-      <div id="what-changed" style="display:none;margin:16px 0;padding:12px;background:#1a1a1a;border-radius:8px;border:1px solid #333"></div>
+      <!-- Incident triage panels -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem;">
+        <div id="what-changed" style="display:none;padding:12px;background:#1a1a1a;border-radius:8px;border:1px solid #333"></div>
+        <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;" id="failure-origin-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <h2 style="font-size:1rem;font-weight:600;">Most Likely Failure Origin</h2>
+            <label style="font-size:0.75rem;color:var(--fg-secondary);cursor:pointer;">
+              <input type="checkbox" id="follow-latest-toggle" checked> Follow latest
+            </label>
+          </div>
+          <div id="failure-origin-content" style="min-height:80px;">
+            <p style="color:var(--fg-muted);">Waiting for failures...</p>
+          </div>
+        </section>
+      </div>
+
+      <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;margin-bottom:1.5rem;" id="whos-affected-section">
+        <h2 style="font-size:1rem;font-weight:600;margin-bottom:12px;">Who's Affected</h2>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1rem;">
+          <div class="kpi-card"><div class="value" id="blast-requests">--</div><div class="label">Requests</div></div>
+          <div class="kpi-card"><div class="value" id="blast-users">--</div><div class="label">Users</div></div>
+          <div class="kpi-card"><div class="value" id="blast-services">--</div><div class="label">Services</div></div>
+        </div>
+        <div id="mini-topology" style="height:200px;border:1px solid var(--border);border-radius:8px;"></div>
+      </section>
 
       <!-- Routes table -->
       <section aria-label="Routes">
@@ -1462,40 +1486,52 @@
             : "none";
         }
 
+        function renderKPIs(data) {
+          showSampled(data.sampled);
+          const totalRequests = Number(data.total_requests || 0);
+          const errorRate = Number(data.error_rate || 0);
+          // Trigger incident panels when latest failed trace changes
+          var failedId = data.latest_failed_trace_id;
+          if (failedId && failedId !== lastKnownFailedTraceId) {
+            lastKnownFailedTraceId = failedId;
+            if (followLatest) {
+              loadExplainRequest(failedId);
+            }
+          }
+          const row = document.getElementById("kpi-row");
+          if (totalRequests === 0) {
+            row.innerHTML =
+              kpiCard("Requests", "0", "") +
+              kpiCard("Error Rate", "0", "%") +
+              kpiCard("P50", "—", "ms") +
+              kpiCard("P95", "—", "ms") +
+              kpiCard("P99", "—", "ms");
+            return;
+          }
+          row.innerHTML =
+            kpiCard("Requests", nf.format(totalRequests), "") +
+            kpiCard("Error Rate", pf.format(errorRate), "%") +
+            kpiCard(
+              "P50",
+              data.p50 != null ? nf.format(Number(data.p50 || 0)) : "—",
+              "ms",
+            ) +
+            kpiCard(
+              "P95",
+              data.p95 != null ? nf.format(Number(data.p95 || 0)) : "—",
+              "ms",
+            ) +
+            kpiCard(
+              "P99",
+              data.p99 != null ? nf.format(Number(data.p99 || 0)) : "—",
+              "ms",
+            );
+        }
+
         async function refreshKPIs() {
           try {
             const data = await fetchJSON("/v1/overview?window=1h");
-            showSampled(data.sampled);
-            const totalRequests = Number(data.total_requests || 0);
-            const errorRate = Number(data.error_rate || 0);
-            const row = document.getElementById("kpi-row");
-            if (totalRequests === 0) {
-              row.innerHTML =
-                kpiCard("Requests", "0", "") +
-                kpiCard("Error Rate", "0", "%") +
-                kpiCard("P50", "—", "ms") +
-                kpiCard("P95", "—", "ms") +
-                kpiCard("P99", "—", "ms");
-              return;
-            }
-            row.innerHTML =
-              kpiCard("Requests", nf.format(totalRequests), "") +
-              kpiCard("Error Rate", pf.format(errorRate), "%") +
-              kpiCard(
-                "P50",
-                data.p50 != null ? nf.format(Number(data.p50 || 0)) : "—",
-                "ms",
-              ) +
-              kpiCard(
-                "P95",
-                data.p95 != null ? nf.format(Number(data.p95 || 0)) : "—",
-                "ms",
-              ) +
-              kpiCard(
-                "P99",
-                data.p99 != null ? nf.format(Number(data.p99 || 0)) : "—",
-                "ms",
-              );
+            renderKPIs(data);
           } catch (e) {
             console.error("KPI fetch error:", e);
           }
@@ -1518,34 +1554,30 @@
           );
         }
 
-        async function refreshChart() {
-          try {
-            const data = await fetchJSON(
-              "/v1/overview/timeseries?window=1h&step=5m",
-            );
-            const labels = data.buckets.map(function (b) {
-              return new Date(b.start).toLocaleTimeString(undefined, {
-                hour: "2-digit",
-                minute: "2-digit",
-              });
+        function renderChart(data) {
+          const labels = data.buckets.map(function (b) {
+            return new Date(b.start).toLocaleTimeString(undefined, {
+              hour: "2-digit",
+              minute: "2-digit",
             });
-            const totals = data.buckets.map(function (b) {
-              return b.total;
-            });
-            const errRates = data.buckets.map(function (b) {
-              return b.error_rate;
-            });
+          });
+          const totals = data.buckets.map(function (b) {
+            return b.total;
+          });
+          const errRates = data.buckets.map(function (b) {
+            return b.error_rate;
+          });
 
-            if (tsChart) {
-              tsChart.data.labels = labels;
-              tsChart.data.datasets[0].data = totals;
-              tsChart.data.datasets[1].data = errRates;
-              tsChart.update("none");
-              refreshDeployOverlay();
-              return;
-            }
+          if (tsChart) {
+            tsChart.data.labels = labels;
+            tsChart.data.datasets[0].data = totals;
+            tsChart.data.datasets[1].data = errRates;
+            tsChart.update("none");
+            refreshDeployOverlay();
+            return;
+          }
 
-            const ctx = document.getElementById("ts-chart").getContext("2d");
+          const ctx = document.getElementById("ts-chart").getContext("2d");
             tsChart = new Chart(ctx, {
               type: "line",
               data: {
@@ -1641,9 +1673,68 @@
               },
             });
             refreshDeployOverlay();
+        }
+
+        async function refreshChart() {
+          try {
+            const data = await fetchJSON(
+              "/v1/overview/timeseries?window=1h&step=5m",
+            );
+            renderChart(data);
           } catch (e) {
             console.error("Chart fetch error:", e);
           }
+        }
+
+        function renderRoutes(data) {
+          const tbody = document.getElementById("routes-body");
+          if (!data.routes || data.routes.length === 0) {
+            const filterText = routeFailuresOnly ? " (failed only)" : "";
+            tbody.innerHTML =
+              '<tr><td colspan="10" class="empty">No routes in the last ' +
+              routeWindowText[routeWindow] +
+              filterText +
+              "</td></tr>";
+            return;
+          }
+          tbody.innerHTML = data.routes
+            .map(function (r) {
+              return (
+                "<tr>" +
+                '<td class="ellipsis">' +
+                esc(r.service) +
+                "</td>" +
+                "<td>" +
+                esc(r.method || "UNKNOWN") +
+                "</td>" +
+                '<td class="ellipsis">' +
+                esc(r.route) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.invocations) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.errors) +
+                "</td>" +
+                '<td class="num">' +
+                pf.format(r.error_rate) +
+                "%</td>" +
+                '<td class="num">' +
+                nf.format(r.status_2xx) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.status_4xx) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.status_5xx) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.p75_latency_ms) +
+                "</td>" +
+                "</tr>"
+              );
+            })
+            .join("");
         }
 
         async function refreshRoutes() {
@@ -1654,54 +1745,7 @@
                 "&failures_only=" +
                 encodeURIComponent(String(routeFailuresOnly)),
             );
-            const tbody = document.getElementById("routes-body");
-            if (!data.routes || data.routes.length === 0) {
-              const filterText = routeFailuresOnly ? " (failed only)" : "";
-              tbody.innerHTML =
-                '<tr><td colspan="10" class="empty">No routes in the last ' +
-                routeWindowText[routeWindow] +
-                filterText +
-                "</td></tr>";
-              return;
-            }
-            tbody.innerHTML = data.routes
-              .map(function (r) {
-                return (
-                  "<tr>" +
-                  '<td class="ellipsis">' +
-                  esc(r.service) +
-                  "</td>" +
-                  "<td>" +
-                  esc(r.method || "UNKNOWN") +
-                  "</td>" +
-                  '<td class="ellipsis">' +
-                  esc(r.route) +
-                  "</td>" +
-                  '<td class="num">' +
-                  nf.format(r.invocations) +
-                  "</td>" +
-                  '<td class="num">' +
-                  nf.format(r.errors) +
-                  "</td>" +
-                  '<td class="num">' +
-                  pf.format(r.error_rate) +
-                  "%</td>" +
-                  '<td class="num">' +
-                  nf.format(r.status_2xx) +
-                  "</td>" +
-                  '<td class="num">' +
-                  nf.format(r.status_4xx) +
-                  "</td>" +
-                  '<td class="num">' +
-                  nf.format(r.status_5xx) +
-                  "</td>" +
-                  '<td class="num">' +
-                  nf.format(r.p75_latency_ms) +
-                  "</td>" +
-                  "</tr>"
-                );
-              })
-              .join("");
+            renderRoutes(data);
           } catch (e) {
             console.error("Routes fetch error:", e);
           }
@@ -1757,69 +1801,73 @@
           btn.style.display = rowsLoaded > 0 ? "inline-flex" : "none";
         }
 
+        function renderTraces(traces) {
+          const tbody = document.getElementById("traces-body");
+          const tracesContext = document.getElementById("traces-context");
+          updateTraceLimitToggle(traces.length);
+          tracesContext.textContent = "";
+          const colspan = 6;
+
+          if (traces.length === 0) {
+            tbody.innerHTML =
+              '<tr><td colspan="' +
+              colspan +
+              '" class="empty">No traces yet</td></tr>';
+            return;
+          }
+          tbody.innerHTML = traces
+            .map(function (t) {
+              const traceId =
+                typeof t.trace_id === "string" ? t.trace_id : "";
+              const failureService =
+                typeof t.failure_service === "string"
+                  ? t.failure_service.trim()
+                  : "";
+              const ariaLabel = "Trace " + traceId;
+              const failureServiceCell =
+                '<td class="ellipsis trace-service"><code>' +
+                esc(failureService || "—") +
+                "</code></td>";
+              return (
+                "<tr>" +
+                '<td class="ellipsis"><a href="#trace-' +
+                esc(traceId) +
+                '" class="trace-link" data-trace="' +
+                esc(traceId) +
+                '" aria-label="' +
+                esc(ariaLabel) +
+                '" style="font-family:var(--font-mono);font-size:12px">' +
+                esc(traceId.substring(0, 16)) +
+                "&hellip;</a></td>" +
+                failureServiceCell +
+                '<td class="ellipsis">' +
+                "<code>" +
+                esc(t.event_name || "—") +
+                "</code>" +
+                "</td>" +
+                "<td>" +
+                statusBadge(t.status_code, t.success) +
+                "</td>" +
+                '<td class="num" style="font-family:var(--font-mono)">' +
+                nf.format(t.latency_ms) +
+                "</td>" +
+                '<td style="color:var(--fg-muted);font-size:12px">' +
+                relTime(t.timestamp) +
+                "</td>" +
+                "</tr>"
+              );
+            })
+            .join("");
+        }
+
         async function refreshTraces() {
           try {
             const data = await fetchJSON(
               "/v1/traces/recent?limit=" +
                 encodeURIComponent(String(currentTraceLimit())),
             );
-            const tbody = document.getElementById("traces-body");
-            const tracesContext = document.getElementById("traces-context");
             const traces = Array.isArray(data) ? data : [];
-            updateTraceLimitToggle(traces.length);
-            tracesContext.textContent = "";
-            const colspan = 6;
-
-            if (traces.length === 0) {
-              tbody.innerHTML =
-                '<tr><td colspan="' +
-                colspan +
-                '" class="empty">No traces yet</td></tr>';
-              return;
-            }
-            tbody.innerHTML = traces
-              .map(function (t) {
-                const traceId =
-                  typeof t.trace_id === "string" ? t.trace_id : "";
-                const failureService =
-                  typeof t.failure_service === "string"
-                    ? t.failure_service.trim()
-                    : "";
-                const ariaLabel = "Trace " + traceId;
-                const failureServiceCell =
-                  '<td class="ellipsis"><code>' +
-                  esc(failureService || "—") +
-                  "</code></td>";
-                return (
-                  "<tr>" +
-                  '<td class="ellipsis"><a href="#trace-' +
-                  esc(traceId) +
-                  '" class="trace-link" data-trace="' +
-                  esc(traceId) +
-                  '" aria-label="' +
-                  esc(ariaLabel) +
-                  '" style="font-family:var(--font-mono);font-size:12px">' +
-                  esc(traceId.substring(0, 16)) +
-                  "&hellip;</a></td>" +
-                  failureServiceCell +
-                  '<td class="ellipsis">' +
-                  "<code>" +
-                  esc(t.event_name || "—") +
-                  "</code>" +
-                  "</td>" +
-                  "<td>" +
-                  statusBadge(t.status_code, t.success) +
-                  "</td>" +
-                  '<td class="num" style="font-family:var(--font-mono)">' +
-                  nf.format(t.latency_ms) +
-                  "</td>" +
-                  '<td style="color:var(--fg-muted);font-size:12px">' +
-                  relTime(t.timestamp) +
-                  "</td>" +
-                  "</tr>"
-                );
-              })
-              .join("");
+            renderTraces(traces);
           } catch (e) {
             console.error("Traces fetch error:", e);
           }
@@ -2068,7 +2116,11 @@
           var link = e.target.closest(".trace-link");
           if (!link) return;
           e.preventDefault();
-          openTrace(link.dataset.trace, link);
+          var traceId = link.dataset.trace;
+          openTrace(traceId, link);
+          followLatest = false;
+          document.getElementById("follow-latest-toggle").checked = false;
+          loadExplainRequest(traceId);
         });
 
         function setAskOpen(open) {
@@ -2378,13 +2430,303 @@
           }
         })();
 
+        // --- Failure Origin + Blast Radius + Mini Topology ---
+
+        let followLatest = true;
+        let currentExplainTraceId = null;
+        let lastKnownFailedTraceId = null;
+        let miniCyInstance = null;
+
+        document.getElementById("follow-latest-toggle").addEventListener("change", function () {
+          followLatest = this.checked;
+        });
+
+        async function loadExplainRequest(traceId) {
+          if (!traceId || traceId === currentExplainTraceId) return;
+          currentExplainTraceId = traceId;
+          const el = document.getElementById("failure-origin-content");
+          el.innerHTML = '<p style="color:var(--fg-muted);">Loading...</p>';
+          try {
+            const resp = await fetch("/ui/explain?trace_id=" + encodeURIComponent(traceId));
+            if (!resp.ok) throw new Error(resp.statusText);
+            const body = await resp.json();
+            const data = body.data || body;
+            renderFailureOrigin(el, data);
+            if (data.error_code) {
+              loadBlastRadius(data.error_code);
+            }
+          } catch (e) {
+            currentExplainTraceId = null;
+            el.innerHTML = '<p style="color:var(--fg-muted);">Could not load explanation.</p>';
+          }
+        }
+
+        function renderFailureOrigin(el, data) {
+          if (!data) {
+            el.innerHTML = '<p style="color:var(--fg-muted);">No failure data.</p>';
+            return;
+          }
+          let html = '';
+          if (data.error_code) {
+            html += '<span style="display:inline-block;background:var(--red);color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;font-family:var(--font-mono);margin-bottom:8px;">' + esc(data.error_code) + '</span> ';
+          }
+          if (data.service) {
+            html += '<span style="color:var(--fg-secondary);font-size:13px;">' + esc(data.service) + '</span>';
+          }
+          if (data.summary || data.answer) {
+            html += '<p style="margin-top:8px;color:var(--fg);font-size:13px;line-height:1.5;">' + esc(data.summary || data.answer) + '</p>';
+          }
+          if (data.chain && Array.isArray(data.chain)) {
+            html += '<div style="margin-top:8px;">';
+            data.chain.forEach(function (hop) {
+              const color = hop.success ? 'var(--green)' : 'var(--red)';
+              html += '<span style="display:inline-block;padding:2px 6px;margin:2px 4px 2px 0;border:1px solid ' + color + ';border-radius:4px;font-size:11px;color:' + color + ';">' + esc(hop.service || '?') + ' ' + (hop.status_code || '') + '</span>';
+            });
+            html += '</div>';
+          }
+          // Trace waterfall
+          if (data.story && data.story.chain && data.story.chain.length > 0) {
+            html += renderTraceWaterfall(data.story);
+          }
+          el.innerHTML = html || '<p style="color:var(--fg-muted);">No failure details available.</p>';
+        }
+
+        function renderTraceWaterfall(storyData) {
+          if (!storyData || !storyData.chain || !storyData.chain.length) return '';
+          const hops = storyData.chain;
+          const maxDuration = Math.max.apply(null, hops.map(function (h) { return h.latency_ms || 1; }));
+          let html = '<div style="margin-top:12px;">';
+          html += '<div style="font-size:11px;color:var(--fg-muted);margin-bottom:4px;">Trace waterfall</div>';
+          hops.forEach(function (hop) {
+            const pct = maxDuration > 0 ? Math.max(2, (hop.latency_ms || 0) / maxDuration * 100) : 2;
+            const color = hop.success ? 'var(--blue)' : 'var(--red)';
+            html += '<div style="display:flex;align-items:center;gap:8px;margin:2px 0;">';
+            html += '<span style="min-width:80px;font-size:11px;color:var(--fg-secondary);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(hop.service || '?') + '</span>';
+            html += '<div style="flex:1;background:var(--bg-elevated);border-radius:2px;height:14px;position:relative;">';
+            html += '<div style="width:' + pct + '%;background:' + color + ';height:100%;border-radius:2px;min-width:2px;"></div>';
+            html += '</div>';
+            html += '<span style="min-width:45px;font-size:10px;color:var(--fg-muted);font-family:var(--font-mono);">' + (hop.latency_ms || 0) + 'ms</span>';
+            html += '</div>';
+          });
+          html += '</div>';
+          return html;
+        }
+
+        async function loadBlastRadius(errorCode) {
+          if (!errorCode) return;
+          try {
+            const resp = await fetch("/v1/blast_radius?error_code=" + encodeURIComponent(errorCode) + "&window=1h");
+            if (!resp.ok) return;
+            const body = await resp.json();
+            const data = body.data || body;
+            document.getElementById("blast-requests").textContent = nf.format(data.affected_requests || 0);
+            document.getElementById("blast-users").textContent = nf.format(data.affected_users || 0);
+            var svcArr = Array.isArray(data.services) ? data.services : [];
+            document.getElementById("blast-services").textContent = nf.format(svcArr.length);
+            var svcNames = svcArr.map(function (s) { return s.service; });
+            if (svcNames.length > 0) {
+              loadMiniTopology(svcNames);
+            }
+          } catch (e) {
+            console.error("Blast radius fetch error:", e);
+          }
+        }
+
+        async function loadMiniTopology(filterServices) {
+          if (typeof cytoscape === "undefined") return;
+          try {
+            const resp = await fetch("/v1/topology?window=1h");
+            if (!resp.ok) return;
+            const body = await resp.json();
+            const data = body.data || body;
+            const rawNodes = data.nodes || [];
+            const rawEdges = data.edges || [];
+            // Convert neutral TopologyResult to Cytoscape element format
+            let nodes = rawNodes.map(function (n) { return { data: { id: n.id, label: n.label || n.id, status: n.status, error_rate: n.error_rate } }; });
+            let edges = rawEdges.map(function (e) { return { data: { source: e.source, target: e.target, failures: e.failures } }; });
+            if (filterServices && filterServices.length > 0) {
+              const svcSet = {};
+              filterServices.forEach(function (s) { svcSet[s] = true; });
+              nodes = nodes.filter(function (n) { return svcSet[n.data.id]; });
+              const nodeIds = {};
+              nodes.forEach(function (n) { nodeIds[n.data.id] = true; });
+              edges = edges.filter(function (e) { return nodeIds[e.data.source] && nodeIds[e.data.target]; });
+            }
+            renderMiniTopology(nodes, edges);
+          } catch (e) {
+            console.error("Mini topology fetch error:", e);
+          }
+        }
+
+        function renderMiniTopology(nodes, edges) {
+          if (typeof cytoscape === "undefined") return;
+          const container = document.getElementById("mini-topology");
+          if (!container) return;
+          if (miniCyInstance) { miniCyInstance.destroy(); miniCyInstance = null; }
+          if (!nodes.length) {
+            container.innerHTML = '<p style="color:var(--fg-muted);text-align:center;padding-top:80px;font-size:12px;">No topology data</p>';
+            return;
+          }
+          container.innerHTML = '';
+          const elements = [];
+          nodes.forEach(function (n) { elements.push({ group: "nodes", data: n.data }); });
+          edges.forEach(function (e) { elements.push({ group: "edges", data: e.data }); });
+          miniCyInstance = cytoscape({
+            container: container,
+            elements: elements,
+            style: [
+              {
+                selector: "node",
+                style: {
+                  "label": "data(label)",
+                  "background-color": function (ele) {
+                    var er = ele.data("error_rate") || 0;
+                    if (er >= 0.5) return "#f31260";
+                    if (er >= 0.1) return "#f5a623";
+                    return "#17c964";
+                  },
+                  "color": "#ededed",
+                  "text-valign": "bottom",
+                  "text-margin-y": 4,
+                  "font-size": 9,
+                  "font-family": "Geist, system-ui, sans-serif",
+                  "width": 24,
+                  "height": 24,
+                  "border-width": 1,
+                  "border-color": "#333"
+                }
+              },
+              {
+                selector: "edge",
+                style: {
+                  "width": 1,
+                  "line-color": "#444",
+                  "target-arrow-color": "#444",
+                  "target-arrow-shape": "triangle",
+                  "curve-style": "bezier"
+                }
+              }
+            ],
+            layout: { name: "breadthfirst", directed: true, padding: 20, spacingFactor: 1.2 },
+            userZoomingEnabled: false,
+            userPanningEnabled: false,
+            boxSelectionEnabled: false,
+            autoungrabify: true
+          });
+          miniCyInstance.on("tap", "node", function (evt) {
+            var label = evt.target.data("label") || evt.target.data("id");
+            filterTracesByService(label);
+          });
+        }
+
+        function filterTracesByService(service) {
+          const rows = document.querySelectorAll("#traces-body tr");
+          rows.forEach(function (row) {
+            const cell = row.querySelector(".trace-service code");
+            if (!cell) { row.style.display = ""; return; }
+            const text = cell.textContent.trim();
+            row.style.display = (text === service || service === "") ? "" : "none";
+          });
+        }
+
+        // --- SSE integration ---
+
+        let pollingInterval = null;
+
+        function startPolling() {
+          if (pollingInterval) return;
+          pollingInterval = setInterval(refreshAll, refreshIntervalMs);
+        }
+
+        function stopPolling() {
+          if (pollingInterval) {
+            clearInterval(pollingInterval);
+            pollingInterval = null;
+          }
+        }
+
+        function initSSE() {
+          if (typeof EventSource === "undefined") {
+            startPolling();
+            return;
+          }
+          const startTime = Date.now();
+          let sseReceivedEvent = false;
+          const es = new EventSource("/v1/stream/dashboard");
+
+          es.onopen = function () {
+            stopPolling();
+          };
+
+          es.addEventListener("overview", function (e) {
+            sseReceivedEvent = true;
+            try {
+              const data = JSON.parse(e.data);
+              renderKPIs(data);
+              document.getElementById("last-update").textContent =
+                "Updated " + new Date().toLocaleTimeString();
+            } catch (err) {
+              console.error("SSE overview parse error:", err);
+            }
+          });
+
+          es.addEventListener("timeseries", function (e) {
+            try {
+              const data = JSON.parse(e.data);
+              renderChart(data);
+            } catch (err) {
+              console.error("SSE timeseries parse error:", err);
+            }
+          });
+
+          es.addEventListener("routes", function (e) {
+            try {
+              // Only apply SSE routes when dashboard is using default filters,
+              // otherwise the user's selected window/filter would be overwritten.
+              if (routeWindow !== "1h" || routeFailuresOnly) return;
+              const data = JSON.parse(e.data);
+              renderRoutes(data);
+            } catch (err) {
+              console.error("SSE routes parse error:", err);
+            }
+          });
+
+          es.addEventListener("deployments", function (e) {
+            try {
+              const data = JSON.parse(e.data);
+              const deploys = data.deployments || [];
+              currentDeployments = deploys;
+              renderWhatChanged(deploys);
+              if (tsChart) {
+                tsChart.options.plugins = tsChart.options.plugins || {};
+                tsChart.options.plugins.annotation = {
+                  annotations: makeDeployAnnotations(deploys)
+                };
+                tsChart.update('none');
+              }
+            } catch (err) {
+              console.error("SSE deployments parse error:", err);
+            }
+          });
+
+          es.onerror = function () {
+            if (!sseReceivedEvent && Date.now() - startTime < 5000) {
+              // SSE never connected successfully — fall back to polling permanently
+              es.close();
+              console.warn("SSE failed quickly, falling back to polling");
+              startPolling();
+            }
+            // Otherwise EventSource will auto-reconnect; no action needed.
+          };
+        }
+
         setRouteFailuresOnly(routeFailuresOnly, false);
         setRouteWindow(routeWindow, false);
         loadCapabilities().finally(function () {
           // Apply saved tab after capabilities are loaded (so graph tab is visible if enabled)
           if (activeTab !== "dashboard") switchTab(activeTab);
           refreshAll();
-          setInterval(refreshAll, refreshIntervalMs);
+          initSSE();
         });
       })();
     </script>
