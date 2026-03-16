@@ -142,12 +142,20 @@ func TestRecentTraces_Ordering(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var entries []traceEntry
-	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
+	var resp struct {
+		Traces     []traceEntry `json:"traces"`
+		TotalCount int          `json:"total_count"`
+		NextCursor string       `json:"next_cursor,omitempty"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
+	entries := resp.Traces
 	if len(entries) == 0 {
 		t.Fatal("expected at least one trace entry")
+	}
+	if resp.TotalCount < len(entries) {
+		t.Errorf("total_count %d < returned entries %d", resp.TotalCount, len(entries))
 	}
 
 	// Verify descending order by timestamp
@@ -165,12 +173,19 @@ func TestRecentTraces_Limit(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.RecentTraces(w, req)
 
-	var entries []traceEntry
-	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
+	var resp struct {
+		Traces     []traceEntry `json:"traces"`
+		TotalCount int          `json:"total_count"`
+		NextCursor string       `json:"next_cursor,omitempty"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if len(entries) > 1 {
-		t.Errorf("expected at most 1 entry, got %d", len(entries))
+	if len(resp.Traces) > 1 {
+		t.Errorf("expected at most 1 entry, got %d", len(resp.Traces))
+	}
+	if resp.TotalCount > 1 && resp.NextCursor == "" {
+		t.Error("expected next_cursor when total_count > limit")
 	}
 }
 
@@ -185,10 +200,14 @@ func TestRecentTraces_FailuresOnlyAndFailureSource(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var entries []traceEntry
-	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
+	var resp struct {
+		Traces     []traceEntry `json:"traces"`
+		TotalCount int          `json:"total_count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
+	entries := resp.Traces
 	if len(entries) == 0 {
 		t.Fatal("expected at least one failed trace entry")
 	}

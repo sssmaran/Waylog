@@ -115,7 +115,9 @@ const traceSummaryOutputSchema = `{
 const failuresInputSchema = `{
   "type": "object",
   "properties": {
-    "tier": { "type": "string" }
+    "tier": { "type": "string" },
+    "limit": { "type": "integer", "description": "Max results (default 100, max 1000)" },
+    "offset": { "type": "integer", "description": "Skip N results (default 0)" }
   },
   "additionalProperties": false
 }`
@@ -137,16 +139,20 @@ const failuresOutputSchema = `{
         },
         "additionalProperties": false
       }
-    }
+    },
+    "total_count": { "type": "integer" },
+    "has_more": { "type": "boolean" }
   },
-  "required": ["schema_version", "failures"],
+  "required": ["schema_version", "failures", "total_count", "has_more"],
   "additionalProperties": false
 }`
 
 const patternsInputSchema = `{
   "type": "object",
   "properties": {
-    "window": { "type": "string" }
+    "window": { "type": "string" },
+    "limit": { "type": "integer", "description": "Max results (default 100, max 1000)" },
+    "offset": { "type": "integer", "description": "Skip N results (default 0)" }
   },
   "additionalProperties": false
 }`
@@ -168,9 +174,11 @@ const patternsOutputSchema = `{
         },
         "additionalProperties": false
       }
-    }
+    },
+    "total_count": { "type": "integer" },
+    "has_more": { "type": "boolean" }
   },
-  "required": ["schema_version", "patterns"],
+  "required": ["schema_version", "patterns", "total_count", "has_more"],
   "additionalProperties": false
 }`
 
@@ -180,7 +188,9 @@ const blastInputSchema = `{
     "error_code": { "type": "string" },
     "include_services": { "type": "boolean" },
     "top_users": { "type": "integer" },
-    "by_tier": { "type": "boolean" }
+    "by_tier": { "type": "boolean" },
+    "limit": { "type": "integer", "description": "Max results (default 100, max 1000)" },
+    "offset": { "type": "integer", "description": "Skip N results (default 0)" }
   },
   "required": ["error_code"],
   "additionalProperties": false
@@ -228,9 +238,11 @@ const blastOutputSchema = `{
         "additionalProperties": false
       }
     },
-    "feature_flags": { "type": "array", "items": { "type": "string" } }
+    "feature_flags": { "type": "array", "items": { "type": "string" } },
+    "total_count": { "type": "integer" },
+    "has_more": { "type": "boolean" }
   },
-  "required": ["schema_version", "error_code", "affected_requests", "affected_users", "vip_users", "severity_score"],
+  "required": ["schema_version", "error_code", "affected_requests", "affected_users", "vip_users", "severity_score", "total_count", "has_more"],
   "additionalProperties": false
 }`
 

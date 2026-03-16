@@ -12,7 +12,9 @@ import (
 )
 
 type failuresInput struct {
-	Tier string `json:"tier"`
+	Tier   string `json:"tier"`
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
 }
 
 type failureEntry struct {
@@ -26,6 +28,8 @@ type failureEntry struct {
 type failuresOutput struct {
 	SchemaVersion string         `json:"schema_version"`
 	Failures      []failureEntry `json:"failures"`
+	TotalCount    int            `json:"total_count"`
+	HasMore       bool           `json:"has_more"`
 }
 
 func handleFailures(ctx context.Context, store Store, params json.RawMessage) (any, error) {
@@ -91,16 +95,21 @@ func handleFailures(ctx context.Context, store Store, params json.RawMessage) (a
 		})
 	}
 
-	return failuresOutput{SchemaVersion: "1.0", Failures: out}, nil
+	page, totalCount, hasMore := applyPagination(out, input.Limit, input.Offset)
+	return failuresOutput{SchemaVersion: "1.0", Failures: page, TotalCount: totalCount, HasMore: hasMore}, nil
 }
 
 type patternsInput struct {
 	Window string `json:"window,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
 }
 
 type patternsOutput struct {
 	SchemaVersion string                    `json:"schema_version"`
 	Patterns      []analysis.FailurePattern `json:"patterns"`
+	TotalCount    int                       `json:"total_count"`
+	HasMore       bool                      `json:"has_more"`
 }
 
 func handleFailurePatterns(ctx context.Context, store Store, params json.RawMessage) (any, error) {
@@ -125,12 +134,14 @@ func handleFailurePatterns(ctx context.Context, store Store, params json.RawMess
 		for i := range patterns {
 			patterns[i].ErrorCode = errorCodeForID(g, patterns[i].ErrorCode)
 		}
-		return patternsOutput{SchemaVersion: "1.0", Patterns: patterns}, nil
+		page, totalCount, hasMore := applyPagination(patterns, input.Limit, input.Offset)
+		return patternsOutput{SchemaVersion: "1.0", Patterns: page, TotalCount: totalCount, HasMore: hasMore}, nil
 	}
 
 	g := store.Snapshot()
 	patterns := analysis.DetectFailurePatterns(g)
-	return patternsOutput{SchemaVersion: "1.0", Patterns: patterns}, nil
+	page, totalCount, hasMore := applyPagination(patterns, input.Limit, input.Offset)
+	return patternsOutput{SchemaVersion: "1.0", Patterns: page, TotalCount: totalCount, HasMore: hasMore}, nil
 }
 
 type blastInput struct {
@@ -138,6 +149,8 @@ type blastInput struct {
 	IncludeServices bool   `json:"include_services,omitempty"`
 	TopUsers        int    `json:"top_users,omitempty"`
 	ByTier          bool   `json:"by_tier,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	Offset          int    `json:"offset,omitempty"`
 }
 
 type blastService struct {
@@ -166,6 +179,8 @@ type blastOutput struct {
 	Tiers            []blastTier    `json:"tiers,omitempty"`
 	TopUsers         []blastUser    `json:"top_users,omitempty"`
 	FeatureFlags     []string       `json:"feature_flags,omitempty"`
+	TotalCount       int            `json:"total_count"`
+	HasMore          bool           `json:"has_more"`
 }
 
 func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage) (any, error) {
@@ -250,7 +265,13 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 		float64(len(services))*weightService
 
 	if input.IncludeServices {
-		out.Services = mapCountToSortedServices(services)
+		allServices := mapCountToSortedServices(services)
+		out.TotalCount = len(allServices)
+		var svcHasMore bool
+		out.Services, _, svcHasMore = applyPagination(allServices, input.Limit, input.Offset)
+		out.HasMore = svcHasMore
+	} else {
+		out.TotalCount = out.AffectedRequests
 	}
 	if input.ByTier {
 		out.Tiers = mapCountToSortedTiers(tiers)

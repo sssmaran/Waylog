@@ -107,7 +107,8 @@ paths:
       summary: Search raw event log
       description: |
         Searches the append-only event log by filters.
-        At least one filter is required. Returns matching events.
+        At least one filter is required. Uses SQLite cold store when SQLITE_PATH
+        is configured, with JSONL event log fallback.
       parameters:
         - in: query
           name: trace_id
@@ -143,6 +144,11 @@ paths:
             type: integer
             default: 50
             maximum: 200
+        - in: query
+          name: cursor
+          schema:
+            type: string
+          description: Opaque cursor for keyset pagination (from previous response next_cursor)
       responses:
         '200':
           description: Search results
@@ -157,6 +163,15 @@ paths:
                       $ref: '#/components/schemas/WideEvent'
                   count:
                     type: integer
+                  total_count:
+                    type: integer
+                    description: Total matching events (across all pages)
+                  next_cursor:
+                    type: string
+                    description: Cursor for next page (absent on last page)
+                  data_source:
+                    type: string
+                    enum: [sqlite, event_log_fallback]
         '400':
           description: No filters provided or invalid time format
         '503':
@@ -211,7 +226,7 @@ paths:
   /v1/traces/recent:
     get:
       summary: Recent traces
-      description: Returns a list of recent trace summaries, ordered by time descending.
+      description: Returns recent trace summaries ordered by time descending with cursor pagination.
       parameters:
         - in: query
           name: limit
@@ -229,34 +244,49 @@ paths:
             type: boolean
             default: false
           description: When true, returns only failed requests.
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+          description: Opaque cursor for pagination (from previous response next_cursor)
       responses:
         '200':
-          description: Array of recent trace summaries
+          description: Paginated trace summaries
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    trace_id:
-                      type: string
-                    service:
-                      type: string
-                    failure_service:
-                      type: string
-                      description: First failing span service for the request when available.
-                    success:
-                      type: boolean
-                    status_code:
-                      type: integer
-                    latency_ms:
-                      type: integer
-                    event_name:
-                      type: string
-                    timestamp:
-                      type: string
-                      format: date-time
+                type: object
+                properties:
+                  traces:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        trace_id:
+                          type: string
+                        service:
+                          type: string
+                        failure_service:
+                          type: string
+                          description: First failing span service for the request when available.
+                        success:
+                          type: boolean
+                        status_code:
+                          type: integer
+                        latency_ms:
+                          type: integer
+                        event_name:
+                          type: string
+                        timestamp:
+                          type: string
+                          format: date-time
+                  total_count:
+                    type: integer
+                    description: Total matching traces in graph
+                  next_cursor:
+                    type: string
+                    description: Cursor for next page (absent on last page)
         '503':
           description: Service Unavailable (graph not ready)
 

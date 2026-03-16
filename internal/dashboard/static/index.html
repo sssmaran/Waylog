@@ -1866,7 +1866,7 @@
               "/v1/traces/recent?limit=" +
                 encodeURIComponent(String(currentTraceLimit())),
             );
-            const traces = Array.isArray(data) ? data : [];
+            const traces = Array.isArray(data) ? data : (Array.isArray(data.traces) ? data.traces : []);
             renderTraces(traces);
           } catch (e) {
             console.error("Traces fetch error:", e);

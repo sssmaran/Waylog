@@ -557,6 +557,17 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 
 	limit := parseBoundedPositiveInt(q, "limit", 50, 200)
 
+	cursorStr := q.Get("cursor")
+	var cursorID int64
+	if cursorStr != "" {
+		var err error
+		cursorID, err = decodeRowIDCursor(cursorStr)
+		if err != nil {
+			http.Error(w, "invalid cursor", http.StatusBadRequest)
+			return
+		}
+	}
+
 	var startTime, endTime time.Time
 	if v := q.Get("start"); v != "" {
 		t, err := parseFlexibleTime(v)
@@ -577,7 +588,7 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 
 	// Prefer cold store (SQLite) over JSONL scan
 	if s.coldStore != nil {
-		results, err := s.coldStore.SearchEvents(coldstore.SearchFilter{
+		page, err := s.coldStore.SearchEvents(coldstore.SearchFilter{
 			TraceID:   traceID,
 			UserID:    userID,
 			Service:   service,
@@ -585,6 +596,7 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 			Start:     startTime,
 			End:       endTime,
 			Limit:     limit,
+			Cursor:    cursorID,
 		})
 		if err != nil {
 			slog.Error("cold store search failed", "err", err)
@@ -594,20 +606,32 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			// Fall through to JSONL fallback
 		} else {
-			if results == nil {
-				results = []coldstore.SearchResult{}
+			if page.Results == nil {
+				page.Results = []coldstore.SearchResult{}
+			}
+			resp := map[string]any{
+				"events":      page.Results,
+				"count":       len(page.Results),
+				"total_count": page.TotalCount,
+				"data_source": "sqlite",
+			}
+			if page.NextCursor > 0 {
+				resp["next_cursor"] = encodeRowIDCursor(page.NextCursor)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
-				"events": results,
-				"count":  len(results),
-			})
+			json.NewEncoder(w).Encode(resp)
 			return
 		}
 	}
 
 	if s.EventLogDir == "" {
 		http.Error(w, "event search not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// JSONL fallback does not support cursor pagination.
+	if cursorID > 0 {
+		http.Error(w, "cursor pagination not supported for event log fallback", http.StatusBadRequest)
 		return
 	}
 
@@ -653,11 +677,14 @@ func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	resp := map[string]any{
+		"events":      results,
+		"count":       len(results),
+		"total_count": len(results),
+		"data_source": "event_log_fallback",
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"events": results,
-		"count":  len(results),
-	})
+	json.NewEncoder(w).Encode(resp)
 }
 
 // Capabilities handles GET /v1/capabilities.
@@ -1084,7 +1111,7 @@ type traceEntry struct {
 	Timestamp      time.Time `json:"timestamp"`
 }
 
-// RecentTraces handles GET /v1/traces/recent?limit=<n>.
+// RecentTraces handles GET /v1/traces/recent?limit=<n>&cursor=<cursor>.
 func (s *Server) RecentTraces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1095,18 +1122,43 @@ func (s *Server) RecentTraces(w http.ResponseWriter, r *http.Request) {
 	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
 	failuresOnly := parseOptionalBool(q, "failures_only")
 
+	cursorStr := q.Get("cursor")
+	var cursorTS time.Time
+	var cursorTraceID string
+	if cursorStr != "" {
+		var err error
+		cursorTS, cursorTraceID, err = decodeTimeCursor(cursorStr)
+		if err != nil {
+			http.Error(w, "invalid cursor", http.StatusBadRequest)
+			return
+		}
+	}
+
 	snap, ok := s.snapshotOrServiceUnavailable(w)
 	if !ok {
 		return
 	}
-	entries := recentTracesFromGraph(snap, limit, failuresOnly)
+	entries, totalCount, nextTS, nextTraceID := recentTracesFromGraphPaginated(snap, limit, failuresOnly, cursorTS, cursorTraceID)
+
+	resp := map[string]any{
+		"traces":      entries,
+		"total_count": totalCount,
+	}
+	if !nextTS.IsZero() {
+		resp["next_cursor"] = encodeTimeCursor(nextTS, nextTraceID)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(entries)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func recentTracesFromGraph(g *core.Graph, limit int, failuresOnly bool) []traceEntry {
-	var entries []traceEntry
+	entries, _, _, _ := recentTracesFromGraphPaginated(g, limit, failuresOnly, time.Time{}, "")
+	return entries
+}
+
+func recentTracesFromGraphPaginated(g *core.Graph, limit int, failuresOnly bool, cursorTS time.Time, cursorTraceID string) ([]traceEntry, int, time.Time, string) {
+	var all []traceEntry
 	for reqID, n := range g.Nodes {
 		if n.Type != core.NodeRequest {
 			continue
@@ -1137,17 +1189,41 @@ func recentTracesFromGraph(g *core.Graph, limit int, failuresOnly bool) []traceE
 		if failed {
 			e.FailureService = requestFailureService(g, reqID, n)
 		}
-		entries = append(entries, e)
+		all = append(all, e)
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Timestamp.After(entries[j].Timestamp)
+	// Sort by (Timestamp DESC, TraceID DESC) for stable ordering.
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].Timestamp.Equal(all[j].Timestamp) {
+			return all[i].Timestamp.After(all[j].Timestamp)
+		}
+		return all[i].TraceID > all[j].TraceID
 	})
 
-	if len(entries) > limit {
-		entries = entries[:limit]
+	totalCount := len(all)
+
+	// Apply cursor: skip entries at or "before" cursor in DESC order.
+	if !cursorTS.IsZero() {
+		idx := 0
+		for idx < len(all) {
+			e := all[idx]
+			if e.Timestamp.Before(cursorTS) || (e.Timestamp.Equal(cursorTS) && e.TraceID < cursorTraceID) {
+				break
+			}
+			idx++
+		}
+		all = all[idx:]
 	}
-	return entries
+
+	var nextTS time.Time
+	var nextTraceID string
+	if len(all) > limit {
+		all = all[:limit]
+		last := all[limit-1]
+		nextTS = last.Timestamp
+		nextTraceID = last.TraceID
+	}
+	return all, totalCount, nextTS, nextTraceID
 }
 
 // overviewPayload computes the overview data for a given window and trace limit.
