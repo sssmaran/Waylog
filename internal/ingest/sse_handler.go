@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// writeSSEHeaders sets the standard headers for an SSE response.
+func writeSSEHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+}
+
 // SSEStream handles GET /v1/stream/dashboard.
 func (s *Server) SSEStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
@@ -24,10 +32,7 @@ func (s *Server) SSEStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.sseHub.Unsubscribe(id)
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
+	writeSSEHeaders(w)
 
 	var eventID atomic.Uint64
 	writeEvent := func(topic string, data []byte) {

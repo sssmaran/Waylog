@@ -91,6 +91,7 @@ func main() {
 	trustProxy := config.GetenvBool("WAYLOG_TRUST_PROXY", false)
 
 	dedupCache := ingest.NewDedupCache()
+	planStore := ingest.NewPlanStore()
 
 	reg := tools.NewRegistry()
 	if err := tools.RegisterGraphTools(reg); err != nil {
@@ -148,6 +149,7 @@ func main() {
 		ColdWriter:          coldWriter,
 		ColdStore:           coldDB,
 		APIKey:              apiKey,
+		PlanStore:           planStore,
 	})
 
 	// SSE hub for real-time dashboard updates
@@ -246,16 +248,19 @@ func main() {
 	mux.HandleFunc("/v1/topology", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Topology))
 	mux.HandleFunc("/v1/blast_radius", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.BlastRadius))
 	mux.HandleFunc("/v1/stream/dashboard", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.SSEStream))
+	mux.HandleFunc("/v1/stream/plans/", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.PlanStream))
 
 	// Agent-authenticated endpoints: CORS outermost, then auth
 	if agentKey != "" {
 		mux.HandleFunc("/v1/tools", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.Tools)))
 		mux.HandleFunc("/v1/tools/", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.ToolCall)))
 		mux.HandleFunc("/v1/ask", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.Ask)))
+		mux.HandleFunc("/v1/plans/execute", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.PlanExecute)))
 	} else {
 		mux.HandleFunc("/v1/tools", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Tools))
 		mux.HandleFunc("/v1/tools/", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.ToolCall))
 		mux.HandleFunc("/v1/ask", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.Ask))
+		mux.HandleFunc("/v1/plans/execute", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.PlanExecute))
 	}
 
 	if graphUI {
@@ -508,6 +513,8 @@ func main() {
 	} else {
 		slog.Info("ingest shutdown complete")
 	}
+
+	planStore.Close()
 
 	if coldWriter != nil {
 		coldWriter.Stop()

@@ -123,6 +123,7 @@ type Server struct {
 	trustProxy          bool
 	coldWriter          *coldstore.BatchWriter
 	coldStore           *coldstore.Store
+	planStore           *PlanStore
 
 	// Dashboard rate limiter: per-IP sliding window
 	rateMu         sync.Mutex
@@ -189,6 +190,7 @@ type ServerConfig struct {
 	TrustProxy          bool
 	ColdWriter          *coldstore.BatchWriter
 	ColdStore           *coldstore.Store
+	PlanStore           *PlanStore
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -224,6 +226,7 @@ func NewServer(cfg ServerConfig) *Server {
 		trustProxy:          cfg.TrustProxy,
 		coldWriter:          cfg.ColdWriter,
 		coldStore:           cfg.ColdStore,
+		planStore:           cfg.PlanStore,
 		rateLimit:           map[string][]time.Time{},
 		replayStatus:        "none",
 	}
@@ -2588,4 +2591,272 @@ func (s *Server) DashboardExplain(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// PlanExecute handles POST /v1/plans/execute — deterministic plan execution.
+func (s *Server) PlanExecute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", false, APIMeta{RequestID: RequestIDFromContext(r.Context())})
+		return
+	}
+
+	reqID := RequestIDFromContext(r.Context())
+	start := time.Now()
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, s.maxBodyBytes))
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, "BAD_REQUEST", "failed to read body", false, APIMeta{RequestID: reqID})
+		return
+	}
+
+	// Idempotency state — set by dedup block, read by completion paths
+	var dedupIsExecutor, dedupCompleted bool
+
+	idempKey := r.Header.Get("Idempotency-Key")
+	if idempKey != "" && s.dedupCache != nil {
+		principal := s.dedupPrincipal(r)
+		entry, conflict, aborted := s.dedupCache.AcquireOrWait(r.Context(), r.Method, r.URL.Path, principal, idempKey, body)
+		if aborted {
+			respondError(w, r, http.StatusServiceUnavailable, "TIMEOUT", "request timeout waiting for idempotent result", true, APIMeta{RequestID: reqID})
+			return
+		}
+		if conflict {
+			respondError(w, r, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "same idempotency key with different body", false, APIMeta{RequestID: reqID})
+			return
+		}
+		if entry != nil {
+			s.replayDedupEntry(w, r, entry, reqID)
+			return
+		}
+		// Safety net: if we return before explicitly calling Complete,
+		// release the inflight slot so waiters don't hang forever.
+		dedupIsExecutor = true
+		defer func() {
+			if !dedupCompleted {
+				principal := s.dedupPrincipal(r)
+				s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body,
+					http.StatusInternalServerError, nil, &APIError{Code: "INTERNAL", Message: "executor failed before completion", Retryable: true}, 0)
+			}
+		}()
+	}
+
+	var req struct {
+		Steps []PlanStep `json:"steps"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		if dedupIsExecutor {
+			dedupCompleted = true
+			s.dedupCache.Complete(r.Method, r.URL.Path, s.dedupPrincipal(r), idempKey, body,
+				http.StatusBadRequest, nil, &APIError{Code: "BAD_REQUEST", Message: "invalid JSON: " + err.Error()}, time.Since(start).Milliseconds())
+		}
+		respondError(w, r, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON: "+err.Error(), false, APIMeta{RequestID: reqID})
+		return
+	}
+
+	registry := s.askRegistry
+	if registry == nil {
+		if dedupIsExecutor {
+			dedupCompleted = true
+			s.dedupCache.Complete(r.Method, r.URL.Path, s.dedupPrincipal(r), idempKey, body,
+				http.StatusInternalServerError, nil, &APIError{Code: "INTERNAL", Message: "tool registry not configured", Retryable: true}, time.Since(start).Milliseconds())
+		}
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL", "tool registry not configured", true, APIMeta{RequestID: reqID})
+		return
+	}
+
+	if errs := ValidatePlan(req.Steps, registry); len(errs) > 0 {
+		msg := strings.Join(errs, "; ")
+		if dedupIsExecutor {
+			dedupCompleted = true
+			s.dedupCache.Complete(r.Method, r.URL.Path, s.dedupPrincipal(r), idempKey, body,
+				http.StatusBadRequest, nil, &APIError{Code: "INVALID_PLAN", Message: msg}, time.Since(start).Milliseconds())
+		}
+		respondError(w, r, http.StatusBadRequest, "INVALID_PLAN", msg, false, APIMeta{RequestID: reqID})
+		return
+	}
+
+	var planID string
+	if s.planStore != nil {
+		planID = s.planStore.Create()
+	}
+
+	result := s.executePlanWithProgress(r.Context(), req.Steps, registry, planID)
+
+	if result.PlanID != "" {
+		w.Header().Set("X-Plan-ID", result.PlanID)
+	}
+
+	dur := time.Since(start).Milliseconds()
+	meta := APIMeta{RequestID: reqID, DurationMs: dur, DataStatus: "complete"}
+
+	if dedupIsExecutor {
+		dedupCompleted = true
+		s.dedupCache.Complete(r.Method, r.URL.Path, s.dedupPrincipal(r), idempKey, body, http.StatusOK, result, nil, dur)
+	}
+
+	if wantsEnvelope(r) {
+		writeJSON(w, http.StatusOK, result, meta, nil)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
+func (s *Server) executePlanWithProgress(ctx context.Context, steps []PlanStep, registry *tools.Registry, planID string) *PlanResult {
+	outputs := make(map[string]json.RawMessage)
+	result := &PlanResult{
+		PlanID: planID,
+		Steps:  make([]PlanStepResult, 0, len(steps)),
+		Total:  len(steps),
+	}
+	if planID == "" {
+		result.PlanID = generatePlanID()
+	}
+
+	for i, step := range steps {
+		if s.planStore != nil && planID != "" {
+			startData, _ := json.Marshal(map[string]any{"index": i, "id": step.ID, "tool": step.Tool})
+			s.planStore.Publish(planID, PlanEvent{Type: "step_start", Data: startData})
+		}
+
+		stepResult := PlanStepResult{ID: step.ID, Index: i, Tool: step.Tool}
+		stepStart := time.Now()
+
+		params := step.Params
+		if len(params) == 0 {
+			params = json.RawMessage(`{}`)
+		}
+		refs, err := FindRefs(params)
+		if err == nil && len(refs) > 0 {
+			params, err = ResolveParams(params, refs, outputs)
+		}
+		if err != nil {
+			stepResult.DurationMs = time.Since(stepStart).Milliseconds()
+			stepResult.Error = &PlanStepError{Code: "REF_RESOLVE_FAILED", Message: err.Error()}
+			s.haltPlan(result, stepResult, i, planID)
+			return result
+		}
+
+		toolResult, err := registry.Call(ctx, s.store, step.Tool, params)
+		stepResult.DurationMs = time.Since(stepStart).Milliseconds()
+
+		if err != nil {
+			stepErr := &PlanStepError{Code: "TOOL_ERROR", Message: err.Error()}
+			if te, ok := tools.AsToolError(err); ok {
+				stepErr.Code = te.Code
+				stepErr.Retryable = te.Retryable
+			}
+			stepResult.Error = stepErr
+			s.haltPlan(result, stepResult, i, planID)
+			return result
+		}
+
+		stepResult.Result = toolResult
+		result.Steps = append(result.Steps, stepResult)
+		raw, _ := json.Marshal(toolResult)
+		outputs[step.ID] = json.RawMessage(raw)
+
+		s.publishStepComplete(planID, stepResult)
+	}
+
+	result.Completed = len(steps)
+	result.Status = "complete"
+	s.completePlan(planID, result)
+	return result
+}
+
+func (s *Server) haltPlan(result *PlanResult, stepResult PlanStepResult, i int, planID string) {
+	result.Steps = append(result.Steps, stepResult)
+	haltIdx := i
+	result.HaltedAt = &haltIdx
+	result.Error = stepResult.Error
+	result.Completed = i
+	result.Status = statusForHalt(i)
+	s.publishStepComplete(planID, stepResult)
+	s.completePlan(planID, result)
+}
+
+func (s *Server) publishStepComplete(planID string, sr PlanStepResult) {
+	if s.planStore == nil || planID == "" {
+		return
+	}
+	data := map[string]any{
+		"index":       sr.Index,
+		"id":          sr.ID,
+		"tool":        sr.Tool,
+		"duration_ms": sr.DurationMs,
+	}
+	if sr.Error != nil {
+		data["status"] = "error"
+		data["error"] = map[string]any{"code": sr.Error.Code, "message": sr.Error.Message}
+	} else {
+		data["status"] = "ok"
+	}
+	raw, _ := json.Marshal(data)
+	s.planStore.Publish(planID, PlanEvent{Type: "step_complete", Data: raw})
+}
+
+func (s *Server) completePlan(planID string, result *PlanResult) {
+	if s.planStore == nil || planID == "" {
+		return
+	}
+	s.planStore.Complete(planID, result)
+}
+
+// PlanStream handles GET /v1/stream/plans/{id} — SSE progress stream.
+func (s *Server) PlanStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	planID := strings.TrimPrefix(r.URL.Path, "/v1/stream/plans/")
+	if planID == "" {
+		http.Error(w, "plan ID required", http.StatusBadRequest)
+		return
+	}
+
+	if s.planStore == nil {
+		http.Error(w, "plan store not configured", http.StatusNotFound)
+		return
+	}
+
+	ch, subID, ok := s.planStore.Subscribe(planID)
+	if !ok {
+		http.Error(w, "plan not found or expired", http.StatusNotFound)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	writeSSEHeaders(w)
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			s.planStore.Unsubscribe(planID, subID)
+			return
+		case ev, open := <-ch:
+			if !open {
+				return
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, ev.Data)
+			flusher.Flush()
+			if ev.Type == "done" {
+				return
+			}
+		case <-heartbeat.C:
+			fmt.Fprintf(w, ": heartbeat\n\n")
+			flusher.Flush()
+		}
+	}
 }

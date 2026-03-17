@@ -55,8 +55,9 @@ services:
       DASHBOARD_REFRESH_SEC: ${DASHBOARD_REFRESH_SEC:-10}
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://localhost:9090}
       GRAFANA_URL: ${GRAFANA_URL:-http://localhost:3000}
+      SQLITE_PATH: /data/waylog.db
     volumes:
-      - ./data:/data
+      - waylog-data:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/readyz"]
       interval: 5s
@@ -162,6 +163,7 @@ services:
       - grafana-data:/var/lib/grafana
 
 volumes:
+  waylog-data:
   bridge-data:
   prometheus-data:
   grafana-data:

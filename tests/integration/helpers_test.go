@@ -47,6 +47,7 @@ func newIntegrationServer(t *testing.T) (*ingest.Server, *coldstore.Store, *cold
 		ColdWriter:    bw,
 		ColdStore:     cs,
 		SampleRatePct: 100,
+		PlanStore:     ingest.NewPlanStore(),
 	})
 
 	return srv, cs, bw
