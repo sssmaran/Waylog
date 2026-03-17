@@ -81,4 +81,3 @@ func ComputeBlastRadius(g *core.Graph, errorCode string, start, end time.Time) B
 
 	return result
 }
-

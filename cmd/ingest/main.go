@@ -156,7 +156,6 @@ func main() {
 	sseHub := ingest.NewSSEHub(config.GetenvInt("SSE_MAX_CLIENTS", 100))
 	ingestServer.SetSSEHub(sseHub)
 
-
 	// Optional append-only event log
 	eventLogSync := config.GetenvBool("EVENT_LOG_SYNC", true)
 	eventLogMaxMB := int64(config.GetenvInt("EVENT_LOG_MAX_FILE_MB", 50))
