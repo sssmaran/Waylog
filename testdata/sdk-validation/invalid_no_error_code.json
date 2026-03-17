@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "event_name": "checkout.error",
+  "timestamp": "2026-02-17T10:00:00Z",
+  "user": {"id": "u123"},
+  "request": {"trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3", "flow": "checkout", "feature_flags": []},
+  "system": {"service": "checkout", "env": "prod"},
+  "outcome": {"success": false, "status_code": 500, "kind": "http"},
+  "error": {"code": "", "message": "something broke"},
+  "metrics": {"latency_ms": 100}
+}

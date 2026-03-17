@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -44,7 +44,8 @@ func main() {
 	}
 
 	if err := waylog.Init(cfg); err != nil {
-		log.Fatalf("waylog init failed: %v", err)
+		slog.Error("waylog init failed", "err", err)
+		os.Exit(1)
 	}
 
 	paymentURL := config.Getenv("PAYMENT_URL", "http://localhost:9083")
@@ -63,22 +64,23 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Println("checkout-demo listening on :9082")
+		slog.Info("checkout-demo listening", "addr", ":9082")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("checkout-demo server error: %v", err)
+			slog.Error("checkout-demo server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("checkout-demo shutdown signal received")
+	slog.Info("checkout-demo shutdown signal received")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("checkout-demo graceful shutdown failed: %v", err)
+		slog.Error("checkout-demo graceful shutdown failed", "err", err)
 	}
 	if err := waylog.Shutdown(shutdownCtx); err != nil {
-		log.Printf("waylog shutdown failed: %v", err)
+		slog.Error("waylog shutdown failed", "err", err)
 	}
-	log.Println("checkout-demo shutdown complete")
+	slog.Info("checkout-demo shutdown complete")
 }

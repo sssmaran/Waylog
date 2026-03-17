@@ -18,29 +18,29 @@ func NewInMemoryTransport() *InMemoryTransport {
 	return &InMemoryTransport{}
 }
 
-func (t *InMemoryTransport) Send(ctx context.Context, batch []event.WideEvent) error {
+func (t *InMemoryTransport) Send(ctx context.Context, batch []event.WideEvent) (int, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	if t.closed.Load() {
-		return errTransportClosed
+		return 0, errTransportClosed
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.closed.Load() {
-		return errTransportClosed
+		return 0, errTransportClosed
 	}
 
 	if len(batch) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	copyBatch := make([]event.WideEvent, len(batch))
 	copy(copyBatch, batch)
 	t.events = append(t.events, copyBatch...)
-	return nil
+	return len(batch), nil
 }
 
 func (t *InMemoryTransport) Close(ctx context.Context) error {

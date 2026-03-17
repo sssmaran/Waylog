@@ -19,18 +19,19 @@ type traceSpan struct {
 }
 
 type traceGraphOutput struct {
-	TraceID string      `json:"trace_id"`
-	Roots   []traceSpan `json:"roots"`
+	SchemaVersion string      `json:"schema_version"`
+	TraceID       string      `json:"trace_id"`
+	Roots         []traceSpan `json:"roots"`
 }
 
 func handleTraceGraph(ctx context.Context, store Store, params json.RawMessage) (any, error) {
 	_ = ctx
 	var input traceGraphInput
 	if err := json.Unmarshal(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
 	if input.TraceID == "" {
-		return nil, fmt.Errorf("trace_id required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "trace_id required"}
 	}
 
 	g := store.Snapshot()
@@ -42,8 +43,9 @@ func handleTraceGraph(ctx context.Context, store Store, params json.RawMessage) 
 	}
 
 	return traceGraphOutput{
-		TraceID: input.TraceID,
-		Roots:   roots,
+		SchemaVersion: "1.0",
+		TraceID:       input.TraceID,
+		Roots:         roots,
 	}, nil
 }
 
@@ -65,8 +67,8 @@ func buildTraceSpan(g *core.Graph, spanID string, visited map[string]bool) trace
 		out.SpanID = fmt.Sprintf("%v", span)
 	}
 
-	for _, e := range g.Edges {
-		if e.Type == core.EdgeSpanChildOf && e.To == spanID {
+	for _, e := range g.InEdges[spanID] {
+		if e.Type == core.EdgeSpanChildOf {
 			out.Children = append(out.Children, buildTraceSpan(g, e.From, visited))
 		}
 	}
@@ -79,31 +81,33 @@ type traceSummaryInput struct {
 }
 
 type traceSummaryOutput struct {
-	TraceID     string     `json:"trace_id"`
-	RequestID   string     `json:"request_id"`
-	EventName   string     `json:"event_name,omitempty"`
-	Flow        string     `json:"flow,omitempty"`
-	LatencyMs   any        `json:"latency_ms,omitempty"`
-	RootSpanIDs []string   `json:"root_span_ids,omitempty"`
-	Paths       [][]string `json:"paths,omitempty"`
+	SchemaVersion string     `json:"schema_version"`
+	TraceID       string     `json:"trace_id"`
+	RequestID     string     `json:"request_id"`
+	EventName     string     `json:"event_name,omitempty"`
+	Flow          string     `json:"flow,omitempty"`
+	LatencyMs     any        `json:"latency_ms,omitempty"`
+	RootSpanIDs   []string   `json:"root_span_ids,omitempty"`
+	Paths         [][]string `json:"paths,omitempty"`
 }
 
 func handleTraceSummary(ctx context.Context, store Store, params json.RawMessage) (any, error) {
 	_ = ctx
 	var input traceSummaryInput
 	if err := json.Unmarshal(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
 	if input.TraceID == "" {
-		return nil, fmt.Errorf("trace_id required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "trace_id required"}
 	}
 
 	g := store.Snapshot()
 	reqID := core.ID("request", input.TraceID)
 
 	out := traceSummaryOutput{
-		TraceID:   input.TraceID,
-		RequestID: reqID,
+		SchemaVersion: "1.0",
+		TraceID:       input.TraceID,
+		RequestID:     reqID,
 	}
 
 	if req, ok := g.Nodes[reqID]; ok {

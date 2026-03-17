@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -44,7 +44,8 @@ func main() {
 	}
 
 	if err := waylog.Init(cfg); err != nil {
-		log.Fatalf("waylog init failed: %v", err)
+		slog.Error("waylog init failed", "err", err)
+		os.Exit(1)
 	}
 
 	handler := microdemo.NewPaymentHandler()
@@ -61,22 +62,23 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Println("payment-demo listening on :9083")
+		slog.Info("payment-demo listening", "addr", ":9083")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("payment-demo server error: %v", err)
+			slog.Error("payment-demo server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("payment-demo shutdown signal received")
+	slog.Info("payment-demo shutdown signal received")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("payment-demo graceful shutdown failed: %v", err)
+		slog.Error("payment-demo graceful shutdown failed", "err", err)
 	}
 	if err := waylog.Shutdown(shutdownCtx); err != nil {
-		log.Printf("waylog shutdown failed: %v", err)
+		slog.Error("waylog shutdown failed", "err", err)
 	}
-	log.Println("payment-demo shutdown complete")
+	slog.Info("payment-demo shutdown complete")
 }

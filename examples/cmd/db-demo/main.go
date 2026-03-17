@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -44,7 +44,8 @@ func main() {
 	}
 
 	if err := waylog.Init(cfg); err != nil {
-		log.Fatalf("waylog init failed: %v", err)
+		slog.Error("waylog init failed", "err", err)
+		os.Exit(1)
 	}
 
 	handler := microdemo.NewDBHandler()
@@ -61,22 +62,23 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Println("db-demo listening on :9084")
+		slog.Info("db-demo listening", "addr", ":9084")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("db-demo server error: %v", err)
+			slog.Error("db-demo server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("db-demo shutdown signal received")
+	slog.Info("db-demo shutdown signal received")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("db-demo graceful shutdown failed: %v", err)
+		slog.Error("db-demo graceful shutdown failed", "err", err)
 	}
 	if err := waylog.Shutdown(shutdownCtx); err != nil {
-		log.Printf("waylog shutdown failed: %v", err)
+		slog.Error("waylog shutdown failed", "err", err)
 	}
-	log.Println("db-demo shutdown complete")
+	slog.Info("db-demo shutdown complete")
 }

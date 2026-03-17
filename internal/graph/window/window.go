@@ -29,12 +29,12 @@ func FilterByWindow(g *core.Graph, start, end time.Time) *core.Graph {
 		}
 	}
 
-	// 2. Pull in 1-hop neighbors (context)
-	for _, e := range g.Edges {
-		if keep[e.From] {
+	// 2. Pull in 1-hop neighbors via adjacency indexes
+	for id := range keep {
+		for _, e := range g.OutEdges[id] {
 			keep[e.To] = true
 		}
-		if keep[e.To] {
+		for _, e := range g.InEdges[id] {
 			keep[e.From] = true
 		}
 	}
@@ -46,10 +46,10 @@ func FilterByWindow(g *core.Graph, start, end time.Time) *core.Graph {
 		}
 	}
 
-	// 4. Copy edges
+	// 4. Copy edges and rebuild indexes
 	for _, e := range g.Edges {
 		if keep[e.From] && keep[e.To] {
-			out.Edges = append(out.Edges, e)
+			out.AddEdge(e)
 		}
 	}
 

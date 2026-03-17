@@ -45,6 +45,9 @@ func New(cfg Config) *Sampler {
 	return &Sampler{cfg: cfg}
 }
 
+// HappySampleRatePct returns the configured happy-path sample rate percentage.
+func (s *Sampler) HappySampleRatePct() int { return s.cfg.HappySampleRatePct }
+
 func (s *Sampler) ShouldKeep(ev event.WideEvent) bool {
 	// 1) Always keep errors
 	if !ev.Outcome.Success {
@@ -67,15 +70,10 @@ func (s *Sampler) ShouldKeep(ev event.WideEvent) bool {
 
 func (s *Sampler) keepByHash(ev event.WideEvent) bool {
 	h := fnv.New32a()
-	// Pick fields that stay stable and represent "a trace of a thing":
-	// user + event name + error code (if any) + flags
+	// Hash on trace_id so all spans in a request are kept or dropped together.
 	_, _ = h.Write([]byte(s.cfg.Salt))
 	_, _ = h.Write([]byte("|"))
-	_, _ = h.Write([]byte(ev.User.ID))
-	_, _ = h.Write([]byte("|"))
-	_, _ = h.Write([]byte(ev.EventName))
-	_, _ = h.Write([]byte("|"))
-	_, _ = h.Write([]byte(strings.Join(ev.Request.FeatureFlags, ",")))
+	_, _ = h.Write([]byte(ev.Request.TraceID))
 
 	// Convert hash to 0..99
 	bucket := int(h.Sum32() % 100)

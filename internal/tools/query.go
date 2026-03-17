@@ -17,29 +17,30 @@ type queryInput struct {
 }
 
 type queryOutput struct {
-	MatchedRequests int `json:"matched_requests"`
+	SchemaVersion   string `json:"schema_version"`
+	MatchedRequests int    `json:"matched_requests"`
 }
 
 func handleGraphQuery(ctx context.Context, store Store, params json.RawMessage) (any, error) {
 	_ = ctx
 	var input queryInput
 	if err := json.Unmarshal(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
 	if input.Expr == "" {
-		return nil, fmt.Errorf("expr required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "expr required"}
 	}
 	if input.Window == "" {
-		return nil, fmt.Errorf("window required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "window required"}
 	}
 
 	d, err := time.ParseDuration(input.Window)
 	if err != nil {
-		return nil, fmt.Errorf("invalid window: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid window: %v", err)}
 	}
 	pred, err := query.Parse(input.Expr)
 	if err != nil {
-		return nil, fmt.Errorf("query parse error: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("query parse error: %v", err)}
 	}
 
 	end := time.Now()
@@ -52,13 +53,14 @@ func handleGraphQuery(ctx context.Context, store Store, params json.RawMessage) 
 		}
 	})
 
-	return queryOutput{MatchedRequests: matched}, nil
+	return queryOutput{SchemaVersion: "1.0", MatchedRequests: matched}, nil
 }
 
 type diffInput struct {
 	Current  string `json:"current"`
 	Baseline string `json:"baseline"`
 	Offset   string `json:"offset"`
+	Anchor   string `json:"anchor"`
 }
 
 type diffEntry struct {
@@ -69,40 +71,70 @@ type diffEntry struct {
 }
 
 type diffOutput struct {
-	New       []diffEntry `json:"new,omitempty"`
-	Removed   []diffEntry `json:"removed,omitempty"`
-	Increased []diffEntry `json:"increased,omitempty"`
-	Decreased []diffEntry `json:"decreased,omitempty"`
+	SchemaVersion string      `json:"schema_version"`
+	New           []diffEntry `json:"new,omitempty"`
+	Removed       []diffEntry `json:"removed,omitempty"`
+	Increased     []diffEntry `json:"increased,omitempty"`
+	Decreased     []diffEntry `json:"decreased,omitempty"`
+
+	TotalRequestsBefore int   `json:"total_requests_before"`
+	TotalRequestsAfter  int   `json:"total_requests_after"`
+	TotalFailuresBefore int   `json:"total_failures_before"`
+	TotalFailuresAfter  int   `json:"total_failures_after"`
+	LatencyP50Before    int64 `json:"latency_p50_before"`
+	LatencyP50After     int64 `json:"latency_p50_after"`
+	LatencyP95Before    int64 `json:"latency_p95_before"`
+	LatencyP95After     int64 `json:"latency_p95_after"`
+	LatencyP99Before    int64 `json:"latency_p99_before"`
+	LatencyP99After     int64 `json:"latency_p99_after"`
 }
 
 func handleCompareWindows(ctx context.Context, store Store, params json.RawMessage) (any, error) {
 	_ = ctx
 	var input diffInput
 	if err := json.Unmarshal(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
-	if input.Current == "" || input.Baseline == "" || input.Offset == "" {
-		return nil, fmt.Errorf("current, baseline, and offset required")
+	if input.Current == "" || input.Baseline == "" {
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "current and baseline required"}
+	}
+	if input.Anchor == "" && input.Offset == "" {
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "either offset or anchor required"}
+	}
+	if input.Anchor != "" && input.Offset != "" {
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "offset and anchor are mutually exclusive"}
 	}
 
 	currDur, err := time.ParseDuration(input.Current)
 	if err != nil {
-		return nil, fmt.Errorf("invalid current: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid current: %v", err)}
 	}
 	baseDur, err := time.ParseDuration(input.Baseline)
 	if err != nil {
-		return nil, fmt.Errorf("invalid baseline: %w", err)
-	}
-	offDur, err := time.ParseDuration(input.Offset)
-	if err != nil {
-		return nil, fmt.Errorf("invalid offset: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid baseline: %v", err)}
 	}
 
-	now := time.Now()
-	currEnd := now
-	currStart := currEnd.Add(-currDur)
-	baseEnd := currEnd.Add(-offDur)
-	baseStart := baseEnd.Add(-baseDur)
+	var currStart, currEnd, baseStart, baseEnd time.Time
+	if input.Anchor != "" {
+		anchor, parseErr := time.Parse(time.RFC3339, input.Anchor)
+		if parseErr != nil {
+			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid anchor: %v", parseErr)}
+		}
+		currStart = anchor
+		currEnd = anchor.Add(currDur)
+		baseEnd = anchor
+		baseStart = anchor.Add(-baseDur)
+	} else {
+		offDur, parseErr := time.ParseDuration(input.Offset)
+		if parseErr != nil {
+			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid offset: %v", parseErr)}
+		}
+		now := time.Now()
+		currEnd = now
+		currStart = currEnd.Add(-currDur)
+		baseEnd = currEnd.Add(-offDur)
+		baseStart = baseEnd.Add(-baseDur)
+	}
 
 	curr := store.SummarizeWindow(currStart, currEnd)
 	base := store.SummarizeWindow(baseStart, baseEnd)
@@ -110,9 +142,20 @@ func handleCompareWindows(ctx context.Context, store Store, params json.RawMessa
 	g := store.Snapshot()
 
 	return diffOutput{
-		New:       mapDiffEntries(g, diff.New),
-		Removed:   mapDiffEntries(g, diff.Removed),
-		Increased: mapDiffEntries(g, diff.Increased),
-		Decreased: mapDiffEntries(g, diff.Decreased),
+		SchemaVersion:       "1.0",
+		New:                 mapDiffEntries(g, diff.New),
+		Removed:             mapDiffEntries(g, diff.Removed),
+		Increased:           mapDiffEntries(g, diff.Increased),
+		Decreased:           mapDiffEntries(g, diff.Decreased),
+		TotalRequestsBefore: diff.TotalRequestsBefore,
+		TotalRequestsAfter:  diff.TotalRequestsAfter,
+		TotalFailuresBefore: diff.TotalFailuresBefore,
+		TotalFailuresAfter:  diff.TotalFailuresAfter,
+		LatencyP50Before:    diff.LatencyP50Before,
+		LatencyP50After:     diff.LatencyP50After,
+		LatencyP95Before:    diff.LatencyP95Before,
+		LatencyP95After:     diff.LatencyP95After,
+		LatencyP99Before:    diff.LatencyP99Before,
+		LatencyP99After:     diff.LatencyP99After,
 	}, nil
 }

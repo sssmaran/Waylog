@@ -57,11 +57,10 @@ func Build(g *core.Graph, traceID string) (Story, Context, error) {
 	// Find root spans: spans connected to the request that have no parent
 	roots := rootSpanIDs(g, reqID)
 
-	// Build parent → children map
+	// Build parent → children map via InEdges (child_of edges point FROM child TO parent)
 	children := map[string][]string{}
 	for _, e := range g.Edges {
 		if e.Type == core.EdgeSpanChildOf {
-			// e.From = child, e.To = parent
 			children[e.To] = append(children[e.To], e.From)
 		}
 	}
@@ -113,8 +112,8 @@ func rootSpanIDs(g *core.Graph, reqID string) []string {
 	// Find spans connected to this request that have no parent
 	var roots []string
 	seen := map[string]bool{}
-	for _, e := range g.Edges {
-		if e.Type != core.EdgeRequestHasSpan || e.From != reqID {
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type != core.EdgeRequestHasSpan {
 			continue
 		}
 		if seen[e.To] {
@@ -180,12 +179,11 @@ func buildContext(g *core.Graph, reqID string, reqNode core.Node) Context {
 	}
 
 	// Find user node via request_by edge
-	for _, e := range g.Edges {
-		if e.From == reqID && e.Type == core.EdgeRequestBy {
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type == core.EdgeRequestBy {
 			if userNode, ok := g.Nodes[e.To]; ok && userNode.Attr != nil {
 				ctx.UserTier = stringAttr(userNode.Attr["tier"])
 				ctx.UserRegion = stringAttr(userNode.Attr["region"])
-				// Extract user ID from the node ID (format: "user:<id>")
 				ctx.UserID = e.To
 				if uid := stringAttr(userNode.Attr["id"]); uid != "" {
 					ctx.UserID = uid
@@ -196,8 +194,8 @@ func buildContext(g *core.Graph, reqID string, reqNode core.Node) Context {
 	}
 
 	// Find feature flags via used_flag edges
-	for _, e := range g.Edges {
-		if e.From == reqID && e.Type == core.EdgeUsedFlag {
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type == core.EdgeUsedFlag {
 			if flagNode, ok := g.Nodes[e.To]; ok && flagNode.Attr != nil {
 				if name := stringAttr(flagNode.Attr["name"]); name != "" {
 					ctx.Flags = append(ctx.Flags, name)

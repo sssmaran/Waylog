@@ -12,4 +12,7 @@ var (
 
 	// ErrEnvRequired is returned when Config.Env is empty.
 	ErrEnvRequired = errors.New("waylog: env is required")
+
+	// ErrTransportAmbiguous is returned when more than one transport source is configured.
+	ErrTransportAmbiguous = errors.New("waylog: exactly one of IngestURL, Kafka.Brokers, or Transport must be set")
 )

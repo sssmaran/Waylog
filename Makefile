@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race lint ci fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod
 
 help:
 	@echo "Targets:"
@@ -21,6 +21,12 @@ help:
 	@echo "  micro-demo - start 4-service micro-demo (gateway+checkout+db+payment)"
 	@echo "  micro-demo-stop - stop micro-demo processes"
 	@echo "  waylog-live - run TUI dashboard (connects to ingest server)"
+	@echo "  docker-build - build all Docker images"
+	@echo "  docker-up   - start full stack via docker compose"
+	@echo "  docker-down - stop stack (preserve volumes)"
+	@echo "  docker-reset - stop stack and delete volumes"
+	@echo "  docker-dev  - start stack with dev profile (100% sampling)"
+	@echo "  docker-prod - start stack with prod profile (5% sampling)"
 
 build:
 	go build ./cmd/ingest
@@ -59,6 +65,15 @@ fmt:
 vet:
 	go vet ./...
 
+test-race:
+	go test -race ./...
+
+lint:
+	@which golangci-lint > /dev/null 2>&1 && golangci-lint run ./... || echo "golangci-lint not installed, skipping"
+
+ci: fmt vet test-race
+	@echo "CI checks passed"
+
 clean:
 	rm -f ingest checkout waylog bridge api-gateway checkout-demo db-demo payment-demo waylog-live
 
@@ -79,3 +94,21 @@ micro-demo:
 
 micro-demo-stop:
 	./scripts/micro-demo-stop.sh
+
+docker-build:
+	docker compose build
+
+docker-up:
+	docker compose up -d --build
+
+docker-down:
+	docker compose down
+
+docker-reset:
+	docker compose down -v
+
+docker-dev:
+	ENV_FILE=deploy/dev.env docker compose up -d --build
+
+docker-prod:
+	ENV_FILE=deploy/prod.env docker compose up -d --build

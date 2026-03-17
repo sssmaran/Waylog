@@ -14,10 +14,32 @@ type WindowDiff struct {
 	Removed   []DiffEntry
 	Increased []DiffEntry
 	Decreased []DiffEntry
+
+	TotalRequestsBefore int
+	TotalRequestsAfter  int
+	TotalFailuresBefore int
+	TotalFailuresAfter  int
+	LatencyP50Before    int64
+	LatencyP50After     int64
+	LatencyP95Before    int64
+	LatencyP95After     int64
+	LatencyP99Before    int64
+	LatencyP99After     int64
 }
 
 func DiffSummaries(before, after store.WindowSummary) WindowDiff {
-	out := WindowDiff{}
+	out := WindowDiff{
+		TotalRequestsBefore: before.TotalRequests,
+		TotalRequestsAfter:  after.TotalRequests,
+		TotalFailuresBefore: before.TotalFailures,
+		TotalFailuresAfter:  after.TotalFailures,
+		LatencyP50Before:    before.LatencyP50,
+		LatencyP50After:     after.LatencyP50,
+		LatencyP95Before:    before.LatencyP95,
+		LatencyP95After:     after.LatencyP95,
+		LatencyP99Before:    before.LatencyP99,
+		LatencyP99After:     after.LatencyP99,
+	}
 
 	seen := map[string]bool{}
 

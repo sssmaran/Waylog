@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -12,23 +13,27 @@ type Store struct {
 	mu    sync.RWMutex
 	graph *core.Graph
 	//for fast lookups
-	requestFacts   map[string]RequestFacts
-	seenRequests   map[string]struct{}
-	counters       *Counters
-	edgeSet        map[string]struct{} // "from:to:type" for dedup
-	traceToRequest map[string]string   // trace_id -> request node ID
-	traceToSpans   map[string][]string // trace_id -> []span node IDs
+	requestFacts    map[string]RequestFacts
+	seenRequests    map[string]struct{}
+	counters        *Counters
+	edgeSet         map[string]struct{}            // "from:to:type" for dedup
+	traceToRequest  map[string]string              // trace_id -> request node ID
+	traceToSpans    map[string][]string            // trace_id -> []span node IDs
+	errorIndex      map[string]map[string]struct{} // error_code -> set of request IDs
+	errorIndexReady bool
 }
 
 func NewStore() *Store {
 	return &Store{
-		graph:          core.New(),
-		requestFacts:   map[string]RequestFacts{},
-		seenRequests:   map[string]struct{}{},
-		counters:       NewCounters(),
-		edgeSet:        map[string]struct{}{},
-		traceToRequest: map[string]string{},
-		traceToSpans:   map[string][]string{},
+		graph:           core.New(),
+		requestFacts:    map[string]RequestFacts{},
+		seenRequests:    map[string]struct{}{},
+		counters:        NewCounters(),
+		edgeSet:         map[string]struct{}{},
+		traceToRequest:  map[string]string{},
+		traceToSpans:    map[string][]string{},
+		errorIndex:      map[string]map[string]struct{}{},
+		errorIndexReady: true,
 	}
 }
 
@@ -72,7 +77,8 @@ func (s *Store) Merge(g *core.Graph) {
 		}
 		s.graph.Nodes[id] = existing
 	}
-	// Merge edges (deduplicated)
+	// Merge edges (deduplicated); collect FailedWith edges for deferred error index update
+	var failedEdges []core.Edge
 	for _, e := range g.Edges {
 		key := e.From + ":" + e.To + ":" + string(e.Type)
 		if _, exists := s.edgeSet[key]; exists {
@@ -80,6 +86,18 @@ func (s *Store) Merge(g *core.Graph) {
 		}
 		s.edgeSet[key] = struct{}{}
 		s.graph.Edges = append(s.graph.Edges, e)
+		if s.graph.OutEdges == nil {
+			s.graph.OutEdges = make(map[string][]core.Edge)
+		}
+		if s.graph.InEdges == nil {
+			s.graph.InEdges = make(map[string][]core.Edge)
+		}
+		s.graph.OutEdges[e.From] = append(s.graph.OutEdges[e.From], e)
+		s.graph.InEdges[e.To] = append(s.graph.InEdges[e.To], e)
+
+		if e.Type == core.EdgeFailedWith {
+			failedEdges = append(failedEdges, e)
+		}
 	}
 
 	// Update trace indexes
@@ -100,21 +118,31 @@ func (s *Store) Merge(g *core.Graph) {
 		if n.Type != core.NodeRequest {
 			continue
 		}
-		if _, seen := s.seenRequests[id]; seen {
-			continue
-		}
 
-		facts, ok := extractRequestFactsFromGraph(g, id)
+		// Always extract from the merged graph (not the delta)
+		facts, ok := extractRequestFactsFromGraph(s.graph, id)
 		if !ok {
 			continue
 		}
 
-		// Mark seen + store facts
+		if _, seen := s.seenRequests[id]; seen {
+			oldFacts := s.requestFacts[id]
+			if !factsEqual(oldFacts, facts) {
+				s.reverseFactsFromCountersLocked(oldFacts)
+				s.applyFactsToCountersLocked(facts)
+			}
+			s.requestFacts[id] = facts
+			continue
+		}
+
 		s.seenRequests[id] = struct{}{}
 		s.requestFacts[id] = facts
-
-		// Update all-time counters (optional but cheap)
 		s.applyFactsToCountersLocked(facts)
+	}
+
+	// Process error index with fully-populated traceToRequest
+	for _, e := range failedEdges {
+		s.addToErrorIndexLocked(e)
 	}
 }
 
@@ -144,6 +172,63 @@ func (s *Store) applyFactsToCountersLocked(f RequestFacts) {
 
 }
 
+func (s *Store) reverseFactsFromCountersLocked(f RequestFacts) {
+	for _, errID := range f.Errors {
+		s.counters.ErrorCount[errID]--
+		if s.counters.ErrorCount[errID] <= 0 {
+			delete(s.counters.ErrorCount, errID)
+		}
+		for _, svcID := range f.Services {
+			m := s.counters.ServiceErrorCount[svcID]
+			if m != nil {
+				m[errID]--
+				if m[errID] <= 0 {
+					delete(m, errID)
+				}
+				if len(m) == 0 {
+					delete(s.counters.ServiceErrorCount, svcID)
+				}
+			}
+		}
+		for _, flagID := range f.Flags {
+			m := s.counters.FlagErrorCount[flagID]
+			if m != nil {
+				m[errID]--
+				if m[errID] <= 0 {
+					delete(m, errID)
+				}
+				if len(m) == 0 {
+					delete(s.counters.FlagErrorCount, flagID)
+				}
+			}
+		}
+	}
+}
+
+func factsEqual(a, b RequestFacts) bool {
+	return sortedEqual(a.Services, b.Services) &&
+		sortedEqual(a.Errors, b.Errors) &&
+		sortedEqual(a.Flags, b.Flags)
+}
+
+func sortedEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ac := make([]string, len(a))
+	copy(ac, a)
+	bc := make([]string, len(b))
+	copy(bc, b)
+	sort.Strings(ac)
+	sort.Strings(bc)
+	for i := range ac {
+		if ac[i] != bc[i] {
+			return false
+		}
+	}
+	return true
+}
+
 //helper for time-window commands
 // internal/graph/store.go
 
@@ -161,7 +246,7 @@ func mergeNodeTime(dst, src *core.Node) {
 
 // mergeRequestAttrs applies deterministic merge rules for request nodes.
 // - success: AND (any failure makes the request failed)
-// - If incoming is from root span (is_root=true): overwrite status_code, latency_ms, event_name, flow
+// - If incoming is from root span (is_root=true): overwrite status_code, latency_ms, event_name, flow, root_service
 // - error_codes: accumulated as deduplicated []string
 func mergeRequestAttrs(dst, src *core.Node) {
 	if dst.Attr == nil {
@@ -189,6 +274,15 @@ func mergeRequestAttrs(dst, src *core.Node) {
 		}
 		if v, ok := src.Attr["flow"]; ok {
 			dst.Attr["flow"] = v
+		}
+		if v, ok := src.Attr["service"]; ok {
+			dst.Attr["root_service"] = v
+		}
+		if v, ok := src.Attr["http_method"].(string); ok && v != "" {
+			dst.Attr["http_method"] = v
+		}
+		if v, ok := src.Attr["route_template"].(string); ok && v != "" {
+			dst.Attr["route_template"] = v
 		}
 		dst.Attr["is_root"] = true
 	}
@@ -262,7 +356,7 @@ func mergeSpanAttrs(dst, src *core.Node) {
 	enrichKeys := []string{
 		"event_name", "status_code", "success", "latency_ms",
 		"flow", "timestamp", "caller_service", "downstream_service",
-		"service", "error_code",
+		"service", "error_code", "http_method", "route_template",
 	}
 	for _, key := range enrichKeys {
 		if _, hasDst := dst.Attr[key]; !hasDst {
@@ -316,10 +410,12 @@ func (s *Store) Snapshot() *core.Graph {
 	edges := make([]core.Edge, len(s.graph.Edges))
 	copy(edges, s.graph.Edges)
 
-	return &core.Graph{
+	snap := &core.Graph{
 		Nodes: nodes,
 		Edges: edges,
 	}
+	snap.RebuildIndexes()
+	return snap
 }
 
 // RequestIDForTrace returns the request node ID for a given trace ID.
@@ -401,14 +497,21 @@ func (s *Store) rebuildDerivedIndexesLocked() {
 	s.edgeSet = map[string]struct{}{}
 	s.traceToRequest = map[string]string{}
 	s.traceToSpans = map[string][]string{}
+	s.errorIndex = map[string]map[string]struct{}{}
+	s.errorIndexReady = false
 
-	// Rebuild edge set
+	// Rebuild edge set; collect FailedWith for deferred error index update
+	var failedEdges []core.Edge
 	for _, e := range s.graph.Edges {
 		key := e.From + ":" + e.To + ":" + string(e.Type)
 		s.edgeSet[key] = struct{}{}
+		if e.Type == core.EdgeFailedWith {
+			failedEdges = append(failedEdges, e)
+		}
 	}
+	s.graph.RebuildIndexes()
 
-	// Rebuild trace indexes
+	// Rebuild trace indexes (must precede error index for span→request lookup)
 	for id, n := range s.graph.Nodes {
 		traceID, _ := n.Attr["trace_id"].(string)
 		if traceID == "" {
@@ -421,6 +524,12 @@ func (s *Store) rebuildDerivedIndexesLocked() {
 			s.traceToSpans[traceID] = appendUniqueString(s.traceToSpans[traceID], id)
 		}
 	}
+
+	// Now build error index with fully-populated traceToRequest
+	for _, e := range failedEdges {
+		s.addToErrorIndexLocked(e)
+	}
+	s.errorIndexReady = true
 
 	for id, n := range s.graph.Nodes {
 		if n.Type != core.NodeRequest {
@@ -489,6 +598,62 @@ func appendUniqueString(values []string, candidate string) []string {
 	return append(values, candidate)
 }
 
+// addToErrorIndexLocked adds a FailedWith edge to the error index.
+// Must be called with s.mu held.
+func (s *Store) addToErrorIndexLocked(e core.Edge) {
+	errNode, ok := s.graph.Nodes[e.To]
+	if !ok {
+		return
+	}
+	code, _ := errNode.Attr["code"].(string)
+	if code == "" {
+		return
+	}
+
+	// Determine request ID: edge.From is either a request or span node
+	reqID := ""
+	fromNode, ok := s.graph.Nodes[e.From]
+	if !ok {
+		return
+	}
+	switch fromNode.Type {
+	case core.NodeRequest:
+		reqID = e.From
+	case core.NodeSpan:
+		// Look up via traceToRequest
+		traceID, _ := fromNode.Attr["trace_id"].(string)
+		if traceID != "" {
+			reqID = s.traceToRequest[traceID]
+		}
+	}
+	if reqID == "" {
+		return
+	}
+
+	set := s.errorIndex[code]
+	if set == nil {
+		set = map[string]struct{}{}
+		s.errorIndex[code] = set
+	}
+	set[reqID] = struct{}{}
+}
+
+// ErrorIndex returns request IDs affected by a given error code.
+// The bool indicates whether the index is ready (valid).
+func (s *Store) ErrorIndex(errorCode string) ([]string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.errorIndexReady {
+		return nil, false
+	}
+	set := s.errorIndex[errorCode]
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	return out, true
+}
+
 func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bool) {
 	reqNode, ok := g.Nodes[reqID]
 	if !ok || reqNode.Type != core.NodeRequest {
@@ -500,29 +665,62 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 		SeenAt:    reqNode.LastSeen,
 	}
 
-	// Gather neighbors from edges (1-hop around request)
-	for _, e := range g.Edges {
-		var otherID string
-		if e.From == reqID {
-			otherID = e.To
-		} else if e.To == reqID {
-			otherID = e.From
-		} else {
-			continue
+	// Extract attrs from request node
+	if reqNode.Attr != nil {
+		switch v := reqNode.Attr["latency_ms"].(type) {
+		case int64:
+			f.LatencyMs = v
+		case int:
+			f.LatencyMs = int64(v)
+		case float64:
+			f.LatencyMs = int64(v)
 		}
-
-		n, ok := g.Nodes[otherID]
-		if !ok {
-			continue
+		if rs, ok := reqNode.Attr["root_service"].(string); ok {
+			f.RootService = rs
 		}
+	}
 
-		switch n.Type {
-		case core.NodeService:
-			f.Services = append(f.Services, n.ID)
-		case core.NodeError:
-			f.Errors = append(f.Errors, n.ID)
-		case core.NodeFlag:
-			f.Flags = append(f.Flags, n.ID)
+	// Gather neighbors via adjacency indexes.
+	// Store human-readable names/codes (not node IDs) so queries like
+	// error_code=PMT_502 or service=checkout work directly.
+	for _, e := range g.OutEdges[reqID] {
+		if n, ok := g.Nodes[e.To]; ok {
+			switch n.Type {
+			case core.NodeService:
+				if name, _ := n.Attr["name"].(string); name != "" {
+					f.Services = append(f.Services, name)
+				} else {
+					f.Services = append(f.Services, n.ID)
+				}
+			case core.NodeError:
+				if code, _ := n.Attr["code"].(string); code != "" {
+					f.Errors = append(f.Errors, code)
+				} else {
+					f.Errors = append(f.Errors, n.ID)
+				}
+			case core.NodeFlag:
+				f.Flags = append(f.Flags, n.ID)
+			}
+		}
+	}
+	for _, e := range g.InEdges[reqID] {
+		if n, ok := g.Nodes[e.From]; ok {
+			switch n.Type {
+			case core.NodeService:
+				if name, _ := n.Attr["name"].(string); name != "" {
+					f.Services = append(f.Services, name)
+				} else {
+					f.Services = append(f.Services, n.ID)
+				}
+			case core.NodeError:
+				if code, _ := n.Attr["code"].(string); code != "" {
+					f.Errors = append(f.Errors, code)
+				} else {
+					f.Errors = append(f.Errors, n.ID)
+				}
+			case core.NodeFlag:
+				f.Flags = append(f.Flags, n.ID)
+			}
 		}
 	}
 

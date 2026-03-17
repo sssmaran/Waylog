@@ -1,0 +1,2734 @@
+<!doctype html>
+<html lang="en" style="color-scheme: dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <title>Waylog Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      :root {
+        --bg: #0a0a0a;
+        --bg-card: #111;
+        --bg-elevated: #1a1a1a;
+        --fg: #ededed;
+        --fg-secondary: #888;
+        --fg-muted: #666;
+        --border: #333;
+        --border-hover: #444;
+        --blue: #0070f3;
+        --red: #f31260;
+        --green: #17c964;
+        --amber: #f5a623;
+        --radius-card: 8px;
+        --radius-badge: 6px;
+        --radius-inline: 4px;
+        --shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.05), 0 4px 12px rgba(0, 0, 0, 0.4);
+        --font-sans: "Geist", system-ui, -apple-system, sans-serif;
+        --font-mono: "Geist Mono", "SF Mono", monospace;
+      }
+      html {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      body {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 16px 24px 48px;
+      }
+      a {
+        color: var(--blue);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      a:focus-visible,
+      button:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 2px;
+        border-radius: var(--radius-inline);
+      }
+      /* Tab bar */
+      .tab-bar {
+        display: flex;
+        gap: 0;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 24px;
+      }
+      .tab-bar [role="tab"] {
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--fg-secondary);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        font-weight: 500;
+        padding: 8px 16px;
+        cursor: pointer;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      .tab-bar [role="tab"]:hover {
+        color: var(--fg);
+      }
+      .tab-bar [role="tab"][aria-selected="true"] {
+        color: var(--fg);
+        border-bottom-color: var(--blue);
+      }
+      .tab-panel[hidden] { display: none; }
+
+      /* Graph tab */
+      #graph-container {
+        width: 100%;
+        height: 500px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        background: var(--bg-card);
+      }
+      .graph-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .graph-tooltip {
+        position: absolute;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 8px 12px;
+        font-size: 12px;
+        font-family: var(--font-mono);
+        pointer-events: none;
+        z-index: 40;
+        display: none;
+        line-height: 1.6;
+      }
+      .graph-tooltip .tt-label { font-weight: 600; color: var(--fg); }
+      .graph-tooltip .tt-row { color: var(--fg-secondary); }
+      .graph-tooltip .tt-err { color: var(--red); }
+
+      .skip-link {
+        position: absolute;
+        left: -9999px;
+        top: 0;
+        background: var(--blue);
+        color: #fff;
+        padding: 8px 16px;
+        z-index: 100;
+        border-radius: 0 0 var(--radius-inline) 0;
+      }
+      .skip-link:focus {
+        left: 0;
+      }
+      h1 {
+        font-size: 20px;
+        font-weight: 500;
+        margin-bottom: 4px;
+      }
+      h2 {
+        font-size: 15px;
+        font-weight: 500;
+        color: var(--fg-secondary);
+        margin-bottom: 16px;
+        scroll-margin-top: 24px;
+      }
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .section-head h2 {
+        margin-bottom: 0;
+      }
+      .window-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .route-controls {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .window-btn {
+        background: var(--bg-elevated);
+        color: var(--fg-secondary);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 4px 10px;
+        font-size: 12px;
+        font-family: var(--font-mono);
+        cursor: pointer;
+      }
+      .window-btn:hover {
+        color: var(--fg);
+        border-color: var(--border-hover);
+      }
+      .window-btn.active {
+        color: var(--fg);
+        border-color: var(--blue);
+        background: rgba(0, 112, 243, 0.12);
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 24px;
+        flex-wrap: wrap;
+      }
+      .header h1 {
+        margin-bottom: 0;
+      }
+      .header-right {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .sampling-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        font-weight: 500;
+        background: rgba(245, 166, 35, 0.15);
+        color: var(--amber);
+        padding: 2px 8px;
+        border-radius: var(--radius-badge);
+      }
+      .last-update {
+        font-size: 12px;
+        color: var(--fg-muted);
+        font-variant-numeric: tabular-nums;
+        font-family: var(--font-mono);
+      }
+
+      /* Ask drawer layout */
+      #ask-backdrop {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 45;
+      }
+      body.ask-open #ask-backdrop {
+        display: block;
+      }
+      #ask-section {
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: min(500px, 94vw);
+        height: 100vh;
+        padding: 16px;
+        background: var(--bg);
+        border-left: 1px solid var(--border);
+        transform: translateX(100%);
+        transition: transform 0.2s ease;
+        z-index: 50;
+        overflow-y: auto;
+      }
+      body.ask-open #ask-section {
+        transform: translateX(0);
+      }
+      .ask-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .ask-head h2 {
+        margin-bottom: 0;
+      }
+      #ask-close {
+        background: none;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        color: var(--fg-secondary);
+        cursor: pointer;
+        padding: 4px 10px;
+        min-height: 32px;
+      }
+      #ask-close:hover {
+        color: var(--fg);
+        border-color: var(--border-hover);
+      }
+
+      /* Ask panel */
+      .ask-panel {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 16px;
+        box-shadow: var(--shadow);
+        margin-bottom: 24px;
+      }
+      .ask-form {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .ask-input {
+        flex: 1;
+        min-width: 240px;
+        background: var(--bg-elevated);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 10px 12px;
+        font-family: var(--font-sans);
+        font-size: 14px;
+        min-height: 40px;
+      }
+      .ask-input::placeholder {
+        color: var(--fg-muted);
+      }
+      .ask-btn {
+        background: var(--blue);
+        color: #fff;
+        border: 1px solid transparent;
+        border-radius: var(--radius-inline);
+        padding: 10px 14px;
+        font-weight: 500;
+        cursor: pointer;
+        min-height: 40px;
+        min-width: 88px;
+      }
+      .ask-btn[disabled] {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .ask-status {
+        margin-top: 8px;
+        color: var(--fg-secondary);
+        font-size: 12px;
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+        min-height: 18px;
+      }
+      .ask-answer {
+        margin-top: 10px;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 12px;
+        font-family: var(--font-sans);
+        font-size: 13px;
+        line-height: 1.45;
+        min-height: 74px;
+      }
+      .ask-answer .empty {
+        color: var(--fg-muted);
+      }
+      .ask-answer p {
+        margin: 0 0 8px;
+      }
+      .ask-answer p:last-child {
+        margin-bottom: 0;
+      }
+      .ask-answer ul {
+        margin: 0 0 8px 18px;
+        padding: 0;
+      }
+      .ask-answer code {
+        font-family: var(--font-mono);
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 1px 4px;
+        font-size: 12px;
+      }
+      .trace-summary-card {
+        display: grid;
+        gap: 10px;
+      }
+      .trace-summary-title {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .trace-summary-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 6px 10px;
+        align-items: start;
+      }
+      .trace-summary-grid dt {
+        color: var(--fg-muted);
+        font-size: 12px;
+        font-family: var(--font-mono);
+      }
+      .trace-summary-grid dd {
+        margin: 0;
+        word-break: break-word;
+      }
+      .trace-summary-path {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--fg-secondary);
+      }
+      .ask-suggestions {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .ask-suggestion {
+        background: var(--bg-elevated);
+        color: var(--fg-secondary);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 6px 10px;
+        font-size: 12px;
+        font-family: var(--font-mono);
+        cursor: pointer;
+      }
+      .ask-suggestion:hover {
+        color: var(--fg);
+        border-color: var(--border-hover);
+      }
+      .ask-tools {
+        margin-top: 10px;
+      }
+      .ask-tools-title {
+        margin: 0 0 8px;
+        color: var(--fg-secondary);
+        font-size: 12px;
+        font-family: var(--font-mono);
+      }
+      .ask-steps {
+        display: grid;
+        gap: 8px;
+      }
+      .ask-steps .empty {
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        color: var(--fg-muted);
+        font-size: 12px;
+        padding: 10px;
+      }
+      .ask-step {
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        overflow: hidden;
+      }
+      .ask-step summary {
+        list-style: none;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 10px 12px;
+      }
+      .ask-step summary::-webkit-details-marker {
+        display: none;
+      }
+      .ask-step-main {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .ask-step-index {
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .ask-step-tool {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .ask-step-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .ask-step-time {
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      .ask-step-badge {
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-size: 10px;
+        font-family: var(--font-mono);
+        padding: 2px 8px;
+      }
+      .ask-step-badge.ok {
+        background: rgba(0, 200, 83, 0.12);
+        border-color: rgba(0, 200, 83, 0.5);
+        color: #7ee787;
+      }
+      .ask-step-badge.err {
+        background: rgba(255, 69, 58, 0.12);
+        border-color: rgba(255, 69, 58, 0.5);
+        color: #ff7b72;
+      }
+      .ask-step-body {
+        padding: 0 12px 12px;
+        display: grid;
+        gap: 8px;
+      }
+      .ask-step-block-title {
+        color: var(--fg-muted);
+        font-size: 11px;
+        font-family: var(--font-mono);
+        margin-bottom: 4px;
+      }
+      .ask-step-block pre {
+        margin: 0;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        padding: 10px;
+        font-size: 11px;
+        font-family: var(--font-mono);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      /* KPI cards */
+      .kpi-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      .kpi-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 16px;
+        box-shadow: var(--shadow);
+        touch-action: manipulation;
+        min-height: 80px;
+      }
+      .kpi-card .label {
+        font-size: 12px;
+        color: var(--fg-secondary);
+        margin-bottom: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .kpi-card .value {
+        font-size: 24px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        font-family: var(--font-mono);
+      }
+      .kpi-card .unit {
+        font-size: 12px;
+        color: var(--fg-muted);
+        margin-left: 4px;
+        font-weight: 400;
+      }
+      .kpi-card.skeleton .value {
+        background: var(--bg-elevated);
+        border-radius: var(--radius-inline);
+        height: 28px;
+        width: 80px;
+      }
+      .kpi-card.skeleton .label {
+        background: var(--bg-elevated);
+        border-radius: var(--radius-inline);
+        height: 14px;
+        width: 60px;
+      }
+
+      /* Chart */
+      .chart-container {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        padding: 16px;
+        box-shadow: var(--shadow);
+        margin-bottom: 24px;
+        position: relative;
+        height: 300px;
+      }
+      .chart-container canvas {
+        width: 100% !important;
+        height: 100% !important;
+      }
+
+      /* Tables */
+      .table-wrap {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        box-shadow: var(--shadow);
+        margin-bottom: 24px;
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th {
+        text-align: left;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--fg-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+      }
+      th:hover {
+        color: var(--fg);
+      }
+      td {
+        padding: 10px 16px;
+        border-bottom: 1px solid rgba(51, 51, 51, 0.5);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      tbody tr {
+        touch-action: manipulation;
+      }
+      .num {
+        text-align: right;
+        font-family: var(--font-mono);
+        font-size: 13px;
+      }
+      .ellipsis {
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
+
+      /* Status badge */
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        font-weight: 500;
+        padding: 2px 8px;
+        border-radius: var(--radius-badge);
+        min-height: 24px;
+      }
+      .badge-success {
+        background: rgba(23, 201, 100, 0.12);
+        color: var(--green);
+      }
+      .badge-error {
+        background: rgba(243, 18, 96, 0.12);
+        color: var(--red);
+      }
+      .badge-warn {
+        background: rgba(245, 166, 35, 0.12);
+        color: var(--amber);
+      }
+
+      /* Empty state */
+      .empty {
+        padding: 32px;
+        text-align: center;
+        color: var(--fg-muted);
+        font-size: 13px;
+      }
+
+      /* Modal */
+      .modal-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.7);
+        z-index: 50;
+        align-items: center;
+        justify-content: center;
+        overscroll-behavior: contain;
+      }
+      .modal-overlay.open {
+        display: flex;
+      }
+      .modal {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+        max-width: 680px;
+        width: calc(100% - 48px);
+        max-height: 80vh;
+        overflow-y: auto;
+        padding: 24px;
+      }
+      .modal h3 {
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .modal-close {
+        background: none;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-inline);
+        color: var(--fg-secondary);
+        cursor: pointer;
+        padding: 4px 10px;
+        font-size: 13px;
+        min-width: 24px;
+        min-height: 24px;
+        touch-action: manipulation;
+      }
+      .modal-close:hover {
+        color: var(--fg);
+        border-color: var(--border-hover);
+      }
+
+      /* Hop chain */
+      .hop-chain {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+      .hop {
+        position: relative;
+        padding: 12px 16px 12px 32px;
+        border-left: 2px solid var(--border);
+        margin-left: 8px;
+      }
+      .hop::before {
+        content: "";
+        position: absolute;
+        left: -5px;
+        top: 16px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--green);
+        border: 2px solid var(--bg-card);
+      }
+      .hop.fail::before {
+        background: var(--red);
+      }
+      .hop.fail {
+        background: rgba(243, 18, 96, 0.05);
+        border-radius: var(--radius-inline);
+      }
+      .hop.root-cause {
+        background: rgba(243, 18, 96, 0.1);
+        border-left-color: var(--red);
+      }
+      .hop .hop-service {
+        font-weight: 500;
+        margin-bottom: 2px;
+      }
+      .hop .hop-detail {
+        font-size: 12px;
+        color: var(--fg-secondary);
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+      }
+      .hop .hop-error {
+        font-size: 12px;
+        color: var(--red);
+        margin-top: 2px;
+      }
+
+      .context-panel {
+        margin-top: 16px;
+        padding: 12px;
+        background: var(--bg-elevated);
+        border-radius: var(--radius-inline);
+        font-size: 13px;
+      }
+      .context-panel dt {
+        color: var(--fg-secondary);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-top: 8px;
+      }
+      .context-panel dt:first-child {
+        margin-top: 0;
+      }
+      .context-panel dd {
+        color: var(--fg);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        margin-left: 0;
+      }
+
+      /* Reduced motion */
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+          animation: none !important;
+        }
+      }
+      @media not (prefers-reduced-motion: reduce) {
+        .kpi-card {
+          transition:
+            transform 0.15s ease,
+            border-color 0.15s ease;
+        }
+        .kpi-card:hover {
+          transform: translateY(-1px);
+          border-color: var(--border-hover);
+        }
+        tbody tr {
+          transition: background 0.1s ease;
+        }
+        tbody tr:hover {
+          background: var(--bg-elevated);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a href="#main" class="skip-link">Skip to content</a>
+
+    <div class="header">
+      <h1>Waylog Dashboard</h1>
+      <div class="header-right">
+        <span
+          id="sampling-badge"
+          class="sampling-badge"
+          style="display: none"
+          aria-label="Data is sampled"
+        >
+          <span aria-hidden="true">&#9888;</span> Sampled
+        </span>
+        <span class="last-update" id="last-update" aria-live="polite"></span>
+        <a id="link-grafana" href="#" target="_blank" rel="noopener" class="window-btn" style="text-decoration:none;display:none">Grafana</a>
+        <button
+          id="ask-toggle"
+          class="window-btn"
+          type="button"
+          aria-controls="ask-section"
+          aria-expanded="false"
+        >
+          Ask
+        </button>
+      </div>
+    </div>
+
+    <div id="ask-backdrop" aria-hidden="true"></div>
+
+    <main id="main">
+      <!-- Tab bar -->
+      <div class="tab-bar" role="tablist" aria-label="Dashboard views" id="tab-bar">
+        <button role="tab" id="tab-dashboard" aria-selected="true" aria-controls="panel-dashboard" tabindex="0">Dashboard</button>
+        <button role="tab" id="tab-graph" aria-selected="false" aria-controls="panel-graph" tabindex="-1" style="display:none">Graph</button>
+      </div>
+
+      <!-- Ask panel -->
+      <section id="ask-section" aria-label="Ask Waylog">
+        <div class="ask-head">
+          <h2 style="scroll-margin-top: 24px">Ask Waylog</h2>
+          <button id="ask-close" type="button" aria-label="Close Ask panel">
+            Close
+          </button>
+        </div>
+        <div class="ask-panel">
+          <form id="ask-form" class="ask-form">
+            <input
+              id="ask-input"
+              class="ask-input"
+              type="text"
+              maxlength="500"
+              placeholder="Try: trace summary &lt;trace-id&gt; or show top errors"
+              aria-label="Ask Waylog question"
+            />
+            <button id="ask-btn" class="ask-btn" type="submit">Ask</button>
+          </form>
+          <div id="ask-status" class="ask-status" aria-live="polite"></div>
+          <div id="ask-answer" class="ask-answer">
+            <div class="empty">No query yet.</div>
+          </div>
+          <div class="ask-tools">
+            <h3 class="ask-tools-title">Tool Output</h3>
+            <div id="ask-steps" class="ask-steps">
+              <div class="empty">No tool executions for this answer.</div>
+            </div>
+          </div>
+          <div id="ask-suggestions" class="ask-suggestions"></div>
+        </div>
+      </section>
+
+      <!-- Dashboard tab panel -->
+      <div id="panel-dashboard" role="tabpanel" aria-labelledby="tab-dashboard">
+
+      <!-- KPI Cards -->
+      <section aria-label="Key metrics">
+        <h2 id="kpi-heading" style="scroll-margin-top: 24px">
+          Overview
+          <span style="font-weight: 400; color: var(--fg-muted)">(1h)</span>
+        </h2>
+        <div class="kpi-row" id="kpi-row">
+          <div
+            class="kpi-card skeleton"
+            tabindex="0"
+            aria-label="Total requests"
+          >
+            <div class="label">&nbsp;</div>
+            <div class="value"></div>
+          </div>
+          <div class="kpi-card skeleton" tabindex="0" aria-label="Error rate">
+            <div class="label">&nbsp;</div>
+            <div class="value"></div>
+          </div>
+          <div class="kpi-card skeleton" tabindex="0" aria-label="P50 latency">
+            <div class="label">&nbsp;</div>
+            <div class="value"></div>
+          </div>
+          <div class="kpi-card skeleton" tabindex="0" aria-label="P95 latency">
+            <div class="label">&nbsp;</div>
+            <div class="value"></div>
+          </div>
+          <div class="kpi-card skeleton" tabindex="0" aria-label="P99 latency">
+            <div class="label">&nbsp;</div>
+            <div class="value"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Time-series chart -->
+      <section aria-label="Request and error rate chart">
+        <h2 style="scroll-margin-top: 24px">Traffic (1h)</h2>
+        <div class="chart-container">
+          <canvas
+            id="ts-chart"
+            role="img"
+            aria-label="Time-series chart of requests and error rate"
+          ></canvas>
+        </div>
+      </section>
+
+      <!-- Incident triage panels -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem;">
+        <div id="what-changed" style="display:none;padding:12px;background:#1a1a1a;border-radius:8px;border:1px solid #333"></div>
+        <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;" id="failure-origin-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <h2 style="font-size:1rem;font-weight:600;">Most Likely Failure Origin</h2>
+            <label style="font-size:0.75rem;color:var(--fg-secondary);cursor:pointer;">
+              <input type="checkbox" id="follow-latest-toggle" checked> Follow latest
+            </label>
+          </div>
+          <div id="failure-origin-content" style="min-height:80px;">
+            <p style="color:var(--fg-muted);">Waiting for failures...</p>
+          </div>
+        </section>
+      </div>
+
+      <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;margin-bottom:1.5rem;" id="whos-affected-section">
+        <h2 style="font-size:1rem;font-weight:600;margin-bottom:12px;">Who's Affected</h2>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1rem;">
+          <div class="kpi-card"><div class="value" id="blast-requests">--</div><div class="label">Requests</div></div>
+          <div class="kpi-card"><div class="value" id="blast-users">--</div><div class="label">Users</div></div>
+          <div class="kpi-card"><div class="value" id="blast-services">--</div><div class="label">Services</div></div>
+        </div>
+        <div id="mini-topology" style="height:200px;border:1px solid var(--border);border-radius:8px;"></div>
+      </section>
+
+      <!-- Routes table -->
+      <section aria-label="Routes">
+        <div class="section-head">
+          <h2 id="routes-heading" style="scroll-margin-top: 24px">
+            Routes
+            <span
+              id="routes-context-label"
+              style="font-weight: 400; color: var(--fg-muted)"
+              >(1h • all)</span
+            >
+          </h2>
+          <div class="route-controls">
+            <div class="window-toggle" role="group" aria-label="Routes time window">
+              <button class="window-btn" data-route-window="5m" aria-pressed="false">
+                5m
+              </button>
+              <button class="window-btn" data-route-window="30m" aria-pressed="false">
+                30m
+              </button>
+              <button class="window-btn active" data-route-window="1h" aria-pressed="true">
+                1h
+              </button>
+            </div>
+            <div class="window-toggle" role="group" aria-label="Routes filter">
+              <button
+                class="window-btn active"
+                data-route-failures-only="false"
+                aria-pressed="true"
+              >
+                All
+              </button>
+              <button
+                class="window-btn"
+                data-route-failures-only="true"
+                aria-pressed="false"
+              >
+                Failed only
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="routes-table">
+            <thead>
+              <tr>
+                <th>Service</th>
+                <th>Method</th>
+                <th>Route</th>
+                <th class="num">Invocations</th>
+                <th class="num">Errors</th>
+                <th class="num">Error Rate</th>
+                <th class="num">2xx</th>
+                <th class="num">4xx</th>
+                <th class="num">5xx</th>
+                <th class="num">P75 (ms)</th>
+              </tr>
+            </thead>
+            <tbody id="routes-body">
+              <tr>
+                <td colspan="10" class="empty">Loading...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Recent traces table -->
+      <section aria-label="Recent traces">
+        <div class="section-head">
+          <h2 style="scroll-margin-top: 24px">
+            Recent Traces
+            <span
+              id="traces-context"
+              style="font-weight: 400; color: var(--fg-muted)"
+            ></span>
+          </h2>
+          <button
+            id="traces-toggle-limit"
+            class="window-btn"
+            type="button"
+            aria-pressed="false"
+          >
+            See all
+          </button>
+        </div>
+        <div class="table-wrap">
+          <table id="traces-table">
+            <thead>
+              <tr>
+                <th>Trace ID</th>
+                <th>Failure Source</th>
+                <th>Event</th>
+                <th>Status</th>
+                <th class="num">Latency (ms)</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody id="traces-body">
+              <tr>
+                <td colspan="6" class="empty">Loading...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      </div><!-- /panel-dashboard -->
+
+      <!-- Graph tab panel -->
+      <div id="panel-graph" role="tabpanel" aria-labelledby="tab-graph" hidden>
+        <div class="graph-controls">
+          <div class="window-toggle" role="group" aria-label="Graph time window">
+            <button class="window-btn" data-graph-window="5m" aria-pressed="false">5m</button>
+            <button class="window-btn" data-graph-window="30m" aria-pressed="false">30m</button>
+            <button class="window-btn active" data-graph-window="1h" aria-pressed="true">1h</button>
+          </div>
+        </div>
+        <div id="graph-container"></div>
+        <div class="graph-tooltip" id="graph-tooltip"></div>
+      </div>
+    </main>
+
+    <!-- Trace drilldown modal -->
+    <div
+      class="modal-overlay"
+      id="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="modal-title"
+    >
+      <div class="modal" id="modal">
+        <h3>
+          <span id="modal-title">Trace Details</span
+          ><button class="modal-close" id="modal-close" aria-label="Close">
+            Esc
+          </button>
+        </h3>
+        <div id="modal-body"></div>
+      </div>
+    </div>
+
+    <script src="chart.umd.min.js"></script>
+    <script src="chartjs-plugin-annotation.min.js"></script>
+    <script src="cytoscape.min.js"></script>
+    <script>
+      (function () {
+        "use strict";
+
+        const nf = new Intl.NumberFormat();
+        const pf = new Intl.NumberFormat(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+        const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+        function relTime(ts) {
+          const d = Date.now() - new Date(ts).getTime();
+          if (d < 60000) return rtf.format(-Math.round(d / 1000), "second");
+          if (d < 3600000) return rtf.format(-Math.round(d / 60000), "minute");
+          return rtf.format(-Math.round(d / 3600000), "hour");
+        }
+
+        function statusBadge(code, success) {
+          if (code >= 500)
+            return (
+              '<span class="badge badge-error" aria-label="Server error"><span aria-hidden="true">&#10007;</span> ' +
+              code +
+              "</span>"
+            );
+          if (code >= 400)
+            return (
+              '<span class="badge badge-warn" aria-label="Client error"><span aria-hidden="true">&#9888;</span> ' +
+              code +
+              "</span>"
+            );
+          if (!success)
+            return (
+              '<span class="badge badge-error" aria-label="Failed"><span aria-hidden="true">&#10007;</span> ' +
+              code +
+              "</span>"
+            );
+          return (
+            '<span class="badge badge-success" aria-label="Success"><span aria-hidden="true">&#10003;</span> ' +
+            code +
+            "</span>"
+          );
+        }
+
+        let tsChart = null;
+        let lastTriggerEl = null;
+        let currentDeployments = [];
+        let routeWindow = "1h";
+        let routeFailuresOnly = false;
+        let tracesShowAll = false;
+        let refreshIntervalMs = 10000;
+        let askMaxStepsDefault = 0;
+        let askEndpoint = "/ui/ask";
+        const routeWindowText = {
+          "5m": "5 minutes",
+          "30m": "30 minutes",
+          "1h": "1 hour",
+        };
+        const routeFilterText = {
+          all: "all",
+          failed: "failed only",
+        };
+        const traceLimitCollapsed = 10;
+        const traceLimitExpanded = 100;
+
+        // --- Tab state ---
+        let activeTab = "dashboard";
+        let graphCapEnabled = false;
+        let graphWindow = "1h";
+        let cyInstance = null;
+
+        // --- Data fetching ---
+
+        async function fetchJSON(url) {
+          const r = await fetch(url);
+          if (!r.ok) throw new Error(r.statusText);
+          return r.json();
+        }
+
+        async function askWaylog(prompt, maxSteps) {
+          const payload = { prompt: prompt };
+          if (typeof maxSteps === "number" && maxSteps > 0) {
+            payload.max_steps = maxSteps;
+          }
+          const r = await fetch(askEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const msg = await r.text();
+            throw new Error(msg || "request failed");
+          }
+          const body = await r.json();
+          // Handle both legacy and envelope response formats
+          if (body.data && body.meta) {
+            return body.data;
+          }
+          return body;
+        }
+
+        function prettyJSON(value) {
+          if (value === undefined || value === null) return "";
+          try {
+            return JSON.stringify(value, null, 2);
+          } catch (e) {
+            return String(value);
+          }
+        }
+
+        function formatInlineMarkdown(text) {
+          var out = esc(text || "");
+          out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+          out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+          return out;
+        }
+
+        function markdownishToHTML(text) {
+          var raw = String(text || "").replace(/\r\n/g, "\n");
+          var lines = raw.split("\n");
+          var html = [];
+          var inList = false;
+
+          function closeListIfOpen() {
+            if (inList) {
+              html.push("</ul>");
+              inList = false;
+            }
+          }
+
+          lines.forEach(function (line) {
+            var trimmed = line.trim();
+            if (!trimmed) {
+              closeListIfOpen();
+              return;
+            }
+            if (trimmed.startsWith("- ")) {
+              if (!inList) {
+                html.push("<ul>");
+                inList = true;
+              }
+              html.push(
+                "<li>" + formatInlineMarkdown(trimmed.slice(2).trim()) + "</li>",
+              );
+              return;
+            }
+            closeListIfOpen();
+            html.push("<p>" + formatInlineMarkdown(trimmed) + "</p>");
+          });
+          closeListIfOpen();
+
+          if (html.length === 0) {
+            return '<div class="empty">(empty answer)</div>';
+          }
+          return html.join("");
+        }
+
+        function latestToolResult(steps, toolName) {
+          if (!Array.isArray(steps)) return null;
+          for (var i = steps.length - 1; i >= 0; i--) {
+            var step = steps[i];
+            if (
+              step &&
+              step.tool === toolName &&
+              step.result &&
+              typeof step.result === "object"
+            ) {
+              return step.result;
+            }
+          }
+          return null;
+        }
+
+        function renderTraceSummary(summary) {
+          if (!summary || typeof summary !== "object") return "";
+          var traceID =
+            typeof summary.trace_id === "string" ? summary.trace_id : "";
+          if (!traceID) return "";
+          var requestID =
+            typeof summary.request_id === "string" ? summary.request_id : "—";
+          var eventName =
+            typeof summary.event_name === "string" && summary.event_name
+              ? summary.event_name
+              : "—";
+          var flow =
+            typeof summary.flow === "string" && summary.flow ? summary.flow : "—";
+          var latency =
+            summary.latency_ms === undefined || summary.latency_ms === null
+              ? "—"
+              : String(summary.latency_ms);
+          var roots = Array.isArray(summary.root_span_ids)
+            ? summary.root_span_ids.filter(function (v) {
+                return typeof v === "string" && v;
+              })
+            : [];
+          var rootsText = roots.length ? roots.join(", ") : "—";
+          var paths = Array.isArray(summary.paths)
+            ? summary.paths
+                .filter(function (path) {
+                  return Array.isArray(path) && path.length > 0;
+                })
+                .map(function (path) {
+                  return path.join(" -> ");
+                })
+            : [];
+          var pathText = paths.length ? paths.join(" | ") : "—";
+
+          return (
+            '<div class="trace-summary-card">' +
+            '<h4 class="trace-summary-title">Trace Summary <code>' +
+            esc(traceID) +
+            "</code></h4>" +
+            "<dl class=\"trace-summary-grid\">" +
+            "<dt>Request</dt><dd><code>" +
+            esc(requestID) +
+            "</code></dd>" +
+            "<dt>Event</dt><dd>" +
+            esc(eventName) +
+            "</dd>" +
+            "<dt>Flow</dt><dd>" +
+            esc(flow) +
+            "</dd>" +
+            "<dt>Latency</dt><dd><code>" +
+            esc(latency) +
+            " ms</code></dd>" +
+            "<dt>Root Span(s)</dt><dd><code>" +
+            esc(rootsText) +
+            "</code></dd>" +
+            "<dt>Service Path</dt><dd class=\"trace-summary-path\">" +
+            esc(pathText) +
+            "</dd>" +
+            "</dl>" +
+            "</div>"
+          );
+        }
+
+        function renderAskAnswer(answer, steps) {
+          var askAnswer = document.getElementById("ask-answer");
+          var traceSummary = latestToolResult(steps, "trace_summary");
+          if (traceSummary) {
+            var summaryHTML = renderTraceSummary(traceSummary);
+            if (summaryHTML) {
+              askAnswer.innerHTML = summaryHTML;
+              return;
+            }
+          }
+          askAnswer.innerHTML = markdownishToHTML(answer);
+        }
+
+        function renderAskSteps(steps) {
+          const root = document.getElementById("ask-steps");
+          if (!Array.isArray(steps) || steps.length === 0) {
+            root.innerHTML =
+              '<div class="empty">No tool executions for this answer.</div>';
+            return;
+          }
+
+          root.innerHTML = steps
+            .map(function (step) {
+              const index =
+                typeof step.index === "number" && step.index > 0
+                  ? step.index
+                  : 0;
+              const tool = step.tool || "unknown_tool";
+              const isError = !!step.error;
+              const badge = isError
+                ? '<span class="ask-step-badge err">ERROR</span>'
+                : '<span class="ask-step-badge ok">OK</span>';
+              const ms =
+                typeof step.duration_ms === "number"
+                  ? nf.format(step.duration_ms) + "ms"
+                  : "—";
+              const params = prettyJSON(step.params);
+              const result = prettyJSON(step.result);
+              const errorText = isError ? String(step.error) : "";
+
+              let body = "";
+              if (params) {
+                body +=
+                  '<div class="ask-step-block"><div class="ask-step-block-title">Params</div><pre>' +
+                  esc(params) +
+                  "</pre></div>";
+              }
+              if (isError) {
+                body +=
+                  '<div class="ask-step-block"><div class="ask-step-block-title">Error</div><pre>' +
+                  esc(errorText) +
+                  "</pre></div>";
+              } else if (result) {
+                body +=
+                  '<div class="ask-step-block"><div class="ask-step-block-title">Result</div><pre>' +
+                  esc(result) +
+                  "</pre></div>";
+              }
+
+              return (
+                '<details class="ask-step" open>' +
+                "<summary>" +
+                '<span class="ask-step-main">' +
+                '<span class="ask-step-index">#' +
+                esc(String(index)) +
+                "</span>" +
+                '<span class="ask-step-tool">' +
+                esc(tool) +
+                "</span>" +
+                "</span>" +
+                '<span class="ask-step-meta">' +
+                '<span class="ask-step-time">' +
+                esc(ms) +
+                "</span>" +
+                badge +
+                "</span>" +
+                "</summary>" +
+                '<div class="ask-step-body">' +
+                body +
+                "</div>" +
+                "</details>"
+              );
+            })
+            .join("");
+        }
+
+        async function loadCapabilities() {
+          try {
+            const caps = await fetchJSON("/v1/capabilities");
+            if (
+              caps.dashboard &&
+              typeof caps.dashboard.refresh_interval_sec === "number" &&
+              caps.dashboard.refresh_interval_sec > 0
+            ) {
+              refreshIntervalMs = caps.dashboard.refresh_interval_sec * 1000;
+            }
+            if (caps.ask && typeof caps.ask.max_steps_default === "number") {
+              askMaxStepsDefault = caps.ask.max_steps_default;
+            }
+            if (caps.ask_endpoint) {
+              askEndpoint = caps.ask_endpoint;
+            }
+
+            if (caps.links) {
+              if (caps.links.grafana) {
+                var gl = document.getElementById("link-grafana");
+                gl.href = caps.links.grafana;
+                gl.style.display = "";
+              }
+            }
+
+            if (caps.graph) {
+              graphCapEnabled = true;
+              document.getElementById("tab-graph").style.display = "";
+            }
+
+            const askEnabled = !!(caps.ask && caps.ask.enabled);
+            const askInput = document.getElementById("ask-input");
+            const askBtn = document.getElementById("ask-btn");
+            const askStatus = document.getElementById("ask-status");
+            if (!askEnabled) {
+              askInput.disabled = true;
+              askBtn.disabled = true;
+              askInput.placeholder = "Ask is disabled on this server";
+              askStatus.textContent = "Configure GEMINI_API_KEY to enable Ask.";
+              return;
+            }
+            if (caps.ask.model) {
+              askStatus.textContent =
+                "Model: " +
+                caps.ask.model +
+                (caps.ask.tool_mode ? " · " + caps.ask.tool_mode : "");
+            }
+          } catch (e) {
+            console.error("Capabilities fetch error:", e);
+          }
+        }
+
+        function showSampled(sampled) {
+          document.getElementById("sampling-badge").style.display = sampled
+            ? "inline-flex"
+            : "none";
+        }
+
+        function renderKPIs(data) {
+          showSampled(data.sampled);
+          const totalRequests = Number(data.total_requests || 0);
+          const errorRate = Number(data.error_rate || 0);
+          // Trigger incident panels when latest failed trace changes
+          var failedId = data.latest_failed_trace_id;
+          if (failedId && failedId !== lastKnownFailedTraceId) {
+            lastKnownFailedTraceId = failedId;
+            if (followLatest) {
+              loadExplainRequest(failedId);
+            }
+          }
+          const row = document.getElementById("kpi-row");
+          if (totalRequests === 0) {
+            row.innerHTML =
+              kpiCard("Requests", "0", "") +
+              kpiCard("Error Rate", "0", "%") +
+              kpiCard("P50", "—", "ms") +
+              kpiCard("P95", "—", "ms") +
+              kpiCard("P99", "—", "ms");
+            return;
+          }
+          row.innerHTML =
+            kpiCard("Requests", nf.format(totalRequests), "") +
+            kpiCard("Error Rate", pf.format(errorRate), "%") +
+            kpiCard(
+              "P50",
+              data.p50 != null ? nf.format(Number(data.p50 || 0)) : "—",
+              "ms",
+            ) +
+            kpiCard(
+              "P95",
+              data.p95 != null ? nf.format(Number(data.p95 || 0)) : "—",
+              "ms",
+            ) +
+            kpiCard(
+              "P99",
+              data.p99 != null ? nf.format(Number(data.p99 || 0)) : "—",
+              "ms",
+            );
+        }
+
+        async function refreshKPIs() {
+          try {
+            const data = await fetchJSON("/v1/overview?window=1h");
+            renderKPIs(data);
+          } catch (e) {
+            console.error("KPI fetch error:", e);
+          }
+        }
+
+        function kpiCard(label, value, unit) {
+          return (
+            '<div class="kpi-card" tabindex="0" aria-label="' +
+            label +
+            ": " +
+            value +
+            unit +
+            '"><div class="label">' +
+            label +
+            '</div><div class="value">' +
+            value +
+            '<span class="unit">' +
+            unit +
+            "</span></div></div>"
+          );
+        }
+
+        function renderChart(data) {
+          const labels = data.buckets.map(function (b) {
+            return new Date(b.start).toLocaleTimeString(undefined, {
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+          });
+          const totals = data.buckets.map(function (b) {
+            return b.total;
+          });
+          const errRates = data.buckets.map(function (b) {
+            return b.error_rate;
+          });
+
+          if (tsChart) {
+            tsChart.data.labels = labels;
+            tsChart.data.datasets[0].data = totals;
+            tsChart.data.datasets[1].data = errRates;
+            tsChart.update("none");
+            refreshDeployOverlay();
+            return;
+          }
+
+          const ctx = document.getElementById("ts-chart").getContext("2d");
+            tsChart = new Chart(ctx, {
+              type: "line",
+              data: {
+                labels: labels,
+                datasets: [
+                  {
+                    label: "Requests",
+                    data: totals,
+                    borderColor: "#0070f3",
+                    backgroundColor: "rgba(0,112,243,0.1)",
+                    fill: true,
+                    tension: 0.3,
+                    yAxisID: "y",
+                    pointRadius: 2,
+                    pointHoverRadius: 4,
+                  },
+                  {
+                    label: "Error Rate %",
+                    data: errRates,
+                    borderColor: "#f5a623",
+                    backgroundColor: "transparent",
+                    borderDash: [4, 4],
+                    tension: 0.3,
+                    yAxisID: "y1",
+                    pointRadius: 2,
+                    pointHoverRadius: 4,
+                  },
+                ],
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { intersect: false, mode: "index" },
+                plugins: {
+                  legend: {
+                    labels: {
+                      color: "#888",
+                      font: { family: "'Geist',sans-serif", size: 12 },
+                    },
+                  },
+                  tooltip: {
+                    backgroundColor: "#1a1a1a",
+                    borderColor: "#333",
+                    borderWidth: 1,
+                    titleColor: "#ededed",
+                    bodyColor: "#ededed",
+                    bodyFont: { family: "'Geist Mono',monospace" },
+                    titleFont: { family: "'Geist',sans-serif" },
+                  },
+                },
+                scales: {
+                  x: {
+                    ticks: {
+                      color: "#666",
+                      font: { family: "'Geist',sans-serif", size: 11 },
+                    },
+                    grid: { color: "rgba(51,51,51,0.5)" },
+                  },
+                  y: {
+                    type: "linear",
+                    position: "left",
+                    title: {
+                      display: true,
+                      text: "Requests",
+                      color: "#888",
+                      font: { family: "'Geist',sans-serif" },
+                    },
+                    ticks: {
+                      color: "#666",
+                      font: { family: "'Geist Mono',monospace", size: 11 },
+                    },
+                    grid: { color: "rgba(51,51,51,0.5)" },
+                    beginAtZero: true,
+                  },
+                  y1: {
+                    type: "linear",
+                    position: "right",
+                    title: {
+                      display: true,
+                      text: "Error Rate %",
+                      color: "#888",
+                      font: { family: "'Geist',sans-serif" },
+                    },
+                    ticks: {
+                      color: "#666",
+                      font: { family: "'Geist Mono',monospace", size: 11 },
+                    },
+                    grid: { drawOnChartArea: false },
+                    beginAtZero: true,
+                    suggestedMax: 100,
+                  },
+                },
+              },
+            });
+            refreshDeployOverlay();
+        }
+
+        async function refreshChart() {
+          try {
+            const data = await fetchJSON(
+              "/v1/overview/timeseries?window=1h&step=5m",
+            );
+            renderChart(data);
+          } catch (e) {
+            console.error("Chart fetch error:", e);
+          }
+        }
+
+        function renderRoutes(data) {
+          const tbody = document.getElementById("routes-body");
+          if (!data.routes || data.routes.length === 0) {
+            const filterText = routeFailuresOnly ? " (failed only)" : "";
+            tbody.innerHTML =
+              '<tr><td colspan="10" class="empty">No routes in the last ' +
+              routeWindowText[routeWindow] +
+              filterText +
+              "</td></tr>";
+            return;
+          }
+          tbody.innerHTML = data.routes
+            .map(function (r) {
+              return (
+                "<tr>" +
+                '<td class="ellipsis">' +
+                esc(r.service) +
+                "</td>" +
+                "<td>" +
+                esc(r.method || "UNKNOWN") +
+                "</td>" +
+                '<td class="ellipsis">' +
+                esc(r.route) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.invocations) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.errors) +
+                "</td>" +
+                '<td class="num">' +
+                pf.format(r.error_rate) +
+                "%</td>" +
+                '<td class="num">' +
+                nf.format(r.status_2xx) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.status_4xx) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.status_5xx) +
+                "</td>" +
+                '<td class="num">' +
+                nf.format(r.p75_latency_ms) +
+                "</td>" +
+                "</tr>"
+              );
+            })
+            .join("");
+        }
+
+        async function refreshRoutes() {
+          try {
+            const data = await fetchJSON(
+              "/v1/routes?window=" +
+                encodeURIComponent(routeWindow) +
+                "&failures_only=" +
+                encodeURIComponent(String(routeFailuresOnly)),
+            );
+            renderRoutes(data);
+          } catch (e) {
+            console.error("Routes fetch error:", e);
+          }
+        }
+
+        function updateRoutesContextLabel() {
+          var label = document.getElementById("routes-context-label");
+          if (!label) return;
+          var mode = routeFailuresOnly ? routeFilterText.failed : routeFilterText.all;
+          label.textContent = "(" + routeWindow + " • " + mode + ")";
+        }
+
+        function setRouteWindow(window, refreshNow) {
+          if (!routeWindowText[window]) return;
+          routeWindow = window;
+          updateRoutesContextLabel();
+          document.querySelectorAll("[data-route-window]").forEach(function (btn) {
+            var active = btn.getAttribute("data-route-window") === routeWindow;
+            btn.classList.toggle("active", active);
+            btn.setAttribute("aria-pressed", active ? "true" : "false");
+          });
+          if (refreshNow !== false) {
+            refreshRoutes();
+          }
+        }
+
+        function setRouteFailuresOnly(nextValue, refreshNow) {
+          routeFailuresOnly = !!nextValue;
+          updateRoutesContextLabel();
+          document.querySelectorAll("[data-route-failures-only]").forEach(function (btn) {
+            var active =
+              btn.getAttribute("data-route-failures-only") ===
+              String(routeFailuresOnly);
+            btn.classList.toggle("active", active);
+            btn.setAttribute("aria-pressed", active ? "true" : "false");
+          });
+          if (refreshNow !== false) {
+            refreshRoutes();
+          }
+        }
+
+        function currentTraceLimit() {
+          return tracesShowAll ? traceLimitExpanded : traceLimitCollapsed;
+        }
+
+        function updateTraceLimitToggle(rowsLoaded) {
+          const btn = document.getElementById("traces-toggle-limit");
+          if (!btn) return;
+          btn.textContent = tracesShowAll ? "Show less" : "See all";
+          btn.setAttribute("aria-pressed", tracesShowAll ? "true" : "false");
+
+          // Hide control when there is no data; otherwise keep it visible.
+          btn.style.display = rowsLoaded > 0 ? "inline-flex" : "none";
+        }
+
+        function renderTraces(traces) {
+          const tbody = document.getElementById("traces-body");
+          const tracesContext = document.getElementById("traces-context");
+          updateTraceLimitToggle(traces.length);
+          tracesContext.textContent = "";
+          const colspan = 6;
+
+          if (traces.length === 0) {
+            tbody.innerHTML =
+              '<tr><td colspan="' +
+              colspan +
+              '" class="empty">No traces yet</td></tr>';
+            return;
+          }
+          tbody.innerHTML = traces
+            .map(function (t) {
+              const traceId =
+                typeof t.trace_id === "string" ? t.trace_id : "";
+              const failureService =
+                typeof t.failure_service === "string"
+                  ? t.failure_service.trim()
+                  : "";
+              const ariaLabel = "Trace " + traceId;
+              const failureServiceCell =
+                '<td class="ellipsis trace-service"><code>' +
+                esc(failureService || "—") +
+                "</code></td>";
+              return (
+                "<tr>" +
+                '<td class="ellipsis"><a href="#trace-' +
+                esc(traceId) +
+                '" class="trace-link" data-trace="' +
+                esc(traceId) +
+                '" aria-label="' +
+                esc(ariaLabel) +
+                '" style="font-family:var(--font-mono);font-size:12px">' +
+                esc(traceId.substring(0, 16)) +
+                "&hellip;</a></td>" +
+                failureServiceCell +
+                '<td class="ellipsis">' +
+                "<code>" +
+                esc(t.event_name || "—") +
+                "</code>" +
+                "</td>" +
+                "<td>" +
+                statusBadge(t.status_code, t.success) +
+                "</td>" +
+                '<td class="num" style="font-family:var(--font-mono)">' +
+                nf.format(t.latency_ms) +
+                "</td>" +
+                '<td style="color:var(--fg-muted);font-size:12px">' +
+                relTime(t.timestamp) +
+                "</td>" +
+                "</tr>"
+              );
+            })
+            .join("");
+        }
+
+        async function refreshTraces() {
+          try {
+            const data = await fetchJSON(
+              "/v1/traces/recent?limit=" +
+                encodeURIComponent(String(currentTraceLimit())),
+            );
+            const traces = Array.isArray(data) ? data : (Array.isArray(data.traces) ? data.traces : []);
+            renderTraces(traces);
+          } catch (e) {
+            console.error("Traces fetch error:", e);
+          }
+        }
+
+        function esc(s) {
+          if (!s) return "";
+          var d = document.createElement("div");
+          d.appendChild(document.createTextNode(s));
+          return d.innerHTML;
+        }
+
+        // --- Deployments / What Changed ---
+
+        function refreshDeployOverlay() {
+          fetchDeployments("1h").then(function(deploys) {
+            currentDeployments = deploys;
+            renderWhatChanged(deploys);
+            if (tsChart) {
+              tsChart.options.plugins = tsChart.options.plugins || {};
+              tsChart.options.plugins.annotation = {
+                annotations: makeDeployAnnotations(deploys)
+              };
+              tsChart.update('none');
+            }
+          });
+        }
+
+        async function fetchDeployments(windowParam) {
+          try {
+            var resp = await fetch('/v1/deployments?window=' + windowParam);
+            if (!resp.ok) return [];
+            var data = await resp.json();
+            return data.deployments || [];
+          } catch (e) {
+            return [];
+          }
+        }
+
+        function makeDeployAnnotations(deployments) {
+          if (!deployments || !deployments.length) return {};
+          var annotations = {};
+          deployments.forEach(function(d, i) {
+            var isHot = d.error_rate_change != null && d.error_rate_change > 2.0;
+            annotations['deploy_' + i] = {
+              type: 'line',
+              xMin: new Date(d.first_seen).getTime(),
+              xMax: new Date(d.first_seen).getTime(),
+              borderColor: isHot ? '#f5a623' : '#666',
+              borderWidth: 1,
+              borderDash: [4, 4],
+              label: {
+                display: true,
+                content: d.id + ' (' + d.service + (d.version ? ' ' + d.version : '') + ')',
+                position: 'start',
+                backgroundColor: isHot ? 'rgba(245,166,35,0.8)' : 'rgba(102,102,102,0.8)',
+                color: '#fff',
+                font: { size: 10 }
+              }
+            };
+          });
+          return annotations;
+        }
+
+        function renderWhatChanged(deployments) {
+          var container = document.getElementById('what-changed');
+          if (!container) return;
+          if (!deployments || !deployments.length) {
+            container.style.display = 'none';
+            return;
+          }
+          container.style.display = 'block';
+          var html = '<h3 style="color:#ededed;margin:0 0 8px">Recent Deployments</h3>';
+          html += '<div style="display:flex;flex-direction:column;gap:4px">';
+          for (var i = 0; i < deployments.length; i++) {
+            var d = deployments[i];
+            var ago = deployTimeAgo(new Date(d.first_seen));
+            var isHot = d.error_rate_change != null && d.error_rate_change > 2.0;
+            var newErrors = d.after_error_rate != null && d.after_error_rate > 0 &&
+              (d.before_error_rate == null || d.before_error_rate === 0);
+            var color = isHot ? '#f5a623' : (newErrors ? '#f5a623' : '#888');
+            var rateText = '';
+            if (d.error_rate_change != null) {
+              rateText = '<span style="color:' + color + '">' + d.error_rate_change.toFixed(1) + 'x error rate</span>';
+            } else if (newErrors) {
+              rateText = '<span style="color:#f5a623">new errors appeared</span>';
+            } else {
+              rateText = '<span style="color:#555">insufficient data</span>';
+            }
+            html += '<div style="display:flex;align-items:center;gap:8px;font-size:13px">' +
+              '<span style="background:#333;padding:2px 6px;border-radius:3px;color:#ccc">' + esc(d.service) + '</span>' +
+              '<span style="color:#aaa">' + esc(d.version || '') + '</span>' +
+              '<span style="color:#666">' + esc(ago) + '</span>' +
+              rateText +
+              '</div>';
+          }
+          html += '</div>';
+          container.innerHTML = html;
+        }
+
+        function deployTimeAgo(date) {
+          var mins = Math.floor((Date.now() - date.getTime()) / 60000);
+          if (mins < 1) return 'just now';
+          if (mins < 60) return mins + ' min ago';
+          var hrs = Math.floor(mins / 60);
+          return hrs + 'h ' + (mins % 60) + 'm ago';
+        }
+
+        // --- Trace drilldown modal ---
+
+        async function openTrace(traceId, triggerEl) {
+          lastTriggerEl = triggerEl;
+          const overlay = document.getElementById("modal-overlay");
+          const body = document.getElementById("modal-body");
+          document.getElementById("modal-title").textContent =
+            "Trace " + traceId;
+          body.innerHTML = '<div class="empty">Loading...</div>';
+          overlay.classList.add("open");
+          document.getElementById("modal-close").focus();
+
+          try {
+            const data = await fetchJSON(
+              "/v1/traces/story?trace_id=" + encodeURIComponent(traceId),
+            );
+            var html = "";
+
+            // Hop chain
+            if (data.story && data.story.chain && data.story.chain.length > 0) {
+              html += '<div class="hop-chain">';
+              var firstFailIdx = -1;
+              if (data.story.first_fail_hop) {
+                for (var i = 0; i < data.story.chain.length; i++) {
+                  if (
+                    data.story.chain[i].span_id ===
+                    data.story.first_fail_hop.span_id
+                  ) {
+                    firstFailIdx = i;
+                    break;
+                  }
+                }
+              }
+              data.story.chain.forEach(function (hop, idx) {
+                var cls = "hop";
+                if (!hop.success) cls += " fail";
+                if (idx === firstFailIdx) cls += " root-cause";
+                html += '<div class="' + cls + '">';
+                html +=
+                  '<div class="hop-service">' +
+                  esc(hop.service || "unknown") +
+                  (hop.is_root
+                    ? ' <span style="color:var(--fg-muted);font-size:11px">(root)</span>'
+                    : "") +
+                  "</div>";
+                html +=
+                  '<div class="hop-detail">' +
+                  hop.status_code +
+                  " &middot; " +
+                  nf.format(hop.latency_ms) +
+                  "ms</div>";
+                if (hop.error_code)
+                  html +=
+                    '<div class="hop-error">' + esc(hop.error_code) + "</div>";
+                html += "</div>";
+              });
+              html += "</div>";
+            } else {
+              html += '<div class="empty">No hops found</div>';
+            }
+
+            // Context panel
+            if (data.context) {
+              var c = data.context;
+              html += '<div class="context-panel"><dl>';
+              if (c.user_id)
+                html += "<dt>User</dt><dd>" + esc(c.user_id) + "</dd>";
+              if (c.user_tier)
+                html += "<dt>Tier</dt><dd>" + esc(c.user_tier) + "</dd>";
+              if (c.flow) html += "<dt>Flow</dt><dd>" + esc(c.flow) + "</dd>";
+              if (c.error_codes && c.error_codes.length)
+                html +=
+                  "<dt>Error Codes</dt><dd>" +
+                  c.error_codes.map(esc).join(", ") +
+                  "</dd>";
+              if (c.flags && c.flags.length)
+                html +=
+                  "<dt>Flags</dt><dd>" + c.flags.map(esc).join(", ") + "</dd>";
+              html += "</dl></div>";
+            }
+
+            body.innerHTML = html;
+          } catch (e) {
+            body.innerHTML =
+              '<div class="empty">Failed to load trace: ' +
+              esc(e.message) +
+              "</div>";
+          }
+        }
+
+        function closeModal() {
+          document.getElementById("modal-overlay").classList.remove("open");
+          if (lastTriggerEl) {
+            lastTriggerEl.focus();
+            lastTriggerEl = null;
+          }
+        }
+
+        document
+          .getElementById("modal-close")
+          .addEventListener("click", closeModal);
+        document
+          .getElementById("modal-overlay")
+          .addEventListener("click", function (e) {
+            if (e.target === this) closeModal();
+          });
+        document.addEventListener("keydown", function (e) {
+          if (
+            e.key === "Escape" &&
+            document.getElementById("modal-overlay").classList.contains("open")
+          ) {
+            closeModal();
+          }
+        });
+
+        // Focus trap inside modal
+        document
+          .getElementById("modal")
+          .addEventListener("keydown", function (e) {
+            if (e.key !== "Tab") return;
+            var focusable = this.querySelectorAll(
+              'button, [href], [tabindex]:not([tabindex="-1"])',
+            );
+            if (focusable.length === 0) return;
+            var first = focusable[0],
+              last = focusable[focusable.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+              e.preventDefault();
+              last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+              e.preventDefault();
+              first.focus();
+            }
+          });
+
+        // Trace link click handler (delegated)
+        document.addEventListener("click", function (e) {
+          var link = e.target.closest(".trace-link");
+          if (!link) return;
+          e.preventDefault();
+          var traceId = link.dataset.trace;
+          openTrace(traceId, link);
+          followLatest = false;
+          document.getElementById("follow-latest-toggle").checked = false;
+          loadExplainRequest(traceId);
+        });
+
+        function setAskOpen(open) {
+          document.body.classList.toggle("ask-open", open);
+          const askToggle = document.getElementById("ask-toggle");
+          if (askToggle) {
+            askToggle.setAttribute("aria-expanded", open ? "true" : "false");
+          }
+          if (open) {
+            const askInput = document.getElementById("ask-input");
+            if (askInput && !askInput.disabled) {
+              askInput.focus();
+            }
+          }
+        }
+
+        // --- Init & auto-refresh ---
+
+        const askToggle = document.getElementById("ask-toggle");
+        const askClose = document.getElementById("ask-close");
+        const askBackdrop = document.getElementById("ask-backdrop");
+        const askForm = document.getElementById("ask-form");
+        const askInput = document.getElementById("ask-input");
+        const askBtn = document.getElementById("ask-btn");
+        const askStatus = document.getElementById("ask-status");
+        const askAnswer = document.getElementById("ask-answer");
+        const askSteps = document.getElementById("ask-steps");
+
+        askToggle.addEventListener("click", function () {
+          const isOpen = document.body.classList.contains("ask-open");
+          setAskOpen(!isOpen);
+        });
+        askClose.addEventListener("click", function () {
+          setAskOpen(false);
+        });
+        askBackdrop.addEventListener("click", function () {
+          setAskOpen(false);
+        });
+
+        askForm.addEventListener("submit", async function (e) {
+          e.preventDefault();
+          const prompt = askInput.value.trim();
+          if (!prompt) {
+            askStatus.textContent = "Enter a question first.";
+            askInput.focus();
+            return;
+          }
+
+          askBtn.disabled = true;
+          askStatus.textContent = "Thinking...";
+          askAnswer.innerHTML = '<div class="empty">Generating answer...</div>';
+          askSteps.innerHTML =
+            '<div class="empty">Running tools for this query...</div>';
+          try {
+            const data = await askWaylog(prompt, askMaxStepsDefault);
+            renderAskAnswer(data.answer || "", data.steps);
+            renderAskSteps(data.steps);
+            const detail = [];
+            if (data.model) detail.push(data.model);
+            if (typeof data.duration_ms === "number") {
+              detail.push(data.duration_ms + "ms");
+            }
+            if (Array.isArray(data.steps) && data.steps.length > 0) {
+              detail.push(data.steps.length + " step(s)");
+            }
+            askStatus.textContent = detail.join(" · ");
+          } catch (err) {
+            askAnswer.innerHTML = '<div class="empty">(no answer)</div>';
+            askSteps.innerHTML =
+              '<div class="empty">No tool output due to request error.</div>';
+            askStatus.textContent =
+              "Query failed: " +
+              (err && err.message ? err.message : String(err));
+          } finally {
+            askBtn.disabled = false;
+          }
+        });
+
+        function refreshAll() {
+          if (activeTab === "dashboard") {
+            refreshKPIs();
+            refreshChart();
+            refreshRoutes();
+            refreshTraces();
+          } else if (activeTab === "graph") {
+            refreshGraph();
+          }
+          document.getElementById("last-update").textContent =
+            "Updated " + new Date().toLocaleTimeString();
+        }
+
+        document.querySelectorAll("[data-route-window]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            setRouteWindow(btn.getAttribute("data-route-window"));
+          });
+        });
+        document.querySelectorAll("[data-route-failures-only]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            setRouteFailuresOnly(
+              btn.getAttribute("data-route-failures-only") === "true",
+            );
+          });
+        });
+        document
+          .getElementById("traces-toggle-limit")
+          .addEventListener("click", function () {
+            tracesShowAll = !tracesShowAll;
+            refreshTraces();
+          });
+
+        document.addEventListener("keydown", function (e) {
+          if (e.key !== "Escape") return;
+          if (document.body.classList.contains("ask-open")) {
+            setAskOpen(false);
+          }
+        });
+
+        // --- Tab switching ---
+        var validTabs = ["dashboard", "graph"];
+        function switchTab(tabId) {
+          if (validTabs.indexOf(tabId) === -1) tabId = "dashboard";
+          if (tabId === "graph" && !graphCapEnabled) tabId = "dashboard";
+          activeTab = tabId;
+          var tabs = document.querySelectorAll("#tab-bar [role='tab']");
+          tabs.forEach(function (t) {
+            var selected = t.id === "tab-" + tabId;
+            t.setAttribute("aria-selected", String(selected));
+            t.setAttribute("tabindex", selected ? "0" : "-1");
+            var panel = document.getElementById(t.getAttribute("aria-controls"));
+            if (panel) {
+              if (selected) { panel.removeAttribute("hidden"); }
+              else { panel.setAttribute("hidden", ""); }
+            }
+          });
+          // Update URL
+          var params = new URLSearchParams(window.location.search);
+          if (tabId === "dashboard") {
+            params.delete("tab");
+            params.delete("graph_window");
+          } else {
+            params.set("tab", tabId);
+            params.set("graph_window", graphWindow);
+          }
+          var qs = params.toString();
+          history.replaceState(null, "", window.location.pathname + (qs ? "?" + qs : ""));
+          refreshAll();
+        }
+
+        document.querySelectorAll("#tab-bar [role='tab']").forEach(function (tab) {
+          tab.addEventListener("click", function () {
+            switchTab(tab.id.replace("tab-", ""));
+          });
+        });
+        // Keyboard arrow navigation between tabs
+        document.getElementById("tab-bar").addEventListener("keydown", function (e) {
+          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+          var visible = Array.from(document.querySelectorAll("#tab-bar [role='tab']")).filter(
+            function (t) { return t.style.display !== "none"; }
+          );
+          var idx = visible.findIndex(function (t) { return t.getAttribute("aria-selected") === "true"; });
+          if (e.key === "ArrowRight") idx = (idx + 1) % visible.length;
+          else idx = (idx - 1 + visible.length) % visible.length;
+          visible[idx].focus();
+          switchTab(visible[idx].id.replace("tab-", ""));
+        });
+
+        // --- Graph rendering ---
+        async function refreshGraph() {
+          if (!graphCapEnabled || typeof cytoscape === "undefined") return;
+          try {
+            var data = await fetchJSON("/v1/graph/topology?window=" + graphWindow);
+            var elements = [];
+            (data.nodes || []).forEach(function (n) { elements.push({ group: "nodes", data: n.data }); });
+            (data.edges || []).forEach(function (e) { elements.push({ group: "edges", data: e.data }); });
+
+            var container = document.getElementById("graph-container");
+            if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
+
+            cyInstance = cytoscape({
+              container: container,
+              elements: elements,
+              style: [
+                {
+                  selector: "node",
+                  style: {
+                    "label": "data(label)",
+                    "background-color": function (ele) {
+                      var er = ele.data("error_rate") || 0;
+                      if (er >= 10) return "#f31260";
+                      if (er >= 1) return "#f5a623";
+                      return "#17c964";
+                    },
+                    "color": "#ededed",
+                    "text-valign": "bottom",
+                    "text-margin-y": 6,
+                    "font-size": 11,
+                    "font-family": "Geist, system-ui, sans-serif",
+                    "width": function (ele) { return Math.max(30, Math.min(80, 20 + (ele.data("invocations") || 0) / 2)); },
+                    "height": function (ele) { return Math.max(30, Math.min(80, 20 + (ele.data("invocations") || 0) / 2)); },
+                    "border-width": 2,
+                    "border-color": "#333"
+                  }
+                },
+                {
+                  selector: "edge",
+                  style: {
+                    "width": function (ele) { return Math.max(1, Math.min(6, (ele.data("count") || 1) / 5)); },
+                    "line-color": "#444",
+                    "target-arrow-color": "#444",
+                    "target-arrow-shape": "triangle",
+                    "curve-style": "bezier",
+                    "label": function (ele) { var c = ele.data("count"); return c > 1 ? String(c) : ""; },
+                    "font-size": 9,
+                    "color": "#888",
+                    "text-background-color": "#0a0a0a",
+                    "text-background-opacity": 0.8,
+                    "text-background-padding": "2px"
+                  }
+                },
+                {
+                  selector: "node.highlighted",
+                  style: { "border-color": "#0070f3", "border-width": 3 }
+                },
+                {
+                  selector: "edge.highlighted",
+                  style: { "line-color": "#0070f3", "target-arrow-color": "#0070f3", "width": 3 }
+                },
+                {
+                  selector: "node.faded",
+                  style: { "opacity": 0.25 }
+                },
+                {
+                  selector: "edge.faded",
+                  style: { "opacity": 0.15 }
+                }
+              ],
+              layout: { name: "cose", animate: false, nodeDimensionsIncludeLabels: true, padding: 40 },
+              minZoom: 0.3,
+              maxZoom: 3
+            });
+
+            // Click interaction: highlight connections + tooltip
+            var tooltip = document.getElementById("graph-tooltip");
+            cyInstance.on("tap", "node", function (evt) {
+              var node = evt.target;
+              cyInstance.elements().removeClass("highlighted faded");
+              var neighborhood = node.neighborhood().add(node);
+              neighborhood.addClass("highlighted");
+              cyInstance.elements().not(neighborhood).addClass("faded");
+
+              var d = node.data();
+              tooltip.innerHTML =
+                '<div class="tt-label">' + escH(d.label) + '</div>' +
+                '<div class="tt-row">Invocations: ' + (d.invocations || 0) + '</div>' +
+                '<div class="tt-err">Errors: ' + (d.errors || 0) + ' (' + (d.error_rate || 0).toFixed(1) + '%)</div>';
+              var pos = evt.renderedPosition || evt.position;
+              tooltip.style.left = (container.offsetLeft + pos.x + 15) + "px";
+              tooltip.style.top = (container.offsetTop + pos.y - 10) + "px";
+              tooltip.style.display = "block";
+            });
+            cyInstance.on("tap", function (evt) {
+              if (evt.target === cyInstance) {
+                cyInstance.elements().removeClass("highlighted faded");
+                tooltip.style.display = "none";
+              }
+            });
+          } catch (e) {
+            console.error("Graph topology fetch error:", e);
+          }
+        }
+
+        function escH(s) {
+          var d = document.createElement("div");
+          d.textContent = s;
+          return d.innerHTML;
+        }
+
+        // Graph window controls
+        document.querySelectorAll("[data-graph-window]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            graphWindow = btn.getAttribute("data-graph-window");
+            document.querySelectorAll("[data-graph-window]").forEach(function (b) {
+              var active = b === btn;
+              b.classList.toggle("active", active);
+              b.setAttribute("aria-pressed", String(active));
+            });
+            var params = new URLSearchParams(window.location.search);
+            params.set("graph_window", graphWindow);
+            history.replaceState(null, "", window.location.pathname + "?" + params.toString());
+            refreshGraph();
+          });
+        });
+
+        // Restore tab from URL
+        (function restoreURL() {
+          var params = new URLSearchParams(window.location.search);
+          var t = params.get("tab");
+          if (t && validTabs.indexOf(t) !== -1) activeTab = t;
+          var gw = params.get("graph_window");
+          if (gw && ["5m", "30m", "1h"].indexOf(gw) !== -1) {
+            graphWindow = gw;
+            document.querySelectorAll("[data-graph-window]").forEach(function (b) {
+              var active = b.getAttribute("data-graph-window") === gw;
+              b.classList.toggle("active", active);
+              b.setAttribute("aria-pressed", String(active));
+            });
+          }
+        })();
+
+        // --- Failure Origin + Blast Radius + Mini Topology ---
+
+        let followLatest = true;
+        let currentExplainTraceId = null;
+        let lastKnownFailedTraceId = null;
+        let miniCyInstance = null;
+
+        document.getElementById("follow-latest-toggle").addEventListener("change", function () {
+          followLatest = this.checked;
+        });
+
+        async function loadExplainRequest(traceId) {
+          if (!traceId || traceId === currentExplainTraceId) return;
+          currentExplainTraceId = traceId;
+          const el = document.getElementById("failure-origin-content");
+          el.innerHTML = '<p style="color:var(--fg-muted);">Loading...</p>';
+          try {
+            const resp = await fetch("/ui/explain?trace_id=" + encodeURIComponent(traceId));
+            if (!resp.ok) throw new Error(resp.statusText);
+            const body = await resp.json();
+            const data = body.data || body;
+            renderFailureOrigin(el, data);
+            if (data.error_code) {
+              loadBlastRadius(data.error_code);
+            }
+          } catch (e) {
+            currentExplainTraceId = null;
+            el.innerHTML = '<p style="color:var(--fg-muted);">Could not load explanation.</p>';
+          }
+        }
+
+        function renderFailureOrigin(el, data) {
+          if (!data) {
+            el.innerHTML = '<p style="color:var(--fg-muted);">No failure data.</p>';
+            return;
+          }
+          let html = '';
+          if (data.error_code) {
+            html += '<span style="display:inline-block;background:var(--red);color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;font-family:var(--font-mono);margin-bottom:8px;">' + esc(data.error_code) + '</span> ';
+          }
+          if (data.service) {
+            html += '<span style="color:var(--fg-secondary);font-size:13px;">' + esc(data.service) + '</span>';
+          }
+          if (data.summary || data.answer) {
+            html += '<p style="margin-top:8px;color:var(--fg);font-size:13px;line-height:1.5;">' + esc(data.summary || data.answer) + '</p>';
+          }
+          if (data.chain && Array.isArray(data.chain)) {
+            html += '<div style="margin-top:8px;">';
+            data.chain.forEach(function (hop) {
+              const color = hop.success ? 'var(--green)' : 'var(--red)';
+              html += '<span style="display:inline-block;padding:2px 6px;margin:2px 4px 2px 0;border:1px solid ' + color + ';border-radius:4px;font-size:11px;color:' + color + ';">' + esc(hop.service || '?') + ' ' + (hop.status_code || '') + '</span>';
+            });
+            html += '</div>';
+          }
+          // Trace waterfall
+          if (data.story && data.story.chain && data.story.chain.length > 0) {
+            html += renderTraceWaterfall(data.story);
+          }
+          el.innerHTML = html || '<p style="color:var(--fg-muted);">No failure details available.</p>';
+        }
+
+        function renderTraceWaterfall(storyData) {
+          if (!storyData || !storyData.chain || !storyData.chain.length) return '';
+          const hops = storyData.chain;
+          const maxDuration = Math.max.apply(null, hops.map(function (h) { return h.latency_ms || 1; }));
+          let html = '<div style="margin-top:12px;">';
+          html += '<div style="font-size:11px;color:var(--fg-muted);margin-bottom:4px;">Trace waterfall</div>';
+          hops.forEach(function (hop) {
+            const pct = maxDuration > 0 ? Math.max(2, (hop.latency_ms || 0) / maxDuration * 100) : 2;
+            const color = hop.success ? 'var(--blue)' : 'var(--red)';
+            html += '<div style="display:flex;align-items:center;gap:8px;margin:2px 0;">';
+            html += '<span style="min-width:80px;font-size:11px;color:var(--fg-secondary);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(hop.service || '?') + '</span>';
+            html += '<div style="flex:1;background:var(--bg-elevated);border-radius:2px;height:14px;position:relative;">';
+            html += '<div style="width:' + pct + '%;background:' + color + ';height:100%;border-radius:2px;min-width:2px;"></div>';
+            html += '</div>';
+            html += '<span style="min-width:45px;font-size:10px;color:var(--fg-muted);font-family:var(--font-mono);">' + (hop.latency_ms || 0) + 'ms</span>';
+            html += '</div>';
+          });
+          html += '</div>';
+          return html;
+        }
+
+        async function loadBlastRadius(errorCode) {
+          if (!errorCode) return;
+          try {
+            const resp = await fetch("/v1/blast_radius?error_code=" + encodeURIComponent(errorCode) + "&window=1h");
+            if (!resp.ok) return;
+            const body = await resp.json();
+            const data = body.data || body;
+            document.getElementById("blast-requests").textContent = nf.format(data.affected_requests || 0);
+            document.getElementById("blast-users").textContent = nf.format(data.affected_users || 0);
+            var svcArr = Array.isArray(data.services) ? data.services : [];
+            document.getElementById("blast-services").textContent = nf.format(svcArr.length);
+            var svcNames = svcArr.map(function (s) { return s.service; });
+            if (svcNames.length > 0) {
+              loadMiniTopology(svcNames);
+            }
+          } catch (e) {
+            console.error("Blast radius fetch error:", e);
+          }
+        }
+
+        async function loadMiniTopology(filterServices) {
+          if (typeof cytoscape === "undefined") return;
+          try {
+            const resp = await fetch("/v1/topology?window=1h");
+            if (!resp.ok) return;
+            const body = await resp.json();
+            const data = body.data || body;
+            const rawNodes = data.nodes || [];
+            const rawEdges = data.edges || [];
+            // Convert neutral TopologyResult to Cytoscape element format
+            let nodes = rawNodes.map(function (n) { return { data: { id: n.id, label: n.label || n.id, status: n.status, error_rate: n.error_rate } }; });
+            let edges = rawEdges.map(function (e) { return { data: { source: e.source, target: e.target, failures: e.failures } }; });
+            if (filterServices && filterServices.length > 0) {
+              const svcSet = {};
+              filterServices.forEach(function (s) { svcSet[s] = true; });
+              nodes = nodes.filter(function (n) { return svcSet[n.data.id]; });
+              const nodeIds = {};
+              nodes.forEach(function (n) { nodeIds[n.data.id] = true; });
+              edges = edges.filter(function (e) { return nodeIds[e.data.source] && nodeIds[e.data.target]; });
+            }
+            renderMiniTopology(nodes, edges);
+          } catch (e) {
+            console.error("Mini topology fetch error:", e);
+          }
+        }
+
+        function renderMiniTopology(nodes, edges) {
+          if (typeof cytoscape === "undefined") return;
+          const container = document.getElementById("mini-topology");
+          if (!container) return;
+          if (miniCyInstance) { miniCyInstance.destroy(); miniCyInstance = null; }
+          if (!nodes.length) {
+            container.innerHTML = '<p style="color:var(--fg-muted);text-align:center;padding-top:80px;font-size:12px;">No topology data</p>';
+            return;
+          }
+          container.innerHTML = '';
+          const elements = [];
+          nodes.forEach(function (n) { elements.push({ group: "nodes", data: n.data }); });
+          edges.forEach(function (e) { elements.push({ group: "edges", data: e.data }); });
+          miniCyInstance = cytoscape({
+            container: container,
+            elements: elements,
+            style: [
+              {
+                selector: "node",
+                style: {
+                  "label": "data(label)",
+                  "background-color": function (ele) {
+                    var er = ele.data("error_rate") || 0;
+                    if (er >= 0.5) return "#f31260";
+                    if (er >= 0.1) return "#f5a623";
+                    return "#17c964";
+                  },
+                  "color": "#ededed",
+                  "text-valign": "bottom",
+                  "text-margin-y": 4,
+                  "font-size": 9,
+                  "font-family": "Geist, system-ui, sans-serif",
+                  "width": 24,
+                  "height": 24,
+                  "border-width": 1,
+                  "border-color": "#333"
+                }
+              },
+              {
+                selector: "edge",
+                style: {
+                  "width": 1,
+                  "line-color": "#444",
+                  "target-arrow-color": "#444",
+                  "target-arrow-shape": "triangle",
+                  "curve-style": "bezier"
+                }
+              }
+            ],
+            layout: { name: "breadthfirst", directed: true, padding: 20, spacingFactor: 1.2 },
+            userZoomingEnabled: false,
+            userPanningEnabled: false,
+            boxSelectionEnabled: false,
+            autoungrabify: true
+          });
+          miniCyInstance.on("tap", "node", function (evt) {
+            var label = evt.target.data("label") || evt.target.data("id");
+            filterTracesByService(label);
+          });
+        }
+
+        function filterTracesByService(service) {
+          const rows = document.querySelectorAll("#traces-body tr");
+          rows.forEach(function (row) {
+            const cell = row.querySelector(".trace-service code");
+            if (!cell) { row.style.display = ""; return; }
+            const text = cell.textContent.trim();
+            row.style.display = (text === service || service === "") ? "" : "none";
+          });
+        }
+
+        // --- SSE integration ---
+
+        let pollingInterval = null;
+
+        function startPolling() {
+          if (pollingInterval) return;
+          pollingInterval = setInterval(refreshAll, refreshIntervalMs);
+        }
+
+        function stopPolling() {
+          if (pollingInterval) {
+            clearInterval(pollingInterval);
+            pollingInterval = null;
+          }
+        }
+
+        function initSSE() {
+          if (typeof EventSource === "undefined") {
+            startPolling();
+            return;
+          }
+          const startTime = Date.now();
+          let sseReceivedEvent = false;
+          const es = new EventSource("/v1/stream/dashboard");
+
+          es.onopen = function () {
+            stopPolling();
+          };
+
+          es.addEventListener("overview", function (e) {
+            sseReceivedEvent = true;
+            try {
+              const data = JSON.parse(e.data);
+              renderKPIs(data);
+              document.getElementById("last-update").textContent =
+                "Updated " + new Date().toLocaleTimeString();
+            } catch (err) {
+              console.error("SSE overview parse error:", err);
+            }
+          });
+
+          es.addEventListener("timeseries", function (e) {
+            try {
+              const data = JSON.parse(e.data);
+              renderChart(data);
+            } catch (err) {
+              console.error("SSE timeseries parse error:", err);
+            }
+          });
+
+          es.addEventListener("routes", function (e) {
+            try {
+              // Only apply SSE routes when dashboard is using default filters,
+              // otherwise the user's selected window/filter would be overwritten.
+              if (routeWindow !== "1h" || routeFailuresOnly) return;
+              const data = JSON.parse(e.data);
+              renderRoutes(data);
+            } catch (err) {
+              console.error("SSE routes parse error:", err);
+            }
+          });
+
+          es.addEventListener("deployments", function (e) {
+            try {
+              const data = JSON.parse(e.data);
+              const deploys = data.deployments || [];
+              currentDeployments = deploys;
+              renderWhatChanged(deploys);
+              if (tsChart) {
+                tsChart.options.plugins = tsChart.options.plugins || {};
+                tsChart.options.plugins.annotation = {
+                  annotations: makeDeployAnnotations(deploys)
+                };
+                tsChart.update('none');
+              }
+            } catch (err) {
+              console.error("SSE deployments parse error:", err);
+            }
+          });
+
+          es.onerror = function () {
+            if (!sseReceivedEvent && Date.now() - startTime < 5000) {
+              // SSE never connected successfully — fall back to polling permanently
+              es.close();
+              console.warn("SSE failed quickly, falling back to polling");
+              startPolling();
+            }
+            // Otherwise EventSource will auto-reconnect; no action needed.
+          };
+        }
+
+        setRouteFailuresOnly(routeFailuresOnly, false);
+        setRouteWindow(routeWindow, false);
+        loadCapabilities().finally(function () {
+          // Apply saved tab after capabilities are loaded (so graph tab is visible if enabled)
+          if (activeTab !== "dashboard") switchTab(activeTab);
+          refreshAll();
+          initSSE();
+        });
+      })();
+    </script>
+  </body>
+</html>

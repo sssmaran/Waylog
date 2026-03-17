@@ -3,6 +3,8 @@ package event
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -34,8 +36,15 @@ type RequestContext struct {
 	SpanID       string `json:"span_id,omitempty"`
 	ParentSpanID string `json:"parent_span_id,omitempty"`
 
+	HTTPMethod    string `json:"http_method,omitempty"`
+	RouteTemplate string `json:"route_template,omitempty"`
+
 	Flow         string   `json:"flow"`
 	FeatureFlags []string `json:"feature_flags"`
+
+	CorrelationID string `json:"correlation_id,omitempty"`
+	Attempt       int    `json:"attempt,omitempty"`
+	TransportKind string `json:"transport_kind,omitempty"`
 }
 
 type SystemContext struct {
@@ -66,8 +75,8 @@ func (e WideEvent) Validate() error {
 	if e.SchemaVersion == "" {
 		return errors.New("schema_version is required")
 	}
-	if e.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("unsupported schema_version: %s", e.SchemaVersion)
+	if err := supportedSchema(e.SchemaVersion); err != nil {
+		return err
 	}
 	if e.EventName == "" {
 		return errors.New("event_name is required")
@@ -85,6 +94,13 @@ func (e WideEvent) Validate() error {
 	// If ParentSpanID is set, SpanID must be set
 	if e.Request.ParentSpanID != "" && e.Request.SpanID == "" {
 		return errors.New("request.span_id is required when request.parent_span_id is set")
+	}
+
+	if e.Request.HTTPMethod != "" && !validHTTPMethod(e.Request.HTTPMethod) {
+		return fmt.Errorf("request.http_method %q is not a valid HTTP method", e.Request.HTTPMethod)
+	}
+	if e.Request.RouteTemplate != "" && e.Request.RouteTemplate[0] != '/' {
+		return errors.New("request.route_template must start with /")
 	}
 
 	if e.System.Service == "" {
@@ -112,4 +128,30 @@ func (e WideEvent) Validate() error {
 
 func (e WideEvent) IsError() bool {
 	return !e.Outcome.Success || e.Outcome.StatusCode >= 500 || e.Error != nil
+}
+
+func validHTTPMethod(m string) bool {
+	switch m {
+	case "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH":
+		return true
+	}
+	return false
+}
+
+func supportedSchema(v string) error {
+	parts := strings.Split(v, ".")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid schema_version format: %s (expected major.minor)", v)
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid schema_version major: %s", v)
+	}
+	if _, err := strconv.Atoi(parts[1]); err != nil {
+		return fmt.Errorf("invalid schema_version minor: %s", v)
+	}
+	if major != 1 {
+		return fmt.Errorf("unsupported schema_version: %s (supported: 1.x)", v)
+	}
+	return nil
 }

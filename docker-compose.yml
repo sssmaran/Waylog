@@ -1,0 +1,169 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.7.7
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.7.7
+    depends_on:
+      zookeeper:
+        condition: service_started
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+
+  ingest:
+    build:
+      context: .
+      target: ingest
+    ports:
+      - "8080:8080"
+    env_file:
+      - ${ENV_FILE:-deploy/dev.env}
+    environment:
+      INGEST_ADDR: ":8080"
+      SNAPSHOT_PATH: /data/graph_snapshot.json
+      EVENT_LOG_DIR: /data/eventlog
+      LOG_LEVEL: info
+      CORS_ORIGIN: "*"
+      WAYLOG_API_KEY: ${WAYLOG_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      GEMINI_API_BASE: ${GEMINI_API_BASE:-}
+      GEMINI_TOOL_MODE: ${GEMINI_TOOL_MODE:-text}
+      ASK_MAX_STEPS_DEFAULT: ${ASK_MAX_STEPS_DEFAULT:-5}
+      ASK_MAX_STEPS_MAX: ${ASK_MAX_STEPS_MAX:-8}
+      DASHBOARD_REFRESH_SEC: ${DASHBOARD_REFRESH_SEC:-10}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://localhost:9090}
+      GRAFANA_URL: ${GRAFANA_URL:-http://localhost:3000}
+      SQLITE_PATH: /data/waylog.db
+    volumes:
+      - waylog-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bridge:
+    build:
+      context: .
+      target: bridge
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ingest:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: wide_events
+      INGEST_URL: http://ingest:8080/v1/events
+      WAYLOG_API_KEY: ${WAYLOG_API_KEY:-}
+      DLQ_DIR: /data/dlq
+      LOG_LEVEL: info
+    volumes:
+      - bridge-data:/data
+
+  api-gateway:
+    build:
+      context: .
+      target: api-gateway
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "9081:9081"
+    environment:
+      CHECKOUT_URL: http://checkout-demo:9082
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: wide_events
+
+  checkout-demo:
+    build:
+      context: .
+      target: checkout-demo
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      PAYMENT_URL: http://payment-demo:9083
+      DB_URL: http://db-demo:9084
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: wide_events
+
+  payment-demo:
+    build:
+      context: .
+      target: payment-demo
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: wide_events
+
+  db-demo:
+    build:
+      context: .
+      target: db-demo
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: wide_events
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    depends_on:
+      ingest:
+        condition: service_healthy
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./deploy/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./deploy/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  waylog-data:
+  bridge-data:
+  prometheus-data:
+  grafana-data:

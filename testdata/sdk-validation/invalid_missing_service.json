@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "event_name": "checkout.request",
+  "timestamp": "2026-02-17T10:00:00Z",
+  "user": {"id": "u123"},
+  "request": {"trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa4", "flow": "checkout", "feature_flags": []},
+  "system": {"service": "", "env": "prod"},
+  "outcome": {"success": true, "status_code": 200, "kind": "http"},
+  "metrics": {"latency_ms": 45}
+}

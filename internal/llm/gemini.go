@@ -75,16 +75,21 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt string, tools []Tool
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return Result{}, err
+		return Result{}, &ProviderError{Provider: "gemini", Retryable: true, Message: err.Error(), Cause: err}
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Result{}, err
+		return Result{}, &ProviderError{Provider: "gemini", Retryable: true, Message: err.Error(), Cause: err}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Result{}, fmt.Errorf("gemini error: %s", string(body))
+		return Result{}, &ProviderError{
+			Provider:   "gemini",
+			StatusCode: resp.StatusCode,
+			Retryable:  resp.StatusCode == 429 || resp.StatusCode >= 500,
+			Message:    string(body),
+		}
 	}
 
 	if mode == "text" {
@@ -474,9 +479,12 @@ func filterToolsForPrompt(tools []ToolDefinition, prompt string) []ToolDefinitio
 	case strings.Contains(p, "service path") || strings.Contains(p, "path"):
 		add("trace_summary")
 		add("failure_chain")
+	case strings.Contains(p, "root cause") || strings.Contains(p, "why did") || strings.Contains(p, "why is"):
+		add("explain_request")
+		add("failure_chain")
 	case strings.Contains(p, "explain") || strings.Contains(p, "info"):
 		add("explain_request")
-	case strings.Contains(p, "blast"):
+	case strings.Contains(p, "impact") || strings.Contains(p, "affected") || strings.Contains(p, "blast") || strings.Contains(p, "radius"):
 		add("blast_radius")
 	case strings.Contains(p, "pattern"):
 		add("failure_patterns")
@@ -484,7 +492,9 @@ func filterToolsForPrompt(tools []ToolDefinition, prompt string) []ToolDefinitio
 		add("compare_windows")
 	case strings.Contains(p, "query"):
 		add("graph_query")
-	case strings.Contains(p, "insight") || strings.Contains(p, "top") || strings.Contains(p, "stats"):
+	case strings.Contains(p, "insight") || strings.Contains(p, "top") || strings.Contains(p, "stats") ||
+		strings.Contains(p, "overview") || strings.Contains(p, "summary") || strings.Contains(p, "health") ||
+		strings.Contains(p, "what happened"):
 		add("graph_insights")
 	case strings.Contains(p, "failure") || strings.Contains(p, "error"):
 		add("graph_failures")

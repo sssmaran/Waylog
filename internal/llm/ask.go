@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 type ToolExecutor interface {
@@ -16,32 +17,53 @@ func (f ToolExecutorFunc) Call(ctx context.Context, name string, params json.Raw
 	return f(ctx, name, params)
 }
 
-func Ask(ctx context.Context, provider Provider, tools []ToolDefinition, exec ToolExecutor, prompt string, maxSteps int) (string, error) {
+// AskOptions controls Ask behavior.
+type AskOptions struct {
+	MaxSteps      int
+	ErrorStrategy string // "continue" or "abort" (default)
+}
+
+// ToolCallRecord captures a single tool invocation during Ask.
+type ToolCallRecord struct {
+	Name       string          `json:"name"`
+	Params     json.RawMessage `json:"params"`
+	Result     any             `json:"result,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	DurationMs int64           `json:"duration_ms"`
+}
+
+func Ask(ctx context.Context, provider Provider, tools []ToolDefinition, exec ToolExecutor, prompt string, opts AskOptions) (string, []ToolCallRecord, error) {
 	if provider == nil {
-		return "", fmt.Errorf("llm provider required")
+		return "", nil, fmt.Errorf("llm provider required")
 	}
 	if exec == nil {
-		return "", fmt.Errorf("tool executor required")
+		return "", nil, fmt.Errorf("tool executor required")
 	}
 	if prompt == "" {
-		return "", fmt.Errorf("prompt required")
+		return "", nil, fmt.Errorf("prompt required")
 	}
+	maxSteps := opts.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = 5
 	}
+	strategy := opts.ErrorStrategy
+	if strategy == "" {
+		strategy = "abort"
+	}
 
 	history := make([]Turn, 0, maxSteps*2)
+	var records []ToolCallRecord
 
 	for i := 0; i < maxSteps; i++ {
 		res, err := provider.Generate(ctx, prompt, tools, history)
 		if err != nil {
-			return "", err
+			return "", records, err
 		}
 		if len(res.ToolCalls) == 0 {
 			if res.Text == "" {
-				return "", fmt.Errorf("llm returned empty response")
+				return "", records, fmt.Errorf("llm returned empty response")
 			}
-			return res.Text, nil
+			return res.Text, records, nil
 		}
 
 		for _, call := range res.ToolCalls {
@@ -49,10 +71,35 @@ func Ask(ctx context.Context, provider Provider, tools []ToolDefinition, exec To
 				Role:     "assistant",
 				ToolCall: &call,
 			})
-			result, err := exec.Call(ctx, call.Name, call.Arguments)
-			if err != nil {
-				return "", err
+
+			start := time.Now()
+			result, callErr := exec.Call(ctx, call.Name, call.Arguments)
+			rec := ToolCallRecord{
+				Name:       call.Name,
+				Params:     call.Arguments,
+				DurationMs: time.Since(start).Milliseconds(),
 			}
+
+			if callErr != nil {
+				rec.Error = callErr.Error()
+				records = append(records, rec)
+
+				if strategy == "continue" {
+					// Feed error as tool result so LLM can adapt
+					history = append(history, Turn{
+						Role: "tool",
+						ToolResult: &ToolResult{
+							Name:   call.Name,
+							Result: map[string]string{"error": callErr.Error()},
+						},
+					})
+					continue
+				}
+				return "", records, callErr
+			}
+
+			rec.Result = result
+			records = append(records, rec)
 			history = append(history, Turn{
 				Role: "tool",
 				ToolResult: &ToolResult{
@@ -63,5 +110,5 @@ func Ask(ctx context.Context, provider Provider, tools []ToolDefinition, exec To
 		}
 	}
 
-	return "", fmt.Errorf("tool calling exceeded max steps")
+	return "", records, fmt.Errorf("tool calling exceeded max steps")
 }

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -44,7 +44,8 @@ func main() {
 	}
 
 	if err := waylog.Init(cfg); err != nil {
-		log.Fatalf("waylog init failed: %v", err)
+		slog.Error("waylog init failed", "err", err)
+		os.Exit(1)
 	}
 
 	checkoutURL := config.Getenv("CHECKOUT_URL", "http://localhost:9082")
@@ -63,22 +64,23 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Println("api-gateway listening on :9081")
+		slog.Info("api-gateway listening", "addr", ":9081")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("api-gateway server error: %v", err)
+			slog.Error("api-gateway server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("api-gateway shutdown signal received")
+	slog.Info("api-gateway shutdown signal received")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("api-gateway graceful shutdown failed: %v", err)
+		slog.Error("api-gateway graceful shutdown failed", "err", err)
 	}
 	if err := waylog.Shutdown(shutdownCtx); err != nil {
-		log.Printf("waylog shutdown failed: %v", err)
+		slog.Error("waylog shutdown failed", "err", err)
 	}
-	log.Println("api-gateway shutdown complete")
+	slog.Info("api-gateway shutdown complete")
 }

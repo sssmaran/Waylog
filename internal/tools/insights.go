@@ -16,28 +16,30 @@ type explainRequestInput struct {
 }
 
 type explainRequestOutput struct {
-	RequestID    string   `json:"request_id"`
-	LatencyMs    any      `json:"latency_ms,omitempty"`
-	Flow         any      `json:"flow,omitempty"`
-	UserID       string   `json:"user_id,omitempty"`
-	UserTier     any      `json:"user_tier,omitempty"`
-	FeatureFlags []string `json:"feature_flags,omitempty"`
-	SpanID       string   `json:"span_id,omitempty"`
-	SpanService  any      `json:"span_service,omitempty"`
-	SpanDepth    string   `json:"span_depth,omitempty"`
-	Service      any      `json:"service,omitempty"`
-	ErrorCode    any      `json:"error_code,omitempty"`
-	ErrorMsg     any      `json:"error_msg,omitempty"`
+	SchemaVersion string                 `json:"schema_version"`
+	RequestID     string                 `json:"request_id"`
+	LatencyMs     any                    `json:"latency_ms,omitempty"`
+	Flow          any                    `json:"flow,omitempty"`
+	UserID        string                 `json:"user_id,omitempty"`
+	UserTier      any                    `json:"user_tier,omitempty"`
+	FeatureFlags  []string               `json:"feature_flags,omitempty"`
+	SpanID        string                 `json:"span_id,omitempty"`
+	SpanService   any                    `json:"span_service,omitempty"`
+	SpanDepth     string                 `json:"span_depth,omitempty"`
+	Service       any                    `json:"service,omitempty"`
+	ErrorCode     any                    `json:"error_code,omitempty"`
+	ErrorMsg      any                    `json:"error_msg,omitempty"`
+	SpanChain     []analysis.SpanSummary `json:"span_chain,omitempty"`
 }
 
 func handleExplainRequest(ctx context.Context, store Store, params json.RawMessage) (any, error) {
 	_ = ctx
 	var input explainRequestInput
 	if err := json.Unmarshal(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 	}
 	if input.RequestID == "" && input.TraceID == "" {
-		return nil, fmt.Errorf("request_id or trace_id required")
+		return nil, &ToolError{Code: CodeInvalidParams, Message: "request_id or trace_id required"}
 	}
 	requestID := input.RequestID
 	if requestID == "" {
@@ -46,21 +48,23 @@ func handleExplainRequest(ctx context.Context, store Store, params json.RawMessa
 	g := store.Snapshot()
 	ex, err := analysis.ExplainRequest(g, requestID)
 	if err != nil {
-		return nil, err
+		return nil, &ToolError{Code: CodeNotFound, Message: err.Error()}
 	}
 	return explainRequestOutput{
-		RequestID:    ex.RequestID,
-		LatencyMs:    ex.LatencyMs,
-		Flow:         ex.Flow,
-		UserID:       ex.UserID,
-		UserTier:     ex.UserTier,
-		FeatureFlags: ex.FeatureFlags,
-		SpanID:       ex.SpanID,
-		SpanService:  ex.SpanService,
-		SpanDepth:    ex.SpanDepth,
-		Service:      ex.Service,
-		ErrorCode:    ex.ErrorCode,
-		ErrorMsg:     ex.ErrorMsg,
+		SchemaVersion: "1.0",
+		RequestID:     ex.RequestID,
+		LatencyMs:     ex.LatencyMs,
+		Flow:          ex.Flow,
+		UserID:        ex.UserID,
+		UserTier:      ex.UserTier,
+		FeatureFlags:  ex.FeatureFlags,
+		SpanID:        ex.SpanID,
+		SpanService:   ex.SpanService,
+		SpanDepth:     ex.SpanDepth,
+		Service:       ex.Service,
+		ErrorCode:     ex.ErrorCode,
+		ErrorMsg:      ex.ErrorMsg,
+		SpanChain:     ex.SpanChain,
 	}, nil
 }
 
@@ -81,6 +85,7 @@ type insightService struct {
 }
 
 type insightsOutput struct {
+	SchemaVersion string           `json:"schema_version"`
 	TotalFailures int              `json:"total_failures"`
 	TopErrors     []insightError   `json:"top_errors,omitempty"`
 	TopServices   []insightService `json:"top_services,omitempty"`
@@ -91,7 +96,7 @@ func handleInsights(ctx context.Context, store Store, params json.RawMessage) (a
 	var input insightsInput
 	if len(params) > 0 {
 		if err := json.Unmarshal(params, &input); err != nil {
-			return nil, fmt.Errorf("invalid params: %w", err)
+			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid params: %v", err)}
 		}
 	}
 
@@ -107,7 +112,7 @@ func handleInsights(ctx context.Context, store Store, params json.RawMessage) (a
 	if input.Window != "" {
 		d, err := time.ParseDuration(input.Window)
 		if err != nil {
-			return nil, fmt.Errorf("invalid window: %w", err)
+			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid window: %v", err)}
 		}
 		end := time.Now()
 		start := end.Add(-d)
@@ -130,6 +135,7 @@ func handleInsights(ctx context.Context, store Store, params json.RawMessage) (a
 		}
 
 		return insightsOutput{
+			SchemaVersion: "1.0",
 			TotalFailures: total,
 			TopErrors:     mapCountToTopErrors(errorCounts, input.TopErrors),
 			TopServices:   mapCountToTopServices(serviceCounts, input.TopServices),
@@ -168,14 +174,15 @@ func handleInsights(ctx context.Context, store Store, params json.RawMessage) (a
 		errorCounts[code]++
 		total++
 
-		for _, ed := range g.Edges {
-			if ed.From == reqID && ed.Type == core.EdgeHandledBy {
+		for _, ed := range g.OutEdges[reqID] {
+			if ed.Type == core.EdgeHandledBy {
 				serviceCounts[serviceNameForID(g, ed.To)]++
 			}
 		}
 	}
 
 	return insightsOutput{
+		SchemaVersion: "1.0",
 		TotalFailures: total,
 		TopErrors:     mapCountToTopErrors(errorCounts, input.TopErrors),
 		TopServices:   mapCountToTopServices(serviceCounts, input.TopServices),

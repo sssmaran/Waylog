@@ -2,6 +2,7 @@ package waylog
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -43,6 +44,8 @@ func (c *Client) assembleEvent(
 
 	flow, _ := flowFromContext(ctx)
 	flags, _ := flagsFromContext(ctx)
+	httpMethod, _ := httpMethodFromContext(ctx)
+	routeTemplate, _ := routeTemplateFromContext(ctx)
 
 	tc, _ := trace.FromContext(ctx)
 	traceID := tc.TraceID
@@ -75,7 +78,7 @@ func (c *Client) assembleEvent(
 
 	var errContext *event.ErrorContext
 	if !success {
-		code := c.classifyError(err)
+		code := c.classifyError(err, statusCode)
 		message := errorMessage(err, statusCode)
 		errContext = &event.ErrorContext{
 			Code:    code,
@@ -90,11 +93,13 @@ func (c *Client) assembleEvent(
 
 		User: user,
 		Request: event.RequestContext{
-			TraceID:      traceID,
-			SpanID:       spanID,
-			ParentSpanID: parentSpanID,
-			Flow:         flow,
-			FeatureFlags: flags,
+			TraceID:       traceID,
+			SpanID:        spanID,
+			ParentSpanID:  parentSpanID,
+			HTTPMethod:    httpMethod,
+			RouteTemplate: routeTemplate,
+			Flow:          flow,
+			FeatureFlags:  flags,
 		},
 		System:  system,
 		Outcome: outcome,
@@ -105,18 +110,16 @@ func (c *Client) assembleEvent(
 	}
 }
 
-func (c *Client) classifyError(err error) string {
-	if err == nil {
-		return "UNKNOWN"
+func (c *Client) classifyError(err error, statusCode int) string {
+	if err != nil && c.cfg.ErrorClassifier != nil {
+		if code := c.cfg.ErrorClassifier(err); code != "" {
+			return code
+		}
 	}
-	if c.cfg.ErrorClassifier == nil {
-		return "UNKNOWN"
+	if statusCode > 0 {
+		return fmt.Sprintf("HTTP_%d", statusCode)
 	}
-	code := c.cfg.ErrorClassifier(err)
-	if code == "" {
-		return "UNKNOWN"
-	}
-	return code
+	return "UNKNOWN"
 }
 
 func errorMessage(err error, statusCode int) string {

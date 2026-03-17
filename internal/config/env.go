@@ -47,6 +47,19 @@ func GetenvBool(key string, def bool) bool {
 	return def
 }
 
+// GetenvFloat returns the value of the environment variable key as a float64, or def if empty/invalid.
+func GetenvFloat(key string, def float64) float64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
+}
+
 // GetenvDuration returns the value of the environment variable key as a time.Duration, or def if empty/invalid.
 func GetenvDuration(key string, def time.Duration) time.Duration {
 	v := strings.TrimSpace(os.Getenv(key))

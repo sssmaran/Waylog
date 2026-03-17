@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "event_name": "payment.error",
+  "timestamp": "2026-02-17T10:00:01Z",
+  "user": {"id": "u456", "tier": "premium", "region": "eu", "vip": true},
+  "request": {"trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2", "span_id": "bbbbbbbbbbbbbb02", "flow": "payment", "feature_flags": ["new_checkout"]},
+  "system": {"service": "payment", "env": "prod", "version": "2.1.0", "deployment_id": "deploy_002"},
+  "outcome": {"success": false, "status_code": 502, "kind": "http"},
+  "error": {"code": "PMT_502", "message": "gateway timeout"},
+  "metrics": {"latency_ms": 3000}
+}

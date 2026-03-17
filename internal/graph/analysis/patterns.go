@@ -9,12 +9,11 @@ import (
 
 // FailurePattern represents a recurring failure shape in the system.
 type FailurePattern struct {
-	ErrorCode    string
-	Flow         string
-	UserTier     string
-	FeatureFlags []string
-
-	Count int
+	ErrorCode    string   `json:"error_code"`
+	Flow         string   `json:"flow"`
+	UserTier     string   `json:"user_tier"`
+	FeatureFlags []string `json:"feature_flags"`
+	Count        int      `json:"count"`
 }
 
 // DetectFailurePatterns scans the graph and groups failed requests
@@ -53,8 +52,8 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 		}
 
 		// request -> user
-		for _, ed := range g.Edges {
-			if ed.From == req.ID && ed.Type == core.EdgeRequestBy {
+		for _, ed := range g.OutEdges[req.ID] {
+			if ed.Type == core.EdgeRequestBy {
 				user, ok := g.Nodes[ed.To]
 				if ok && user.Attr != nil {
 					userTier, _ = user.Attr["tier"].(string)
@@ -64,8 +63,8 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 		}
 
 		// request -> flags
-		for _, ed := range g.Edges {
-			if ed.From == req.ID && ed.Type == core.EdgeUsedFlag {
+		for _, ed := range g.OutEdges[req.ID] {
+			if ed.Type == core.EdgeUsedFlag {
 				flag, ok := g.Nodes[ed.To]
 				if ok && flag.Attr != nil {
 					if name, ok := flag.Attr["name"].(string); ok {
@@ -75,6 +74,9 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 			}
 		}
 
+		if flags == nil {
+			flags = []string{}
+		}
 		key := fmt.Sprintf("%s|%s|%s|%v", errorCode, flow, userTier, flags)
 
 		if _, ok := patterns[key]; !ok {
