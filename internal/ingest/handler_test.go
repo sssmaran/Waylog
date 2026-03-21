@@ -554,52 +554,6 @@ func TestReadEndpoints_NoStore(t *testing.T) {
 	})
 }
 
-func TestAPIKeyMiddleware(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	handler := APIKeyMiddleware("test-secret", inner)
-
-	t.Run("valid Bearer token", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/events", nil)
-		req.Header.Set("Authorization", "Bearer test-secret")
-		w := httptest.NewRecorder()
-		handler(w, req)
-		if w.Code != http.StatusOK {
-			t.Errorf("expected 200, got %d", w.Code)
-		}
-	})
-
-	t.Run("valid X-API-Key", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/events", nil)
-		req.Header.Set("X-API-Key", "test-secret")
-		w := httptest.NewRecorder()
-		handler(w, req)
-		if w.Code != http.StatusOK {
-			t.Errorf("expected 200, got %d", w.Code)
-		}
-	})
-
-	t.Run("missing key", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/events", nil)
-		w := httptest.NewRecorder()
-		handler(w, req)
-		if w.Code != http.StatusUnauthorized {
-			t.Errorf("expected 401, got %d", w.Code)
-		}
-	})
-
-	t.Run("wrong key", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/events", nil)
-		req.Header.Set("Authorization", "Bearer wrong-key")
-		w := httptest.NewRecorder()
-		handler(w, req)
-		if w.Code != http.StatusUnauthorized {
-			t.Errorf("expected 401, got %d", w.Code)
-		}
-	})
-}
-
 func TestEvents_BodyTooLarge(t *testing.T) {
 	srv := NewServer(ServerConfig{
 		Store:        graphstore.NewStore(),
@@ -1873,33 +1827,6 @@ func TestNormalizeErrorCode_WrappedProviderError(t *testing.T) {
 	}
 }
 
-func TestAPIKeyMiddleware_RequiresBearerPrefix(t *testing.T) {
-	key := "test-secret-key"
-	handler := APIKeyMiddleware(key, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-	})
-
-	// Raw key in Authorization (no Bearer prefix) should be rejected
-	r := httptest.NewRequest("GET", "/test", nil)
-	r.Header.Set("Authorization", key)
-	w := httptest.NewRecorder()
-	handler(w, r)
-	if w.Code != 401 {
-		t.Errorf("raw key in Authorization: status = %d, want 401", w.Code)
-	}
-
-	// Bearer prefix should work (case-insensitive)
-	for _, prefix := range []string{"Bearer ", "bearer ", "BEARER "} {
-		r = httptest.NewRequest("GET", "/test", nil)
-		r.Header.Set("Authorization", prefix+key)
-		w = httptest.NewRecorder()
-		handler(w, r)
-		if w.Code != 200 {
-			t.Errorf("prefix %q: status = %d, want 200", prefix, w.Code)
-		}
-	}
-}
-
 func TestCORSWrap_ExposesHeaders(t *testing.T) {
 	handler := CORSWrap("*", "GET, OPTIONS", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
@@ -1915,29 +1842,6 @@ func TestCORSWrap_ExposesHeaders(t *testing.T) {
 	expose := w.Header().Get("Access-Control-Expose-Headers")
 	if !strings.Contains(expose, "X-Request-ID") || !strings.Contains(expose, "Waylog-API-Version") {
 		t.Errorf("Expose-Headers missing expected: %q", expose)
-	}
-}
-
-func TestAPIKeyMiddleware_EnvelopeError(t *testing.T) {
-	handler := APIKeyMiddleware("test-key", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-	})
-
-	req := httptest.NewRequest("POST", "/v1/ask?envelope=v2", nil)
-	req.Header.Set("Authorization", "Bearer wrong-key")
-	req = req.WithContext(ContextWithRequestID(req.Context(), "req_test"))
-	w := httptest.NewRecorder()
-	handler(w, req)
-
-	if w.Code != 401 {
-		t.Fatalf("status = %d, want 401", w.Code)
-	}
-	var env APIResponse
-	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
-		t.Fatalf("expected JSON envelope, got: %s", w.Body.String())
-	}
-	if env.Error == nil || env.Error.Code != "UNAUTHORIZED" {
-		t.Errorf("expected UNAUTHORIZED error code, got %+v", env.Error)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -119,7 +118,6 @@ type Server struct {
 	graphUI             bool
 	dedupCache          *DedupCache
 	agentKey            string
-	apiKey              string
 	trustProxy          bool
 	coldWriter          *coldstore.BatchWriter
 	coldStore           *coldstore.Store
@@ -186,7 +184,6 @@ type ServerConfig struct {
 	GraphUI             bool
 	DedupCache          *DedupCache
 	AgentKey            string
-	APIKey              string
 	TrustProxy          bool
 	ColdWriter          *coldstore.BatchWriter
 	ColdStore           *coldstore.Store
@@ -222,7 +219,6 @@ func NewServer(cfg ServerConfig) *Server {
 		graphUI:             cfg.GraphUI,
 		dedupCache:          cfg.DedupCache,
 		agentKey:            cfg.AgentKey,
-		apiKey:              cfg.APIKey,
 		trustProxy:          cfg.TrustProxy,
 		coldWriter:          cfg.ColdWriter,
 		coldStore:           cfg.ColdStore,
@@ -1675,30 +1671,6 @@ func (s *Server) GraphTopology(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(cyto)
-}
-
-// APIKeyMiddleware rejects requests that don't provide a valid API key
-// via Authorization: Bearer <key> or X-API-Key header.
-func APIKeyMiddleware(key string, next http.HandlerFunc) http.HandlerFunc {
-	keyBytes := []byte(key)
-	return func(w http.ResponseWriter, r *http.Request) {
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			if idx := strings.IndexByte(auth, ' '); idx > 0 {
-				scheme, token := auth[:idx], auth[idx+1:]
-				if strings.EqualFold(scheme, "bearer") && subtle.ConstantTimeCompare([]byte(token), keyBytes) == 1 {
-					next(w, r)
-					return
-				}
-			}
-		}
-		if xKey := r.Header.Get("X-API-Key"); xKey != "" {
-			if subtle.ConstantTimeCompare([]byte(xKey), keyBytes) == 1 {
-				next(w, r)
-				return
-			}
-		}
-		respondError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", false, APIMeta{RequestID: RequestIDFromContext(r.Context())})
-	}
 }
 
 // CORSWrap wraps a handler with CORS headers.

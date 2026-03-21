@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sssmaran/WaylogCLI/internal/auth"
 	"github.com/sssmaran/WaylogCLI/internal/cli"
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
 	"github.com/sssmaran/WaylogCLI/internal/config"
@@ -73,8 +74,32 @@ func main() {
 		slog.Warn("snapshot load failed, starting with empty graph", "err", err)
 	}
 
-	apiKey := config.Getenv("WAYLOG_API_KEY", "")
-	agentKey := config.Getenv("WAYLOG_AGENT_KEY", "")
+	authCfg, err := auth.ParseConfig(map[string]string{
+		"WAYLOG_API_KEY":           os.Getenv("WAYLOG_API_KEY"),
+		"WAYLOG_WRITE_KEY":         os.Getenv("WAYLOG_WRITE_KEY"),
+		"WAYLOG_READ_KEY":          os.Getenv("WAYLOG_READ_KEY"),
+		"WAYLOG_AGENT_KEY":         os.Getenv("WAYLOG_AGENT_KEY"),
+		"DASHBOARD_AUTH":           os.Getenv("DASHBOARD_AUTH"),
+		"DASHBOARD_SESSION_SECRET": os.Getenv("DASHBOARD_SESSION_SECRET"),
+		"WAYLOG_PROFILE":           os.Getenv("WAYLOG_PROFILE"),
+	})
+	if err != nil {
+		slog.Error("auth config error", "err", err)
+		os.Exit(1)
+	}
+
+	var sm *auth.SessionManager
+	if authCfg.DashboardMode != "off" {
+		sm = auth.NewSessionManager(authCfg.SessionSecret, auth.DefaultSessionMaxAge)
+		sm.Secure = os.Getenv("WAYLOG_PROFILE") == "prod"
+	}
+	sessionCheck := auth.SessionCheckFunc(sm)
+
+	agentKey := ""
+	if len(authCfg.AgentKeys) > 0 {
+		agentKey = authCfg.AgentKeys[0]
+	}
+
 	maxBody := int64(config.GetenvInt("MAX_BODY_BYTES", 1<<20))
 	eventLogDir := config.Getenv("EVENT_LOG_DIR", "")
 	sqlitePath := config.Getenv("SQLITE_PATH", "")
@@ -148,7 +173,6 @@ func main() {
 		TrustProxy:          trustProxy,
 		ColdWriter:          coldWriter,
 		ColdStore:           coldDB,
-		APIKey:              apiKey,
 		PlanStore:           planStore,
 	})
 
@@ -221,60 +245,89 @@ func main() {
 	defer dedupCancel()
 	dedupCache.StartEviction(dedupCtx)
 
+	corsOrigin := config.Getenv("CORS_ORIGIN", "*")
+
+	writeAuth := auth.Middleware("write", authCfg.WriteKeys, nil)
+	readAuth := auth.Middleware("read", authCfg.ReadKeys, sessionCheck)
+	agentAuth := auth.Middleware("agent", authCfg.AgentKeys, nil)
+	dashGate := auth.DashboardGate(authCfg, sm)
+
 	mux := http.NewServeMux()
+
+	// Operational probes — always open.
 	mux.HandleFunc("/healthz", ingestServer.Health)
 	mux.HandleFunc("/livez", ingestServer.Livez)
 	mux.HandleFunc("/readyz", ingestServer.Readyz)
 	mux.Handle("/metrics", m.Handler())
-	if apiKey != "" {
-		mux.HandleFunc("/v1/events", ingest.APIKeyMiddleware(apiKey, ingestServer.Events))
-	} else {
-		mux.HandleFunc("/v1/events", ingestServer.Events)
+
+	// Write endpoints.
+	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(ingestServer.Events)))
+	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(ingestServer.Validate)))
+
+	// Read endpoints — CORS outermost so OPTIONS preflight passes without auth.
+	readCORS := func(h http.HandlerFunc) http.Handler {
+		inner := readAuth(http.HandlerFunc(h))
+		return http.HandlerFunc(ingest.CORSWrap(corsOrigin, "GET, OPTIONS",
+			func(w http.ResponseWriter, r *http.Request) { inner.ServeHTTP(w, r) }))
 	}
+	mux.Handle("/v1/traces/story", readCORS(ingestServer.TraceStory))
+	mux.Handle("/v1/traces/recent", readCORS(ingestServer.RecentTraces))
+	mux.Handle("/v1/overview", readCORS(ingestServer.Overview))
+	mux.Handle("/v1/events/search", readCORS(ingestServer.EventSearch))
+	mux.Handle("/v1/overview/timeseries", readCORS(ingestServer.OverviewTimeseries))
+	mux.Handle("/v1/routes", readCORS(ingestServer.Routes))
+	mux.Handle("/v1/capabilities", readCORS(ingestServer.Capabilities))
+	mux.Handle("/v1/topology", readCORS(ingestServer.Topology))
+	mux.Handle("/v1/blast_radius", readCORS(ingestServer.BlastRadius))
+	mux.Handle("/v1/stream/dashboard", readCORS(ingestServer.SSEStream))
 
-	mux.HandleFunc("/v1/events/validate", ingestServer.Validate)
+	// Deployments — dual method: GET=read, POST=write.
+	mux.Handle("/v1/deployments", http.HandlerFunc(
+		ingest.CORSWrap(corsOrigin, "GET, POST, OPTIONS", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				readAuth(http.HandlerFunc(ingestServer.Deployments)).ServeHTTP(w, r)
+			case http.MethodPost:
+				writeAuth(http.HandlerFunc(ingestServer.DeployWebhook)).ServeHTTP(w, r)
+			case http.MethodOptions:
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		}),
+	))
 
-	// Read APIs with CORS
-	corsOrigin := config.Getenv("CORS_ORIGIN", "*")
-	mux.HandleFunc("/v1/traces/story", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.TraceStory))
-	mux.HandleFunc("/v1/traces/recent", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.RecentTraces))
-	mux.HandleFunc("/v1/overview", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Overview))
-	mux.HandleFunc("/v1/events/search", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.EventSearch))
-	mux.HandleFunc("/v1/overview/timeseries", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.OverviewTimeseries))
-	mux.HandleFunc("/v1/routes", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Routes))
-	mux.HandleFunc("/v1/capabilities", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Capabilities))
-	mux.HandleFunc("/v1/deployments", ingest.CORSWrap(corsOrigin, "GET, POST, OPTIONS", ingestServer.DeployRoute))
-	mux.HandleFunc("/v1/topology", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Topology))
-	mux.HandleFunc("/v1/blast_radius", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.BlastRadius))
-	mux.HandleFunc("/v1/stream/dashboard", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.SSEStream))
-	mux.HandleFunc("/v1/stream/plans/", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.PlanStream))
-
-	// Agent-authenticated endpoints: CORS outermost, then auth
-	if agentKey != "" {
-		mux.HandleFunc("/v1/tools", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.Tools)))
-		mux.HandleFunc("/v1/tools/", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.ToolCall)))
-		mux.HandleFunc("/v1/ask", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.Ask)))
-		mux.HandleFunc("/v1/plans/execute", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingest.APIKeyMiddleware(agentKey, ingestServer.PlanExecute)))
-	} else {
-		mux.HandleFunc("/v1/tools", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.Tools))
-		mux.HandleFunc("/v1/tools/", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.ToolCall))
-		mux.HandleFunc("/v1/ask", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.Ask))
-		mux.HandleFunc("/v1/plans/execute", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.PlanExecute))
+	// Agent endpoints.
+	agentCORS := func(methods string, h http.HandlerFunc) http.Handler {
+		inner := agentAuth(http.HandlerFunc(h))
+		return http.HandlerFunc(ingest.CORSWrap(corsOrigin, methods,
+			func(w http.ResponseWriter, r *http.Request) { inner.ServeHTTP(w, r) }))
 	}
+	mux.Handle("/v1/tools", agentCORS("GET, OPTIONS", ingestServer.Tools))
+	mux.Handle("/v1/tools/", agentCORS("POST, OPTIONS", ingestServer.ToolCall))
+	mux.Handle("/v1/ask", agentCORS("POST, OPTIONS", ingestServer.Ask))
+	mux.Handle("/v1/plans/execute", agentCORS("POST, OPTIONS", ingestServer.PlanExecute))
+	mux.Handle("/v1/stream/plans/", agentCORS("GET, OPTIONS", ingestServer.PlanStream))
 
+	// Graph topology (feature-gated).
 	if graphUI {
-		mux.HandleFunc("/v1/graph/topology", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.GraphTopology))
+		mux.Handle("/v1/graph/topology", readCORS(ingestServer.GraphTopology))
 	}
 
-	// Dashboard UI
-	mux.Handle("/ui/", http.StripPrefix("/ui/", dashboard.Handler()))
+	// Dashboard.
+	mux.Handle("/ui/", dashGate(http.StripPrefix("/ui/", dashboard.Handler())))
 	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
 	})
-	mux.HandleFunc("/ui/ask", ingest.CORSWrap(corsOrigin, "POST, OPTIONS", ingestServer.DashboardAsk))
-	mux.HandleFunc("/ui/explain", ingest.CORSWrap(corsOrigin, "GET, OPTIONS", ingestServer.DashboardExplain))
+	mux.Handle("/ui/ask", http.HandlerFunc(ingest.CORSWrap(corsOrigin, "POST, OPTIONS",
+		func(w http.ResponseWriter, r *http.Request) {
+			dashGate(http.HandlerFunc(ingestServer.DashboardAsk)).ServeHTTP(w, r)
+		})))
+	mux.Handle("/ui/explain", http.HandlerFunc(ingest.CORSWrap(corsOrigin, "GET, OPTIONS",
+		func(w http.ResponseWriter, r *http.Request) {
+			dashGate(http.HandlerFunc(ingestServer.DashboardExplain)).ServeHTTP(w, r)
+		})))
 
-	// Wrap mux with CorrelationID middleware
 	handler := ingest.CorrelationIDMiddleware(mux)
 
 	server := &http.Server{
