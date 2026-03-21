@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/pkg/waylog"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/trace"
+	waylog "github.com/sssmaran/WaylogCLI/pkg"
+	"github.com/sssmaran/WaylogCLI/pkg/trace"
 )
 
 const (

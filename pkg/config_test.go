@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/transport"
+	"github.com/sssmaran/WaylogCLI/pkg/transport"
 )
 
 func TestValidate_MissingService(t *testing.T) {
@@ -26,7 +26,7 @@ func TestValidate_AmbiguousTransport(t *testing.T) {
 		Service:   "svc",
 		Env:       "test",
 		IngestURL: "http://localhost:8080",
-		Kafka:     transport.KafkaConfig{Brokers: []string{"localhost:9092"}},
+		Transport: &transport.NopTransport{},
 	}
 	if err := cfg.Validate(); !errors.Is(err, ErrTransportAmbiguous) {
 		t.Fatalf("got %v, want ErrTransportAmbiguous", err)

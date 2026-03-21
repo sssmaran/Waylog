@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/pkg/event"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/transport"
+	"github.com/sssmaran/WaylogCLI/pkg/transport"
 )
 
 func validEvent() event.WideEvent {

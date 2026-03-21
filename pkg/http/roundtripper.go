@@ -3,8 +3,8 @@ package http
 import (
 	"net/http"
 
-	"github.com/sssmaran/WaylogCLI/pkg/waylog"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/trace"
+	waylog "github.com/sssmaran/WaylogCLI/pkg"
+	"github.com/sssmaran/WaylogCLI/pkg/trace"
 )
 
 func WrapTransport(rt http.RoundTripper, downstreamService string) http.RoundTripper {

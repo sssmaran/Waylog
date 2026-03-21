@@ -26,3 +26,9 @@ jobs:
 
       - name: Test with race detector
         run: go test -race -timeout 120s ./...
+
+      - name: Test SDK modules
+        run: make test-sdk
+
+      - name: Vet SDK modules
+        run: make vet-sdk

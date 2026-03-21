@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race lint ci fmt vet clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod
 
 help:
 	@echo "Targets:"
@@ -71,7 +71,15 @@ test-race:
 lint:
 	@which golangci-lint > /dev/null 2>&1 && golangci-lint run ./... || echo "golangci-lint not installed, skipping"
 
-ci: fmt vet test-race
+test-sdk: ## Test SDK modules
+	cd pkg && go test -race ./...
+	cd pkg/transport/kafka && go build ./...
+
+vet-sdk: ## Vet SDK modules
+	cd pkg && go vet ./...
+	cd pkg/transport/kafka && go vet ./...
+
+ci: fmt vet vet-sdk test-race test-sdk
 	@echo "CI checks passed"
 
 clean:
