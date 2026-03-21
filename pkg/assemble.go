@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/pkg/event"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/trace"
+	"github.com/sssmaran/WaylogCLI/pkg/trace"
 )
 
 func (c *Client) assembleEvent(

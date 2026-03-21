@@ -12,11 +12,11 @@ import (
 	"sync"
 	"testing"
 
+	waylog "github.com/sssmaran/WaylogCLI/pkg"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog"
-	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/trace"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/transport"
+	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/http"
+	"github.com/sssmaran/WaylogCLI/pkg/trace"
+	"github.com/sssmaran/WaylogCLI/pkg/transport"
 )
 
 // partialTransport succeeds for the first N events in a batch, then fails.

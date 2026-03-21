@@ -20,10 +20,6 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Go workspace file
-go.work
-go.work.sum
-
 # env files (deploy/*.env are tracked — no secrets, just config presets)
 .env
 

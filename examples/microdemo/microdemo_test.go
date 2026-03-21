@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/examples/microdemo"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog"
-	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/transport"
+	waylog "github.com/sssmaran/WaylogCLI/pkg"
+	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/http"
+	"github.com/sssmaran/WaylogCLI/pkg/transport"
 )
 
 func TestMicroDemoChain(t *testing.T) {

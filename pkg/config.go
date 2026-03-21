@@ -3,10 +3,8 @@ package waylog
 import (
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/transport"
+	"github.com/sssmaran/WaylogCLI/pkg/transport"
 )
-
-type KafkaConfig = transport.KafkaConfig
 
 type ErrorClassifier func(error) string
 
@@ -17,7 +15,6 @@ type Config struct {
 	DeploymentID string
 	IngestURL    string // HTTP ingest endpoint (e.g. "http://localhost:8080")
 
-	Kafka           KafkaConfig
 	Transport       transport.Transport
 	ErrorClassifier ErrorClassifier
 
@@ -37,9 +34,6 @@ func (c Config) Validate() error {
 	}
 	n := 0
 	if c.IngestURL != "" {
-		n++
-	}
-	if len(c.Kafka.Brokers) > 0 {
 		n++
 	}
 	if c.Transport != nil {

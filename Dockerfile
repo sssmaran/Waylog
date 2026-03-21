@@ -1,7 +1,9 @@
 # ---- shared build stage ----
 FROM golang:1.24-alpine AS builder
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY go.mod go.sum go.work ./
+COPY pkg/go.mod ./pkg/
+COPY pkg/transport/kafka/go.mod pkg/transport/kafka/go.sum ./pkg/transport/kafka/
 RUN go mod download
 COPY . .
 

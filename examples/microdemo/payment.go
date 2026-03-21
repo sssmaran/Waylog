@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/sssmaran/WaylogCLI/pkg/waylog"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/trace"
+	waylog "github.com/sssmaran/WaylogCLI/pkg"
+	"github.com/sssmaran/WaylogCLI/pkg/trace"
 )
 
 type PaymentHandler struct{}

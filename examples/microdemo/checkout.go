@@ -5,9 +5,9 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/sssmaran/WaylogCLI/pkg/waylog"
-	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/trace"
+	waylog "github.com/sssmaran/WaylogCLI/pkg"
+	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/http"
+	"github.com/sssmaran/WaylogCLI/pkg/trace"
 )
 
 type CheckoutHandler struct {

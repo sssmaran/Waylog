@@ -11,8 +11,14 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/segmentio/kafka-go v0.4.50
+	github.com/sssmaran/WaylogCLI/pkg v0.0.0
+	github.com/sssmaran/WaylogCLI/pkg/transport/kafka v0.0.0
 	modernc.org/sqlite v1.46.1
 )
+
+replace github.com/sssmaran/WaylogCLI/pkg => ./pkg
+
+replace github.com/sssmaran/WaylogCLI/pkg/transport/kafka => ./pkg/transport/kafka
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

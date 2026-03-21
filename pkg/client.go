@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/pkg/event"
-	"github.com/sssmaran/WaylogCLI/pkg/waylog/transport"
+	"github.com/sssmaran/WaylogCLI/pkg/transport"
 )
 
 const (
@@ -55,12 +55,6 @@ func New(cfg Config) (*Client, error) {
 				return nil, err
 			}
 			t = ht
-		case len(cfg.Kafka.Brokers) > 0:
-			kt, err := transport.NewKafkaTransport(cfg.Kafka)
-			if err != nil {
-				return nil, err
-			}
-			t = kt
 		default:
 			t = &transport.NopTransport{}
 		}
@@ -380,8 +374,5 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.ShutdownTimeout <= 0 {
 		cfg.ShutdownTimeout = defaultShutdownTimeout
-	}
-	if cfg.Kafka.Topic == "" {
-		cfg.Kafka.Topic = "wide_events"
 	}
 }

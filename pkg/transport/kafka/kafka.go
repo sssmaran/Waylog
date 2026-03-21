@@ -1,4 +1,4 @@
-package transport
+package kafka
 
 import (
 	"context"
@@ -11,12 +11,14 @@ import (
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
-type KafkaTransport struct {
+var errTransportClosed = errors.New("transport closed")
+
+type Transport struct {
 	writer *kafka.Writer
 	closed atomic.Bool
 }
 
-func NewKafkaTransport(cfg KafkaConfig) (*KafkaTransport, error) {
+func New(cfg Config) (*Transport, error) {
 	if len(cfg.Brokers) == 0 {
 		return nil, errors.New("kafka brokers are required")
 	}
@@ -33,10 +35,10 @@ func NewKafkaTransport(cfg KafkaConfig) (*KafkaTransport, error) {
 		Compression:  parseCompression(cfg.Compression),
 	}
 
-	return &KafkaTransport{writer: writer}, nil
+	return &Transport{writer: writer}, nil
 }
 
-func (t *KafkaTransport) Send(ctx context.Context, batch []event.WideEvent) (int, error) {
+func (t *Transport) Send(ctx context.Context, batch []event.WideEvent) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -62,7 +64,7 @@ func (t *KafkaTransport) Send(ctx context.Context, batch []event.WideEvent) (int
 	return len(batch), nil
 }
 
-func (t *KafkaTransport) Close(ctx context.Context) error {
+func (t *Transport) Close(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
