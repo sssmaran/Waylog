@@ -35,7 +35,10 @@ func main() {
 	topic := config.Getenv("KAFKA_TOPIC", "wide_events")
 	ingestURL := config.Getenv("INGEST_URL", "http://localhost:8080/v1/events")
 	groupID := config.Getenv("KAFKA_GROUP_ID", "waylog-demo-bridge")
-	apiKey := config.Getenv("WAYLOG_API_KEY", "")
+	apiKey := config.Getenv("WAYLOG_WRITE_KEY", "")
+	if apiKey == "" {
+		apiKey = config.Getenv("WAYLOG_API_KEY", "")
+	}
 	dlqDir := config.Getenv("DLQ_DIR", "./data")
 
 	reader := kafka.NewReader(kafka.ReaderConfig{

@@ -67,7 +67,7 @@ func NewHTTPTransport(ingestURL string, timeout time.Duration) (*HTTPTransport, 
 
 	return &HTTPTransport{
 		url:    resolved,
-		apiKey: os.Getenv("WAYLOG_API_KEY"),
+		apiKey: preferEnv("WAYLOG_WRITE_KEY", "WAYLOG_API_KEY"),
 		client: &http.Client{Timeout: timeout},
 	}, nil
 }
@@ -187,4 +187,14 @@ func isTransientNetErr(err error) bool {
 	}
 
 	return false
+}
+
+// preferEnv returns the first non-empty env var value, or empty string.
+func preferEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
 }

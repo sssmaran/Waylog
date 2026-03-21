@@ -38,11 +38,7 @@ type deployResponse struct {
 func (s *Server) DeployRoute(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		if s.apiKey != "" {
-			APIKeyMiddleware(s.apiKey, s.DeployWebhook)(w, r)
-		} else {
-			s.DeployWebhook(w, r)
-		}
+		s.DeployWebhook(w, r)
 	case http.MethodGet:
 		s.Deployments(w, r)
 	case http.MethodOptions:
