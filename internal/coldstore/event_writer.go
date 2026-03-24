@@ -1,6 +1,7 @@
 package coldstore
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -18,7 +19,7 @@ type BatchWriterConfig struct {
 }
 
 type BatchWriter struct {
-	store     *Store
+	store     *SQLiteStore
 	ch        chan event.WideEvent
 	done      chan struct{}
 	cfg       BatchWriterConfig
@@ -27,7 +28,7 @@ type BatchWriter struct {
 	stopOnce  sync.Once
 }
 
-func NewBatchWriter(store *Store, cfg BatchWriterConfig, m *metrics.Metrics) *BatchWriter {
+func NewBatchWriter(store *SQLiteStore, cfg BatchWriterConfig, m *metrics.Metrics) *BatchWriter {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 10000
 	}
@@ -195,6 +196,47 @@ func (bw *BatchWriter) flush(batch []event.WideEvent) {
 		bw.metrics.ColdEventsWritten.Add(float64(len(batch)))
 		bw.metrics.ColdBatchLatency.Observe(time.Since(start).Seconds())
 	}
+}
+
+// WriteEvent persists a single event synchronously.
+func (s *SQLiteStore) WriteEvent(ctx context.Context, ev *event.WideEvent) error {
+	var errorCode, errorMsg *string
+	if ev.Error != nil {
+		errorCode = &ev.Error.Code
+		errorMsg = &ev.Error.Message
+	}
+
+	successInt := 0
+	if ev.Outcome.Success {
+		successInt = 1
+	}
+
+	_, err := s.writer.ExecContext(ctx,
+		`INSERT INTO events (trace_id, span_id, parent_span_id, event_name,
+		service, env, version, deployment_id,
+		user_id, user_tier, flow,
+		status_code, success, error_code, error_message,
+		latency_ms, timestamp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.Request.TraceID,
+		nilIfEmpty(ev.Request.SpanID),
+		nilIfEmpty(ev.Request.ParentSpanID),
+		ev.EventName,
+		ev.System.Service,
+		ev.System.Env,
+		nilIfEmpty(ev.System.Version),
+		nilIfEmpty(ev.System.DeploymentID),
+		ev.User.ID,
+		nilIfEmpty(ev.User.Tier),
+		nilIfEmpty(ev.Request.Flow),
+		ev.Outcome.StatusCode,
+		successInt,
+		errorCode,
+		errorMsg,
+		ev.Metrics.LatencyMs,
+		ev.Timestamp.UTC().Format(tsFormat),
+	)
+	return err
 }
 
 func nilIfEmpty(s string) *string {

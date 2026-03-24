@@ -8,14 +8,14 @@ import (
 	"time"
 )
 
-func newTestStore(t *testing.T) *Store {
+func newTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	s, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return s
+	return s.(*SQLiteStore)
 }
 
 func mustTime(s string) time.Time {

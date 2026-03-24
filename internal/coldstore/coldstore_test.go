@@ -11,8 +11,9 @@ func TestOpenClose(t *testing.T) {
 	}
 	defer db.Close()
 
+	raw := db.(*SQLiteStore)
 	var journalMode string
-	if err := db.writer.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+	if err := raw.writer.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
 		t.Fatal(err)
 	}
 	if journalMode != "memory" && journalMode != "wal" {
@@ -39,8 +40,9 @@ func TestEventsTableExists(t *testing.T) {
 	}
 	defer db.Close()
 
+	raw := db.(*SQLiteStore)
 	var count int
-	err = db.writer.QueryRow("SELECT COUNT(*) FROM events").Scan(&count)
+	err = raw.writer.QueryRow("SELECT COUNT(*) FROM events").Scan(&count)
 	if err != nil {
 		t.Fatal("events table not created:", err)
 	}
@@ -53,8 +55,9 @@ func TestDeploymentsTableExists(t *testing.T) {
 	}
 	defer db.Close()
 
+	raw := db.(*SQLiteStore)
 	var count int
-	err = db.writer.QueryRow("SELECT COUNT(*) FROM deployments").Scan(&count)
+	err = raw.writer.QueryRow("SELECT COUNT(*) FROM deployments").Scan(&count)
 	if err != nil {
 		t.Fatal("deployments table not created:", err)
 	}

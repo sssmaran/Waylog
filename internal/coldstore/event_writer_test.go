@@ -26,11 +26,12 @@ func makeTestEvent(service, traceID string, success bool) event.WideEvent {
 }
 
 func TestBatchWriter_WritesEvents(t *testing.T) {
-	db, err := Open(":memory:")
+	managed, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer managed.Close()
+	db := managed.(*SQLiteStore)
 
 	bw := NewBatchWriter(db, BatchWriterConfig{
 		QueueSize:     100,
@@ -57,11 +58,12 @@ func TestBatchWriter_WritesEvents(t *testing.T) {
 }
 
 func TestBatchWriter_BatchFlush(t *testing.T) {
-	db, err := Open(":memory:")
+	managed, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer managed.Close()
+	db := managed.(*SQLiteStore)
 
 	bw := NewBatchWriter(db, BatchWriterConfig{
 		QueueSize:     100,
@@ -85,11 +87,12 @@ func TestBatchWriter_BatchFlush(t *testing.T) {
 }
 
 func TestBatchWriter_DropWhenFull(t *testing.T) {
-	db, err := Open(":memory:")
+	managed, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer managed.Close()
+	db := managed.(*SQLiteStore)
 
 	bw := NewBatchWriter(db, BatchWriterConfig{
 		QueueSize:     2,
@@ -107,11 +110,12 @@ func TestBatchWriter_DropWhenFull(t *testing.T) {
 }
 
 func TestBatchWriter_StopDrains(t *testing.T) {
-	db, err := Open(":memory:")
+	managed, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer managed.Close()
+	db := managed.(*SQLiteStore)
 
 	bw := NewBatchWriter(db, BatchWriterConfig{
 		QueueSize:     100,
@@ -134,11 +138,12 @@ func TestBatchWriter_StopDrains(t *testing.T) {
 }
 
 func TestBatchWriter_ErrorEventFields(t *testing.T) {
-	db, err := Open(":memory:")
+	managed, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer managed.Close()
+	db := managed.(*SQLiteStore)
 
 	bw := NewBatchWriter(db, BatchWriterConfig{
 		QueueSize:     100,

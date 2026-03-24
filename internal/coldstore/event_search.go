@@ -47,7 +47,7 @@ type SearchResult struct {
 // SearchEvents queries the cold store for events matching the given filter.
 // Results are ordered newest-first by rowid. Limit is clamped to [1, 200] (default 50).
 // When Cursor > 0, only rows with id < Cursor are returned (keyset pagination).
-func (s *Store) SearchEvents(f SearchFilter) (SearchPage, error) {
+func (s *SQLiteStore) SearchEvents(f SearchFilter) (SearchPage, error) {
 	if f.Limit <= 0 {
 		f.Limit = 50
 	}

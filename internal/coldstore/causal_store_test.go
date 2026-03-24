@@ -37,7 +37,7 @@ func TestCausalStore_SaveAndQuery(t *testing.T) {
 		t.Fatal("SaveClaims:", err)
 	}
 
-	active, err := s.ActiveClaims(ctx, causal.ClaimIntroducedBy)
+	active, err := s.ActiveClaims(ctx, causal.ClaimQuery{ClaimType: causal.ClaimIntroducedBy})
 	if err != nil {
 		t.Fatal("ActiveClaims:", err)
 	}
@@ -98,7 +98,7 @@ func TestCausalStore_SupersedesOldClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	active, err := s.ActiveClaims(ctx, causal.ClaimIntroducedBy)
+	active, err := s.ActiveClaims(ctx, causal.ClaimQuery{ClaimType: causal.ClaimIntroducedBy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestCausalStore_EmptyResult(t *testing.T) {
 	}
 	defer s.Close()
 
-	active, err := s.ActiveClaims(context.Background(), causal.ClaimIntroducedBy)
+	active, err := s.ActiveClaims(context.Background(), causal.ClaimQuery{ClaimType: causal.ClaimIntroducedBy})
 	if err != nil {
 		t.Fatal(err)
 	}

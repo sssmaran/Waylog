@@ -12,12 +12,13 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
 )
 
-func makeTestServerWithColdStore(t *testing.T) (*Server, *coldstore.Store) {
+func makeTestServerWithColdStore(t *testing.T) (*Server, *coldstore.SQLiteStore) {
 	t.Helper()
-	cs, err := coldstore.Open(":memory:")
+	managed, err := coldstore.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
+	cs := managed.(*coldstore.SQLiteStore)
 	t.Cleanup(func() { cs.Close() })
 	srv := makeTestServer()
 	srv.coldStore = cs
@@ -155,7 +156,7 @@ func TestDeployments_GET(t *testing.T) {
 
 const tsFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
-func insertTestEvent(t *testing.T, cs *coldstore.Store, service, env string, success bool, ts time.Time) {
+func insertTestEvent(t *testing.T, cs *coldstore.SQLiteStore, service, env string, success bool, ts time.Time) {
 	t.Helper()
 	successInt := 1
 	if !success {

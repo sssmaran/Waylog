@@ -34,7 +34,7 @@ type ServiceErrorRate struct {
 // Uses BEGIN IMMEDIATE to detect env conflicts atomically.
 // Empty version does not overwrite an existing non-empty version (NULLIF).
 // first_seen takes the MIN, last_seen takes the MAX of existing and new values.
-func (s *Store) UpsertDeployment(ctx context.Context, d Deployment) error {
+func (s *SQLiteStore) UpsertDeployment(ctx context.Context, d Deployment) error {
 	metaJSON, err := marshalMeta(d.Metadata)
 	if err != nil {
 		return fmt.Errorf("coldstore: marshal metadata: %w", err)
@@ -81,7 +81,7 @@ func (s *Store) UpsertDeployment(ctx context.Context, d Deployment) error {
 // DeploymentsInWindow returns deployments whose first_seen falls within [start, end].
 // If serviceFilter is non-empty, only deployments for that service are returned.
 // Malformed metadata is tolerated: a warning is logged and an empty map is used.
-func (s *Store) DeploymentsInWindow(ctx context.Context, start, end time.Time, serviceFilter string) ([]Deployment, error) {
+func (s *SQLiteStore) DeploymentsInWindow(ctx context.Context, start, end time.Time, serviceFilter string) ([]Deployment, error) {
 	var args []any
 	query := `SELECT id, service, COALESCE(version,''), env, first_seen, last_seen, COALESCE(metadata,'')
 		FROM deployments
@@ -129,7 +129,7 @@ func (s *Store) DeploymentsInWindow(ctx context.Context, start, end time.Time, s
 // DeploymentByID retrieves a single deployment by its ID.
 // Returns nil, nil if no deployment with that ID exists.
 // Malformed metadata returns an error (strict).
-func (s *Store) DeploymentByID(ctx context.Context, id string) (*Deployment, error) {
+func (s *SQLiteStore) DeploymentByID(ctx context.Context, id string) (*Deployment, error) {
 	var dep Deployment
 	var firstStr, lastStr, metaStr string
 
@@ -164,7 +164,7 @@ func (s *Store) DeploymentByID(ctx context.Context, id string) (*Deployment, err
 
 // ServiceErrorRateInWindow returns the total and failure counts for a service
 // in the given time window by querying the events table.
-func (s *Store) ServiceErrorRateInWindow(ctx context.Context, service string, start, end time.Time) (ServiceErrorRate, error) {
+func (s *SQLiteStore) ServiceErrorRateInWindow(ctx context.Context, service string, start, end time.Time) (ServiceErrorRate, error) {
 	var rate ServiceErrorRate
 	err := s.reader.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0)
@@ -181,7 +181,7 @@ func (s *Store) ServiceErrorRateInWindow(ctx context.Context, service string, st
 }
 
 // WriterForTest returns the writer DB handle. Test-only.
-func (s *Store) WriterForTest() *sql.DB { return s.writer }
+func (s *SQLiteStore) WriterForTest() *sql.DB { return s.writer }
 
 // marshalMeta serializes a metadata map to a JSON string.
 // Returns nil if the map is nil or empty.
