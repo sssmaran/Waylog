@@ -120,7 +120,7 @@ type Server struct {
 	agentKey            string
 	trustProxy          bool
 	coldWriter          *coldstore.BatchWriter
-	coldStore           *coldstore.Store
+	coldStore           coldstore.Store
 	planStore           *PlanStore
 
 	// Dashboard rate limiter: per-IP sliding window
@@ -186,7 +186,7 @@ type ServerConfig struct {
 	AgentKey            string
 	TrustProxy          bool
 	ColdWriter          *coldstore.BatchWriter
-	ColdStore           *coldstore.Store
+	ColdStore           coldstore.Store
 	PlanStore           *PlanStore
 }
 

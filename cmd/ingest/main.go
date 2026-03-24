@@ -129,7 +129,7 @@ func main() {
 	m := metrics.New(promReg)
 
 	// Optional SQLite cold store
-	var coldDB *coldstore.Store
+	var coldDB coldstore.ManagedStore
 	var coldWriter *coldstore.BatchWriter
 	if sqlitePath != "" {
 		if eventLogDir == "" {
@@ -144,7 +144,7 @@ func main() {
 		}
 		defer coldDB.Close()
 
-		coldWriter = coldstore.NewBatchWriter(coldDB, coldstore.BatchWriterConfig{
+		coldWriter = coldstore.NewBatchWriter(coldDB.(*coldstore.SQLiteStore), coldstore.BatchWriterConfig{
 			QueueSize:     config.GetenvInt("SQLITE_MAX_QUEUE", 10000),
 			BatchSize:     config.GetenvInt("SQLITE_BATCH_SIZE", 100),
 			FlushInterval: config.GetenvDuration("SQLITE_FLUSH_INTERVAL", 500*time.Millisecond),

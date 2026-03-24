@@ -9,7 +9,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
-func seedEvents(t *testing.T, db *Store, n int, service string, errCode string) {
+func seedEvents(t *testing.T, db *SQLiteStore, n int, service string, errCode string) {
 	t.Helper()
 	bw := NewBatchWriter(db, BatchWriterConfig{
 		QueueSize:     n + 10,
@@ -31,7 +31,7 @@ func seedEvents(t *testing.T, db *Store, n int, service string, errCode string) 
 }
 
 // seedEventsDirect inserts n events via direct SQL for fine-grained control.
-func seedEventsDirect(t *testing.T, s *Store, n int, customize func(i int) (service, traceID, errCode, errMsg string, success int, ts time.Time)) {
+func seedEventsDirect(t *testing.T, s *SQLiteStore, n int, customize func(i int) (service, traceID, errCode, errMsg string, success int, ts time.Time)) {
 	t.Helper()
 	for i := 0; i < n; i++ {
 		svc, traceID, errCode, errMsg, success, ts := customize(i)
@@ -58,16 +58,17 @@ func seedEventsDirect(t *testing.T, s *Store, n int, customize func(i int) (serv
 }
 
 func TestSearchByService(t *testing.T) {
-	db, err := Open(":memory:")
+	managed, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer managed.Close()
+	db := managed.(*SQLiteStore)
 
 	seedEvents(t, db, 5, "checkout", "")
 	seedEvents(t, db, 3, "payment", "")
 
-	page, err := db.SearchEvents(SearchFilter{Service: "checkout"})
+	page, err := managed.SearchEvents(SearchFilter{Service: "checkout"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,16 +240,17 @@ func TestSearchLimitClamped(t *testing.T) {
 }
 
 func TestSearchByErrorCode(t *testing.T) {
-	db, err := Open(":memory:")
+	managed, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer managed.Close()
+	db := managed.(*SQLiteStore)
 
 	seedEvents(t, db, 2, "svc", "")        // success
 	seedEvents(t, db, 3, "svc", "PMT_502") // errors
 
-	page, err := db.SearchEvents(SearchFilter{ErrorCode: "PMT_502"})
+	page, err := managed.SearchEvents(SearchFilter{ErrorCode: "PMT_502"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,15 +268,16 @@ func TestSearchByErrorCode(t *testing.T) {
 }
 
 func TestSearchLimit(t *testing.T) {
-	db, err := Open(":memory:")
+	managed, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer managed.Close()
+	db := managed.(*SQLiteStore)
 
 	seedEvents(t, db, 20, "svc", "")
 
-	page, err := db.SearchEvents(SearchFilter{Limit: 5})
+	page, err := managed.SearchEvents(SearchFilter{Limit: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,15 +357,16 @@ func TestSearchPerformance100K(t *testing.T) {
 }
 
 func TestSearchNewestFirst(t *testing.T) {
-	db, err := Open(":memory:")
+	managed, err := Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer managed.Close()
+	db := managed.(*SQLiteStore)
 
 	seedEvents(t, db, 10, "svc", "")
 
-	page, err := db.SearchEvents(SearchFilter{})
+	page, err := managed.SearchEvents(SearchFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}

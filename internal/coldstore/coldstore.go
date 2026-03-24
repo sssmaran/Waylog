@@ -1,10 +1,15 @@
 package coldstore
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
 	"log/slog"
+	"time"
+
+	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
+	"github.com/sssmaran/WaylogCLI/pkg/event"
 
 	_ "modernc.org/sqlite"
 )
@@ -17,17 +22,55 @@ const tsFormat = "2006-01-02T15:04:05.000000000Z07:00"
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// Store wraps a SQLite database for cold storage of events and deployments.
+// Store is the domain interface for cold storage operations.
+type Store interface {
+	EventSearcher
+	DeploymentStore
+	CausalStore
+}
+
+// ManagedStore adds lifecycle methods to Store.
+type ManagedStore interface {
+	Store
+	Migrate() error
+	Close() error
+}
+
+// EventWriter persists a single event synchronously.
+type EventWriter interface {
+	WriteEvent(ctx context.Context, ev *event.WideEvent) error
+}
+
+// EventSearcher queries persisted events.
+type EventSearcher interface {
+	SearchEvents(f SearchFilter) (SearchPage, error)
+}
+
+// DeploymentStore manages deployment records.
+type DeploymentStore interface {
+	UpsertDeployment(ctx context.Context, d Deployment) error
+	DeploymentByID(ctx context.Context, id string) (*Deployment, error)
+	DeploymentsInWindow(ctx context.Context, start, end time.Time, serviceFilter string) ([]Deployment, error)
+	ServiceErrorRateInWindow(ctx context.Context, svc string, from, to time.Time) (ServiceErrorRate, error)
+}
+
+// CausalStore persists and queries causal inference claims.
+type CausalStore interface {
+	SaveClaims(ctx context.Context, claims []causal.Claim) error
+	ActiveClaims(ctx context.Context, q causal.ClaimQuery) ([]causal.Claim, error)
+}
+
+// SQLiteStore wraps a SQLite database for cold storage of events and deployments.
 // It maintains separate writer (single-conn) and reader (multi-conn) handles.
-type Store struct {
+type SQLiteStore struct {
 	writer *sql.DB
 	reader *sql.DB
 	path   string
 }
 
-// Open creates a new Store backed by the SQLite database at path.
+// Open creates a new SQLiteStore backed by the SQLite database at path.
 // Use ":memory:" for tests. Runs migrations automatically.
-func Open(path string) (*Store, error) {
+func Open(path string) (ManagedStore, error) {
 	writerDSN := path
 	if path != ":memory:" {
 		writerDSN = path + "?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&_foreign_keys=ON"
@@ -61,7 +104,7 @@ func Open(path string) (*Store, error) {
 		reader.SetMaxOpenConns(4)
 	}
 
-	s := &Store{writer: writer, reader: reader, path: path}
+	s := &SQLiteStore{writer: writer, reader: reader, path: path}
 
 	if err := s.Migrate(); err != nil {
 		s.Close()
@@ -73,7 +116,7 @@ func Open(path string) (*Store, error) {
 }
 
 // Migrate runs all embedded SQL migration files idempotently.
-func (s *Store) Migrate() error {
+func (s *SQLiteStore) Migrate() error {
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("read migrations dir: %w", err)
@@ -91,7 +134,7 @@ func (s *Store) Migrate() error {
 }
 
 // Close closes both writer and reader database handles.
-func (s *Store) Close() error {
+func (s *SQLiteStore) Close() error {
 	var firstErr error
 	if s.reader != s.writer {
 		if err := s.reader.Close(); err != nil && firstErr == nil {
@@ -103,3 +146,13 @@ func (s *Store) Close() error {
 	}
 	return firstErr
 }
+
+// Compile-time interface satisfaction checks.
+var (
+	_ ManagedStore    = (*SQLiteStore)(nil)
+	_ Store           = (*SQLiteStore)(nil)
+	_ EventWriter     = (*SQLiteStore)(nil)
+	_ EventSearcher   = (*SQLiteStore)(nil)
+	_ DeploymentStore = (*SQLiteStore)(nil)
+	_ CausalStore     = (*SQLiteStore)(nil)
+)

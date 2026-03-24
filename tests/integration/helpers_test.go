@@ -17,13 +17,14 @@ import (
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
-func newIntegrationServer(t *testing.T) (*ingest.Server, *coldstore.Store, *coldstore.BatchWriter) {
+func newIntegrationServer(t *testing.T) (*ingest.Server, *coldstore.SQLiteStore, *coldstore.BatchWriter) {
 	t.Helper()
 
-	cs, err := coldstore.Open(":memory:")
+	managed, err := coldstore.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
+	cs := managed.(*coldstore.SQLiteStore)
 	t.Cleanup(func() { cs.Close() })
 
 	bw := coldstore.NewBatchWriter(cs, coldstore.BatchWriterConfig{

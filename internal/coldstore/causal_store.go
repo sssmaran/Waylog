@@ -9,7 +9,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
 )
 
-func (s *Store) SaveClaims(ctx context.Context, claims []causal.Claim) error {
+func (s *SQLiteStore) SaveClaims(ctx context.Context, claims []causal.Claim) error {
 	if len(claims) == 0 {
 		return nil
 	}
@@ -58,13 +58,13 @@ func (s *Store) SaveClaims(ctx context.Context, claims []causal.Claim) error {
 	return tx.Commit()
 }
 
-func (s *Store) ActiveClaims(ctx context.Context, claimType causal.ClaimType) ([]causal.Claim, error) {
+func (s *SQLiteStore) ActiveClaims(ctx context.Context, q causal.ClaimQuery) ([]causal.Claim, error) {
 	rows, err := s.reader.QueryContext(ctx,
 		`SELECT claim_type, subject, target, service, confidence, tier, evidence, window_start, window_end, shadow_mode
 		 FROM causal_claims
 		 WHERE claim_type = ? AND superseded_at IS NULL
 		 ORDER BY confidence DESC`,
-		string(claimType),
+		string(q.ClaimType),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("causal: query active: %w", err)
