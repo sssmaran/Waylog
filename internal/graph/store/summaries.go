@@ -61,7 +61,7 @@ func (s *Store) SummarizeWindow(start, end time.Time) WindowSummary {
 			}
 		}
 		seenFlag := map[string]bool{}
-		for _, flagID := range f.Flags {
+		for _, flagID := range f.FeatureFlags {
 			if !seenFlag[flagID] {
 				seenFlag[flagID] = true
 				out.FlagRequestCount[flagID]++

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 )
 
 // Hop represents a single service hop in a trace.
@@ -43,7 +44,14 @@ type Context struct {
 }
 
 // Build constructs a Story and Context from a graph for the given traceID.
+// Prefer BuildWithTraceStore when a trace store is available.
 func Build(g *core.Graph, traceID string) (Story, Context, error) {
+	return BuildWithTraceStore(g, nil, traceID)
+}
+
+// BuildWithTraceStore constructs a Story and Context from a graph plus an
+// optional trace store.
+func BuildWithTraceStore(g *core.Graph, traceStore *tracestore.Store, traceID string) (Story, Context, error) {
 	if g == nil {
 		return Story{}, Context{}, fmt.Errorf("graph is nil")
 	}
@@ -54,29 +62,33 @@ func Build(g *core.Graph, traceID string) (Story, Context, error) {
 		return Story{}, Context{}, fmt.Errorf("trace %s not found", traceID)
 	}
 
-	// Find root spans: spans connected to the request that have no parent
-	roots := rootSpanIDs(g, reqID)
-
-	// Build parent → children map via InEdges (child_of edges point FROM child TO parent)
-	children := map[string][]string{}
-	for _, e := range g.Edges {
-		if e.Type == core.EdgeSpanChildOf {
-			children[e.To] = append(children[e.To], e.From)
+	if traceStore != nil {
+		if rec, ok := traceStore.Get(traceID); ok {
+			return buildFromTraceRecord(g, traceID, reqID, reqNode, rec)
 		}
 	}
-	sortSpanIDsByTime(g, roots)
-	for parentID := range children {
-		sortSpanIDsByTime(g, children[parentID])
-	}
 
-	// DFS from roots to build the hop chain in root-first order
+	return buildFromGraph(g, reqID, reqNode)
+}
+
+func buildFromTraceRecord(g *core.Graph, traceID, reqID string, reqNode core.Node, rec *tracestore.TraceRecord) (Story, Context, error) {
+	roots := tracestore.BuildTree(rec.Spans)
+
 	var chain []Hop
-	visited := map[string]bool{}
+	var walk func(*tracestore.TreeNode)
+	walk = func(node *tracestore.TreeNode) {
+		if node == nil {
+			return
+		}
+		chain = append(chain, hopFromRecord(node.Span))
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
 	for _, root := range roots {
-		dfsHops(g, root, children, visited, &chain)
+		walk(root)
 	}
 
-	// Build story
 	story := Story{
 		TraceID:  traceID,
 		Chain:    chain,
@@ -93,9 +105,47 @@ func Build(g *core.Graph, traceID string) (Story, Context, error) {
 		}
 	}
 
-	// Build context
 	ctx := buildContext(g, reqID, reqNode)
 
+	return story, ctx, nil
+}
+
+func buildFromGraph(g *core.Graph, reqID string, reqNode core.Node) (Story, Context, error) {
+	roots := rootSpanIDs(g, reqID)
+	children := map[string][]string{}
+	for _, e := range g.Edges {
+		if e.Type == core.EdgeSpanChildOf {
+			children[e.To] = append(children[e.To], e.From)
+		}
+	}
+	sortSpanIDsByTime(g, roots)
+	for parentID := range children {
+		sortSpanIDsByTime(g, children[parentID])
+	}
+
+	var chain []Hop
+	visited := map[string]bool{}
+	for _, root := range roots {
+		dfsHops(g, root, children, visited, &chain)
+	}
+
+	story := Story{
+		TraceID:  stringAttr(reqNode.Attr["trace_id"]),
+		Chain:    chain,
+		Success:  true,
+		HopCount: len(chain),
+	}
+	for i := range chain {
+		if !chain[i].Success {
+			story.Success = false
+			if story.FirstFailHop == nil {
+				hop := chain[i]
+				story.FirstFailHop = &hop
+			}
+		}
+	}
+
+	ctx := buildContext(g, reqID, reqNode)
 	return story, ctx, nil
 }
 
@@ -164,6 +214,19 @@ func hopFromNode(n core.Node) Hop {
 	return h
 }
 
+func hopFromRecord(span tracestore.SpanRecord) Hop {
+	return Hop{
+		SpanID:     span.SpanID,
+		Service:    span.Service,
+		StatusCode: span.StatusCode,
+		LatencyMs:  span.LatencyMs,
+		Success:    span.Success,
+		ErrorCode:  span.ErrorCode,
+		IsRoot:     span.ParentSpanID == "",
+		Timestamp:  span.Timestamp,
+	}
+}
+
 // buildContext extracts user and request metadata for a trace.
 func buildContext(g *core.Graph, reqID string, reqNode core.Node) Context {
 	ctx := Context{RequestID: reqID}
@@ -173,12 +236,29 @@ func buildContext(g *core.Graph, reqID string, reqNode core.Node) Context {
 		ctx.RequestEvent = stringAttr(reqNode.Attr["event_name"])
 		ctx.Flow = stringAttr(reqNode.Attr["flow"])
 		ctx.ErrorCodes = append(ctx.ErrorCodes, stringSliceAttr(reqNode.Attr["error_codes"])...)
+		if len(ctx.ErrorCodes) == 0 {
+			ctx.ErrorCodes = append(ctx.ErrorCodes, stringSliceAttr(reqNode.Attr["errors"])...)
+		}
 		if code := stringAttr(reqNode.Attr["error_code"]); code != "" && len(ctx.ErrorCodes) == 0 {
 			ctx.ErrorCodes = append(ctx.ErrorCodes, code)
+		}
+		if flags := stringSliceAttr(reqNode.Attr["feature_flags"]); len(flags) > 0 {
+			ctx.Flags = append(ctx.Flags, flags...)
 		}
 	}
 
 	// Find user node via request_by edge
+	if reqNode.Attr != nil {
+		if v := stringAttr(reqNode.Attr["user_id"]); v != "" {
+			ctx.UserID = v
+		}
+		if v := stringAttr(reqNode.Attr["user_tier"]); v != "" {
+			ctx.UserTier = v
+		}
+		if v := stringAttr(reqNode.Attr["user_region"]); v != "" {
+			ctx.UserRegion = v
+		}
+	}
 	for _, e := range g.OutEdges[reqID] {
 		if e.Type == core.EdgeRequestBy {
 			if userNode, ok := g.Nodes[e.To]; ok && userNode.Attr != nil {
@@ -194,6 +274,9 @@ func buildContext(g *core.Graph, reqID string, reqNode core.Node) Context {
 	}
 
 	// Find feature flags via used_flag edges
+	if len(ctx.Flags) == 0 {
+		ctx.Flags = append(ctx.Flags, stringSliceAttr(reqNode.Attr["feature_flags"])...)
+	}
 	for _, e := range g.OutEdges[reqID] {
 		if e.Type == core.EdgeUsedFlag {
 			if flagNode, ok := g.Nodes[e.To]; ok && flagNode.Attr != nil {

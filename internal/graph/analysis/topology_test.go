@@ -5,8 +5,11 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/testutil"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
+	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
 func TestBuildTopology_BasicGraph(t *testing.T) {
@@ -16,6 +19,8 @@ func TestBuildTopology_BasicGraph(t *testing.T) {
 
 	builder := build.NewBuilder()
 	st := graphstore.NewStore()
+	ts := tracestore.NewStore()
+
 
 	// Event 1: frontend calls api-gateway (success)
 	ev1 := testutil.MakeEvent(
@@ -24,7 +29,7 @@ func TestBuildTopology_BasicGraph(t *testing.T) {
 		testutil.WithSpanID("aaaaaaaaaaaaaaaa"),
 		testutil.WithTimestamp(now),
 	)
-	st.Merge(builder.Build(ev1))
+	upsertTopologyEvent(st, ts, builder, ev1)
 
 	// Event 2: api-gateway calls checkout (success)
 	ev2 := testutil.MakeEvent(
@@ -34,7 +39,7 @@ func TestBuildTopology_BasicGraph(t *testing.T) {
 		testutil.WithTraceID("abcdef01234567890abcdef012345678"),
 		testutil.WithTimestamp(now),
 	)
-	st.Merge(builder.Build(ev2))
+	upsertTopologyEvent(st, ts, builder, ev2)
 
 	// Event 3: api-gateway calls checkout (error)
 	ev3 := testutil.MakeEvent(
@@ -45,9 +50,9 @@ func TestBuildTopology_BasicGraph(t *testing.T) {
 		testutil.WithError("CHK_500", "internal error"),
 		testutil.WithTimestamp(now),
 	)
-	st.Merge(builder.Build(ev3))
+	upsertTopologyEvent(st, ts, builder, ev3)
 
-	result := BuildTopology(st.Snapshot(), start, end)
+	result := BuildTopology(st, ts, start, end)
 
 	// Should have 3 service nodes: frontend, api-gateway, checkout
 	if len(result.Nodes) != 3 {
@@ -120,8 +125,10 @@ func TestBuildTopology_BasicGraph(t *testing.T) {
 
 func TestBuildTopology_EmptyGraph(t *testing.T) {
 	st := graphstore.NewStore()
+	ts := tracestore.NewStore()
+
 	now := time.Now().UTC()
-	result := BuildTopology(st.Snapshot(), now.Add(-time.Hour), now)
+	result := BuildTopology(st, ts, now.Add(-time.Hour), now)
 
 	if result.Nodes == nil {
 		t.Error("Nodes should be non-nil empty slice")
@@ -141,6 +148,8 @@ func TestBuildTopology_WindowFiltering(t *testing.T) {
 	now := time.Now().UTC()
 	builder := build.NewBuilder()
 	st := graphstore.NewStore()
+	ts := tracestore.NewStore()
+
 
 	// Event inside window
 	ev1 := testutil.MakeEvent(
@@ -149,7 +158,7 @@ func TestBuildTopology_WindowFiltering(t *testing.T) {
 		testutil.WithSpanID("aaaaaaaaaaaaaaaa"),
 		testutil.WithTimestamp(now),
 	)
-	st.Merge(builder.Build(ev1))
+	upsertTopologyEvent(st, ts, builder, ev1)
 
 	// Event outside window (2 hours ago)
 	ev2 := testutil.MakeEvent(
@@ -159,14 +168,22 @@ func TestBuildTopology_WindowFiltering(t *testing.T) {
 		testutil.WithTraceID("abcdef01234567890abcdef012345678"),
 		testutil.WithTimestamp(now.Add(-2*time.Hour)),
 	)
-	st.Merge(builder.Build(ev2))
+	upsertTopologyEvent(st, ts, builder, ev2)
 
 	// Window: last 30 minutes
-	result := BuildTopology(st.Snapshot(), now.Add(-30*time.Minute), now.Add(time.Minute))
+	result := BuildTopology(st, ts, now.Add(-30*time.Minute), now.Add(time.Minute))
 
 	// Only svc-a and svc-b should appear (not svc-old/svc-ancient)
 	if len(result.Nodes) != 2 {
 		t.Errorf("expected 2 nodes within window, got %d", len(result.Nodes))
+	}
+}
+
+func upsertTopologyEvent(st *graphstore.Store, ts *tracestore.Store, builder *build.Builder, ev event.WideEvent) {
+	result := builder.BuildResult(ev)
+	st.Merge(result.Graph)
+	if result.Span != nil {
+		ts.Upsert(ev.Request.TraceID, core.ID("request", ev.Request.TraceID), result.Span)
 	}
 }
 

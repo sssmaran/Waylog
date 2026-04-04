@@ -8,6 +8,7 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 )
 
 type explainRequestInput struct {
@@ -46,7 +47,7 @@ func handleExplainRequest(ctx context.Context, store Store, params json.RawMessa
 		requestID = core.ID("request", input.TraceID)
 	}
 	g := store.Snapshot()
-	ex, err := analysis.ExplainRequest(g, requestID)
+	ex, err := analysis.ExplainRequestWithTrace(g, traceStoreFrom(store), requestID)
 	if err != nil {
 		return nil, &ToolError{Code: CodeNotFound, Message: err.Error()}
 	}
@@ -145,41 +146,21 @@ func handleInsights(ctx context.Context, store Store, params json.RawMessage) (a
 	errorCounts := map[string]int{}
 	serviceCounts := map[string]int{}
 	total := 0
-	spanToRequest := spanToRequestIndex(g)
-	seenFailures := map[string]bool{}
-
-	for _, e := range g.Edges {
-		if e.Type != core.EdgeFailedWith {
-			continue
+	store.ForEachRequestFact(time.Time{}, time.Now(), func(f graphstore.RequestFacts) {
+		if len(f.Errors) == 0 {
+			return
 		}
-		reqID, ok := requestIDForFailureEdge(g, e, spanToRequest)
-		if !ok {
-			continue
-		}
-
-		failureKey := reqID + "|" + e.To
-		if seenFailures[failureKey] {
-			continue
-		}
-		seenFailures[failureKey] = true
-
-		errNode := g.Nodes[e.To]
-		code := ""
-		if errNode.Attr != nil {
-			code, _ = errNode.Attr["code"].(string)
-		}
-		if code == "" {
-			code = e.To
-		}
-		errorCounts[code]++
-		total++
-
-		for _, ed := range g.OutEdges[reqID] {
-			if ed.Type == core.EdgeHandledBy {
-				serviceCounts[serviceNameForID(g, ed.To)]++
+		for _, code := range f.Errors {
+			if code == "" {
+				continue
+			}
+			errorCounts[code]++
+			total++
+			for _, svc := range f.Services {
+				serviceCounts[svc]++
 			}
 		}
-	}
+	})
 
 	return insightsOutput{
 		SchemaVersion: "1.0",

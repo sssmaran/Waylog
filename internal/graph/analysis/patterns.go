@@ -51,20 +51,18 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 			flow, _ = req.Attr["flow"].(string)
 		}
 
-		// request -> user
-		for _, ed := range g.OutEdges[req.ID] {
-			if ed.Type == core.EdgeRequestBy {
-				user, ok := g.Nodes[ed.To]
-				if ok && user.Attr != nil {
-					userTier, _ = user.Attr["tier"].(string)
-				}
-				break
+		if req.Attr != nil {
+			userTier, _ = req.Attr["user_tier"].(string)
+			if userTier == "" {
+				userTier, _ = req.Attr["tier"].(string)
 			}
+			flags = append(flags, store.AttrToStringSlice(req.Attr["feature_flags"])...)
 		}
-
-		// request -> flags
-		for _, ed := range g.OutEdges[req.ID] {
-			if ed.Type == core.EdgeUsedFlag {
+		if len(flags) == 0 {
+			for _, ed := range g.OutEdges[req.ID] {
+				if ed.Type != core.EdgeUsedFlag {
+					continue
+				}
 				flag, ok := g.Nodes[ed.To]
 				if ok && flag.Attr != nil {
 					if name, ok := flag.Attr["name"].(string); ok {
@@ -98,6 +96,7 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 
 	return out
 }
+
 
 // DetectFailurePatternsFromSummary builds failure patterns
 // using window summaries instead of graph traversal.

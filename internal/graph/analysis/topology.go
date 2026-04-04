@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 )
 
 type TopologyNode struct {
@@ -42,11 +44,6 @@ type CytoscapeResult struct {
 	Edges []CyEdge `json:"edges"`
 }
 
-type serviceStats struct {
-	invocations int
-	errors      int
-}
-
 type edgeKey struct {
 	source, target string
 }
@@ -56,69 +53,115 @@ type edgeStats struct {
 	failures int
 }
 
-// BuildTopology iterates span nodes in the graph, filters by the given time
-// window, and computes per-service invocation/error stats plus caller→service
-// edges. Returns never-nil slices.
-func BuildTopology(graph *core.Graph, start, end time.Time) TopologyResult {
-	services := map[string]*serviceStats{}
+// BuildTopology aggregates service counters from the graph store and caller →
+// service edge counts from the trace store. When traceStore is nil, it falls
+// back to the legacy span graph for compatibility.
+func BuildTopology(graphStore *graphstore.Store, traceStore *tracestore.Store, start, end time.Time) TopologyResult {
+	services := map[string]graphstore.ServiceStats{}
 	edges := map[edgeKey]*edgeStats{}
 
-	for _, n := range graph.Nodes {
-		if n.Type != core.NodeSpan {
-			continue
-		}
-		if n.LastSeen.Before(start) || n.LastSeen.After(end) {
-			continue
-		}
-
-		svc, _ := n.Attr["service"].(string)
-		if svc == "" {
-			continue
-		}
-
-		ss := services[svc]
-		if ss == nil {
-			ss = &serviceStats{}
-			services[svc] = ss
-		}
-		ss.invocations++
-
-		if success, ok := n.Attr["success"].(bool); ok && !success {
-			ss.errors++
-		}
-
-		caller, _ := n.Attr["caller_service"].(string)
-		if caller != "" {
-			// Ensure caller service appears in the map even with 0 invocations
-			if services[caller] == nil {
-				services[caller] = &serviceStats{}
+	if traceStore != nil {
+		// Primary path: span-level data from trace store.
+		traceStore.ForEachSpan(start, end, func(_ string, span tracestore.SpanRecord) {
+			if span.Service != "" {
+				stats := services[span.Service]
+				stats.Invocations++
+				if !span.Success {
+					stats.Errors++
+				}
+				services[span.Service] = stats
 			}
-
-			ek := edgeKey{source: caller, target: svc}
+			if span.CallerService == "" || span.Service == "" {
+				return
+			}
+			ek := edgeKey{source: span.CallerService, target: span.Service}
 			es := edges[ek]
 			if es == nil {
 				es = &edgeStats{}
 				edges[ek] = es
 			}
 			es.requests++
-			if success, ok := n.Attr["success"].(bool); ok && !success {
+			if !span.Success {
 				es.failures++
 			}
+			if _, ok := services[span.CallerService]; !ok {
+				services[span.CallerService] = graphstore.ServiceStats{}
+			}
+		})
+	} else if graphStore != nil {
+		// Flattened graph path: service stats from RequestFacts, edges from
+		// EdgeCalls in the graph (the builder still emits caller→service edges).
+		graphStore.ForEachRequestFact(start, end, func(f graphstore.RequestFacts) {
+			seen := map[string]bool{}
+			for _, svc := range f.Services {
+				if svc == "" || seen[svc] {
+					continue
+				}
+				seen[svc] = true
+				stats := services[svc]
+				stats.Invocations++
+				if len(f.Errors) > 0 {
+					stats.Errors++
+				}
+				services[svc] = stats
+			}
+			if len(f.Services) == 0 && f.RootService != "" {
+				stats := services[f.RootService]
+				stats.Invocations++
+				if len(f.Errors) > 0 {
+					stats.Errors++
+				}
+				services[f.RootService] = stats
+			}
+		})
+
+		// Derive caller→service edges from graph EdgeCalls edges.
+		g := graphStore.Snapshot()
+		for _, e := range g.Edges {
+			if e.Type != core.EdgeCalls {
+				continue
+			}
+			srcNode, srcOK := g.Nodes[e.From]
+			tgtNode, tgtOK := g.Nodes[e.To]
+			if !srcOK || !tgtOK {
+				continue
+			}
+			if srcNode.Type != core.NodeService || tgtNode.Type != core.NodeService {
+				continue
+			}
+			if srcNode.LastSeen.Before(start) && tgtNode.LastSeen.Before(start) {
+				continue
+			}
+			srcName, _ := srcNode.Attr["name"].(string)
+			tgtName, _ := tgtNode.Attr["name"].(string)
+			if srcName == "" || tgtName == "" {
+				continue
+			}
+			if _, ok := services[srcName]; !ok {
+				services[srcName] = graphstore.ServiceStats{}
+			}
+			ek := edgeKey{source: srcName, target: tgtName}
+			es := edges[ek]
+			if es == nil {
+				es = &edgeStats{}
+				edges[ek] = es
+			}
+			es.requests++
 		}
 	}
 
 	nodes := make([]TopologyNode, 0, len(services))
 	for id, ss := range services {
 		var errRate float64
-		if ss.invocations > 0 {
-			errRate = float64(ss.errors) / float64(ss.invocations)
+		if ss.Invocations > 0 {
+			errRate = float64(ss.Errors) / float64(ss.Invocations)
 		}
 		nodes = append(nodes, TopologyNode{
 			ID:          id,
 			Label:       id,
 			Status:      statusFromErrorRate(errRate),
-			Invocations: ss.invocations,
-			Errors:      ss.errors,
+			Invocations: ss.Invocations,
+			Errors:      ss.Errors,
 			ErrorRate:   errRate,
 		})
 	}

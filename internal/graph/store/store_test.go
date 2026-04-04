@@ -7,7 +7,13 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	"github.com/sssmaran/WaylogCLI/internal/testutil"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
+	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
+
+func newStoreWithTraceStore() (*Store, *tracestore.Store) {
+	return NewStore(), tracestore.NewStore()
+}
 
 func TestStore_Merge_RequestDeterministicMerge(t *testing.T) {
 	s := NewStore()
@@ -82,14 +88,13 @@ func TestStore_Merge_RequestDeterministicMerge(t *testing.T) {
 	}
 }
 
-func TestStore_Merge_SpanStubEnrichment(t *testing.T) {
-	s := NewStore()
+func TestStore_TraceStore_SpanMergeBySpanID(t *testing.T) {
+	s, ts := newStoreWithTraceStore()
 	b := build.NewBuilder()
 	traceID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	parentSpanID := "1111111111111111"
 	childSpanID := "2222222222222222"
 
-	// Child event arrives first — creates a stub for parent span
 	childEv := testutil.MakeEvent(
 		testutil.WithTraceID(traceID),
 		testutil.WithSpanID(childSpanID),
@@ -98,20 +103,12 @@ func TestStore_Merge_SpanStubEnrichment(t *testing.T) {
 		testutil.WithStatusCode(200),
 		testutil.WithLatency(32),
 	)
-	s.Merge(b.Build(childEv))
-
-	// Verify parent span is a stub (missing enriched fields)
-	snap := s.Snapshot()
-	parentNodeID := core.ID("span", traceID, parentSpanID)
-	parentNode, ok := snap.Nodes[parentNodeID]
-	if !ok {
-		t.Fatalf("parent span stub %s not found", parentNodeID)
-	}
-	if _, has := parentNode.Attr["status_code"]; has {
-		t.Error("parent stub should not have status_code yet")
+	childResult := b.BuildResult(childEv)
+	s.Merge(childResult.Graph)
+	if childResult.Span != nil {
+		ts.Upsert(traceID, core.ID("request", traceID), childResult.Span)
 	}
 
-	// Now parent's own event arrives — should enrich the stub
 	parentEv := testutil.MakeEvent(
 		testutil.WithTraceID(traceID),
 		testutil.WithSpanID(parentSpanID),
@@ -121,23 +118,42 @@ func TestStore_Merge_SpanStubEnrichment(t *testing.T) {
 		testutil.WithLatency(45),
 		testutil.WithEventName("api-gateway.request"),
 	)
-	s.Merge(b.Build(parentEv))
+	parentResult := b.BuildResult(parentEv)
+	s.Merge(parentResult.Graph)
+	if parentResult.Span != nil {
+		ts.Upsert(traceID, core.ID("request", traceID), parentResult.Span)
+	}
 
-	snap = s.Snapshot()
-	parentNode = snap.Nodes[parentNodeID]
-
-	// Verify enriched attrs
-	if got := parentNode.Attr["service"]; got != "api-gateway" {
-		t.Errorf("service = %v, want api-gateway", got)
+	rec, ok := ts.Get(traceID)
+	if !ok {
+		t.Fatalf("trace %s not found", traceID)
 	}
-	if got := parentNode.Attr["status_code"]; got != 200 {
-		t.Errorf("status_code = %v, want 200", got)
+	if len(rec.Spans) != 2 {
+		t.Fatalf("expected 2 span records, got %d", len(rec.Spans))
 	}
-	if got := parentNode.Attr["latency_ms"]; got != int64(45) {
-		t.Errorf("latency_ms = %v, want 45", got)
+	var parent tracestore.SpanRecord
+	found := false
+	for _, span := range rec.Spans {
+		if span.SpanID == parentSpanID {
+			parent = span
+			found = true
+			break
+		}
 	}
-	if got := parentNode.Attr["event_name"]; got != "api-gateway.request" {
-		t.Errorf("event_name = %v, want api-gateway.request", got)
+	if !found {
+		t.Fatalf("parent span %s not found", parentSpanID)
+	}
+	if parent.Service != "api-gateway" {
+		t.Errorf("service = %v, want api-gateway", parent.Service)
+	}
+	if parent.StatusCode != 200 {
+		t.Errorf("status_code = %v, want 200", parent.StatusCode)
+	}
+	if parent.LatencyMs != int64(45) {
+		t.Errorf("latency_ms = %v, want 45", parent.LatencyMs)
+	}
+	if parent.EventName != "api-gateway.request" {
+		t.Errorf("event_name = %v, want api-gateway.request", parent.EventName)
 	}
 }
 
@@ -193,8 +209,8 @@ func TestStore_Index_TraceToRequest(t *testing.T) {
 	}
 }
 
-func TestStore_Index_TraceToSpans(t *testing.T) {
-	s := NewStore()
+func TestStore_TraceStore_Get_ReturnsUniqueSpans(t *testing.T) {
+	s, ts := newStoreWithTraceStore()
 	b := build.NewBuilder()
 	traceID := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
@@ -212,36 +228,32 @@ func TestStore_Index_TraceToSpans(t *testing.T) {
 		testutil.WithService("checkout-demo"),
 	)
 
-	s.Merge(b.Build(ev1))
-	s.Merge(b.Build(ev2))
-	s.Merge(b.Build(ev2)) // duplicate merge should not duplicate span IDs in index
-
-	spanIDs := s.SpanIDsForTrace(traceID)
-	// ev1 creates span 1111, ev2 creates span 2222 + stub for parent 1111.
-	// Index should contain unique IDs only.
-	if len(spanIDs) != 2 {
-		t.Errorf("expected exactly 2 unique span IDs for trace, got %d: %v", len(spanIDs), spanIDs)
-	}
-
-	// Verify the span IDs contain our expected spans
-	expected := map[string]bool{
-		core.ID("span", traceID, "1111111111111111"): false,
-		core.ID("span", traceID, "2222222222222222"): false,
-	}
-	for _, id := range spanIDs {
-		if _, ok := expected[id]; ok {
-			expected[id] = true
+	for _, current := range []struct {
+		traceID string
+		event   event.WideEvent
+	}{
+		{traceID: traceID, event: ev1},
+		{traceID: traceID, event: ev2},
+		{traceID: traceID, event: ev2},
+	} {
+		result := b.BuildResult(current.event)
+		s.Merge(result.Graph)
+		if result.Span != nil {
+			ts.Upsert(current.traceID, core.ID("request", current.traceID), result.Span)
 		}
 	}
-	for id, found := range expected {
-		if !found {
-			t.Errorf("expected span ID %s not found in index", id)
-		}
+
+	rec, ok := ts.Get(traceID)
+	if !ok {
+		t.Fatal("expected trace record to exist")
+	}
+	if len(rec.Spans) != 2 {
+		t.Fatalf("expected 2 unique span records, got %d", len(rec.Spans))
 	}
 }
 
-func TestStore_Index_SpanIDsForTrace_ReturnsCopy(t *testing.T) {
-	s := NewStore()
+func TestStore_TraceStore_Get_ReturnsCopy(t *testing.T) {
+	s, ts := newStoreWithTraceStore()
 	b := build.NewBuilder()
 	traceID := "abababababababababababababababab"
 
@@ -250,20 +262,23 @@ func TestStore_Index_SpanIDsForTrace_ReturnsCopy(t *testing.T) {
 		testutil.WithSpanID("3333333333333333"),
 		testutil.WithService("api-gateway"),
 	)
-	s.Merge(b.Build(ev))
-
-	got := s.SpanIDsForTrace(traceID)
-	if len(got) == 0 {
-		t.Fatal("expected at least one span ID")
+	result := b.BuildResult(ev)
+	s.Merge(result.Graph)
+	if result.Span != nil {
+		ts.Upsert(traceID, core.ID("request", traceID), result.Span)
 	}
-	got[0] = "mutated-by-caller"
-
-	fresh := s.SpanIDsForTrace(traceID)
-	if len(fresh) == 0 {
-		t.Fatal("expected at least one span ID on second read")
+	got, ok := ts.Get(traceID)
+	if !ok || len(got.Spans) == 0 {
+		t.Fatal("expected at least one span record")
 	}
-	if fresh[0] == "mutated-by-caller" {
-		t.Fatal("SpanIDsForTrace returned internal backing slice; caller mutation leaked into store")
+	got.Spans[0].SpanID = "mutated-by-caller"
+
+	fresh, ok := ts.Get(traceID)
+	if !ok || len(fresh.Spans) == 0 {
+		t.Fatal("expected at least one span record on second read")
+	}
+	if fresh.Spans[0].SpanID == "mutated-by-caller" {
+		t.Fatal("Get returned internal backing data; caller mutation leaked into store")
 	}
 }
 
@@ -332,11 +347,6 @@ func TestStore_Index_Restore_Rebuilds(t *testing.T) {
 	}
 	if reqID != core.ID("request", traceID) {
 		t.Errorf("RequestIDForTrace = %s, want %s", reqID, core.ID("request", traceID))
-	}
-
-	spanIDs := s2.SpanIDsForTrace(traceID)
-	if len(spanIDs) == 0 {
-		t.Error("SpanIDsForTrace should return spans after Restore")
 	}
 
 	// Edge dedup should also work after restore — merge same snapshot again

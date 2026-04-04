@@ -14,9 +14,12 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 )
 
-const SnapshotVersion = "1"
+// SnapshotVersion is bumped when the on-disk snapshot schema changes.
+// Version 2 corresponds to the flattened graph architecture.
+const SnapshotVersion = "2"
 
 var ErrSnapshotMissing = errors.New("snapshot missing")
+var ErrSnapshotVersionMismatch = errors.New("snapshot version mismatch")
 
 type Snapshot struct {
 	Version  string      `json:"version"`
@@ -101,7 +104,7 @@ func LoadWithSource(path string) (*Snapshot, string, error) {
 		if isMissing(err) && isMissing(err2) {
 			return nil, "", ErrSnapshotMissing
 		}
-		return nil, "", fmt.Errorf("load snapshot failed: %v; backup failed: %v", err, err2)
+		return nil, "", fmt.Errorf("load snapshot failed: %w; backup failed: %w", err, err2)
 	}
 }
 
@@ -117,7 +120,7 @@ func loadSnapshot(path string) (*Snapshot, error) {
 	}
 
 	if snap.Version != SnapshotVersion {
-		return nil, errors.New("snapshot version mismatch")
+		return nil, fmt.Errorf("%w: got %q want %q", ErrSnapshotVersionMismatch, snap.Version, SnapshotVersion)
 	}
 
 	raw, err := json.Marshal(snap.Graph)

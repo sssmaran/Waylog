@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
+	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
@@ -32,6 +33,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/sampler"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 	"github.com/sssmaran/WaylogCLI/internal/tracestory"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
@@ -95,18 +97,20 @@ func (c *unsampledCounters) Sum(window time.Duration) (total, errs uint64) {
 // incoming traffic.
 type Server struct {
 	store       *store.Store
+	traceStore  *tracestore.Store
 	builder     *build.Builder
 	sampler     *sampler.Sampler
 	metrics     *metrics.Metrics
 	EventLog    *eventlog.Writer
 	EventLogDir string
 
-	accepted      atomic.Uint64
-	counters      unsampledCounters
-	sampleRatePct int
-	ready         atomic.Bool
-	startTime     time.Time
-	maxBodyBytes  int64
+	accepted       atomic.Uint64
+	counters       unsampledCounters
+	sampleRatePct  int
+	ready          atomic.Bool
+	startTime      time.Time
+	maxBodyBytes   int64
+	graphHotWindow time.Duration
 
 	askProvider         llm.Provider
 	askRegistry         *tools.Registry
@@ -168,6 +172,7 @@ func (s *Server) SetCausalRunResult(err error) {
 // ServerConfig holds configuration for creating a new Server.
 type ServerConfig struct {
 	Store               *store.Store
+	TraceStore          *tracestore.Store
 	Sampler             *sampler.Sampler
 	Metrics             *metrics.Metrics
 	MaxBodyBytes        int64
@@ -188,6 +193,7 @@ type ServerConfig struct {
 	ColdWriter          *coldstore.BatchWriter
 	ColdStore           coldstore.Store
 	PlanStore           *PlanStore
+	GraphHotWindow      time.Duration
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -202,6 +208,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	s := &Server{
 		store:               cfg.Store,
+		traceStore:          cfg.TraceStore,
 		builder:             build.NewBuilder(),
 		sampler:             cfg.Sampler,
 		metrics:             cfg.Metrics,
@@ -223,11 +230,18 @@ func NewServer(cfg ServerConfig) *Server {
 		coldWriter:          cfg.ColdWriter,
 		coldStore:           cfg.ColdStore,
 		planStore:           cfg.PlanStore,
+		graphHotWindow:      cfg.GraphHotWindow,
 		rateLimit:           map[string][]time.Time{},
 		replayStatus:        "none",
 	}
 	if s.sampler == nil {
 		s.sampler = sampler.New(sampler.LoadConfigFromEnv())
+	}
+	if s.traceStore == nil {
+		s.traceStore = tracestore.NewStore()
+	}
+	if s.graphHotWindow <= 0 {
+		s.graphHotWindow, _ = runtimeGraphHotWindow()
 	}
 	if s.sampleRatePct == 0 {
 		s.sampleRatePct = s.sampler.HappySampleRatePct()
@@ -462,11 +476,18 @@ func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
 		"error_code", errorCode(&ev),
 	)
 
-	// Build graph from event and merge into store
+	// Build graph + trace-store records from event and merge into derived views.
 	mergeStart := time.Now()
-	g := s.builder.Build(ev)
+	result := s.builder.BuildResult(ev)
 	if s.store != nil {
-		s.store.Merge(g)
+		s.store.Merge(result.Graph)
+	}
+	if s.traceStore != nil && result.Span != nil {
+		traceStart := time.Now()
+		s.traceStore.Upsert(ev.Request.TraceID, core.ID("request", ev.Request.TraceID), result.Span)
+		if s.metrics != nil {
+			s.metrics.TraceUpsertDuration.Observe(time.Since(traceStart).Seconds())
+		}
 	}
 	if s.sseHub != nil {
 		s.sseHub.MarkDirty(TopicOverview, TopicRoutes, TopicTimeseries)
@@ -694,6 +715,8 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	askEnabled, model, toolMode := s.askCapabilityState()
+	hotWindow := s.effectiveGraphHotWindow()
+	_, hotWindowSource := runtimeGraphHotWindow()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
@@ -713,7 +736,41 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 			"grafana":    s.grafanaURL,
 		},
 		"graph": s.graphUI,
+		"architecture": map[string]any{
+			"flattened": true,
+			"graph": map[string]any{
+				"nodes": []string{"request", "service", "error"},
+				"edges": []string{"handled_by", "failed_with", "calls"},
+			},
+			"trace_store": map[string]any{
+				"enabled": s.traceStore != nil,
+			},
+			"hot_window": map[string]any{
+				"enabled":       hotWindow > 0,
+				"duration":      hotWindow.String(),
+				"duration_secs": int64(hotWindow / time.Second),
+				"source":        hotWindowSource,
+			},
+		},
 	})
+}
+
+func runtimeGraphHotWindow() (time.Duration, string) {
+	if hot := config.GetenvDuration("GRAPH_HOT_WINDOW", 0); hot > 0 {
+		return hot, "GRAPH_HOT_WINDOW"
+	}
+	if hot := config.GetenvDuration("GRAPH_RETENTION", 24*time.Hour); hot > 0 {
+		return hot, "GRAPH_RETENTION"
+	}
+	return 24 * time.Hour, "default"
+}
+
+func (s *Server) effectiveGraphHotWindow() time.Duration {
+	if s != nil && s.graphHotWindow > 0 {
+		return s.graphHotWindow
+	}
+	hot, _ := runtimeGraphHotWindow()
+	return hot
 }
 
 // Tools handles GET /v1/tools — returns available graph tools with examples.
@@ -993,7 +1050,7 @@ func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
-	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store}
+	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store, ts: s.traceStore}
 	answer, toolRecords, askErr := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
 		return registry.Call(ctx, fs, name, params)
 	}), req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: req.ErrorStrategy})
@@ -1085,7 +1142,7 @@ func (s *Server) TraceStory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	story, ctx, err := tracestory.Build(snap, traceID)
+	story, ctx, err := tracestory.BuildWithTraceStore(snap, s.traceStore, traceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -1420,8 +1477,8 @@ func (s *Server) OverviewTimeseries(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid window", http.StatusBadRequest)
 			return
 		}
-		if d > 24*time.Hour {
-			http.Error(w, "window max 24h", http.StatusBadRequest)
+		if d > s.effectiveGraphHotWindow() {
+			http.Error(w, "window exceeds hot window", http.StatusBadRequest)
 			return
 		}
 		window = d
@@ -1656,17 +1713,16 @@ func (s *Server) GraphTopology(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	window := parseLooseDuration(q, "window", 1*time.Hour)
-	if window > 24*time.Hour {
-		window = 24 * time.Hour
+	if maxWindow := s.effectiveGraphHotWindow(); window > maxWindow {
+		window = maxWindow
 	}
 
-	snap, ok := s.snapshotOrServiceUnavailable(w)
-	if !ok {
+	if _, ok := s.snapshotOrServiceUnavailable(w); !ok {
 		return
 	}
 
 	now := time.Now()
-	result := analysis.BuildTopology(snap, now.Add(-window), now)
+	result := analysis.BuildTopology(s.store, s.traceStore, now.Add(-window), now)
 	cyto := analysis.ToCytoscapeFormat(result)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2016,6 +2072,7 @@ func (s *Server) snapshotOrServiceUnavailable(w http.ResponseWriter) (*core.Grap
 type frozenStore struct {
 	snap *core.Graph
 	real *store.Store
+	ts   *tracestore.Store
 }
 
 func (f *frozenStore) Snapshot() *core.Graph { return f.snap }
@@ -2027,6 +2084,9 @@ func (f *frozenStore) ForEachRequestFact(start, end time.Time, fn func(store.Req
 }
 func (f *frozenStore) ErrorIndex(errorCode string) ([]string, bool) {
 	return f.real.ErrorIndex(errorCode)
+}
+func (f *frozenStore) TraceStore() *tracestore.Store {
+	return f.ts
 }
 
 func toolErrorToHTTPStatus(te *tools.ToolError) int {
@@ -2209,7 +2269,7 @@ func (s *Server) ToolCall(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store}
+	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store, ts: s.traceStore}
 	result, err := registry.Call(r.Context(), fs, toolName, params)
 	duration := time.Since(start).Milliseconds()
 
@@ -2352,7 +2412,7 @@ func (s *Server) DashboardAsk(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store}
+	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store, ts: s.traceStore}
 	answer, toolRecords, askErr := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
 		return registry.Call(ctx, fs, name, params)
 	}), req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: "abort"})
@@ -2465,15 +2525,15 @@ func (s *Server) Topology(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	dur := parseLooseDuration(q, "window", time.Hour)
-	if dur > 24*time.Hour {
-		dur = 24 * time.Hour
+	if maxWindow := s.effectiveGraphHotWindow(); dur > maxWindow {
+		dur = maxWindow
 	}
-	snap, ok := s.snapshotOrServiceUnavailable(w)
-	if !ok {
+	if _, ok := s.snapshotOrServiceUnavailable(w); !ok {
 		return
 	}
+
 	now := time.Now()
-	result := analysis.BuildTopology(snap, now.Add(-dur), now)
+	result := analysis.BuildTopology(s.store, s.traceStore, now.Add(-dur), now)
 
 	meta.DurationMs = time.Since(reqStart).Milliseconds()
 	meta.DataStatus = "complete"
@@ -2502,8 +2562,8 @@ func (s *Server) BlastRadius(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	dur := parseLooseDuration(q, "window", time.Hour)
-	if dur > 24*time.Hour {
-		dur = 24 * time.Hour
+	if maxWindow := s.effectiveGraphHotWindow(); dur > maxWindow {
+		dur = maxWindow
 	}
 	snap, ok := s.snapshotOrServiceUnavailable(w)
 	if !ok {

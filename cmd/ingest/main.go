@@ -21,12 +21,14 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/dashboard"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/persist"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 )
 
 var graphStore *graphstore.Store
@@ -42,14 +44,18 @@ func main() {
 	snapshotPath := config.Getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
 	snapshotEvery := config.GetenvInt("SNAPSHOT_EVERY_SEC", 5)
 	snapshotLogEvery := config.GetenvInt("SNAPSHOT_LOG_EVERY", 1)
-	graphRetention := config.GetenvDuration("GRAPH_RETENTION", 24*time.Hour)
-	if graphRetention <= 0 {
-		slog.Error("GRAPH_RETENTION must be positive", "value", graphRetention)
+	graphHotWindow := config.GetenvDuration("GRAPH_HOT_WINDOW", 0)
+	if graphHotWindow == 0 {
+		graphHotWindow = config.GetenvDuration("GRAPH_RETENTION", 24*time.Hour)
+	}
+	if graphHotWindow <= 0 {
+		slog.Error("GRAPH_HOT_WINDOW must be positive", "value", graphHotWindow)
 		os.Exit(1)
 	}
 	mcpStdio := config.GetenvBool("MCP_STDIO", false)
 
 	graphStore = graphstore.NewStore()
+	traceStore := tracestore.NewStore()
 	var snapshotSavedAt time.Time
 
 	// Restore snapshot (non-fatal). On corrupt/missing snapshot the server
@@ -70,6 +76,8 @@ func main() {
 		}
 	} else if errors.Is(err, persist.ErrSnapshotMissing) {
 		slog.Info("no snapshot found, starting fresh")
+	} else if errors.Is(err, persist.ErrSnapshotVersionMismatch) {
+		slog.Warn("snapshot version incompatible, replaying from event log", "path", snapshotPath, "err", err)
 	} else {
 		slog.Warn("snapshot load failed, starting with empty graph", "err", err)
 	}
@@ -157,6 +165,7 @@ func main() {
 	// Create ingest server with the store
 	ingestServer := ingest.NewServer(ingest.ServerConfig{
 		Store:               graphStore,
+		TraceStore:          traceStore,
 		MaxBodyBytes:        maxBody,
 		EventLogDir:         eventLogDir,
 		Metrics:             m,
@@ -174,6 +183,7 @@ func main() {
 		ColdWriter:          coldWriter,
 		ColdStore:           coldDB,
 		PlanStore:           planStore,
+		GraphHotWindow:      graphHotWindow,
 	})
 
 	// SSE hub for real-time dashboard updates
@@ -208,24 +218,51 @@ func main() {
 			"retention", eventLogRetention,
 		)
 
-		// Replay events newer than last snapshot (or all if no snapshot)
+		// Replay WAL to rebuild derived views.
+		//
+		// The graph snapshot covers nodes/edges, so the graph only needs
+		// entries newer than snapshotSavedAt. The trace store is NOT
+		// snapshotted, so it must be rebuilt from the full hot window
+		// to restore drill-down data (trace_summary, story, topology).
 		m.ReplayInProgress.Set(1)
-		entries, replayErr := eventlog.ReadDir(eventLogDir, snapshotSavedAt)
+		traceReplayAfter := time.Now().Add(-graphHotWindow)
+		replayAfter := snapshotSavedAt
+		if traceReplayAfter.Before(replayAfter) {
+			replayAfter = traceReplayAfter
+		}
+		entries, replayErr := eventlog.ReadDir(eventLogDir, replayAfter)
 		if replayErr != nil {
 			slog.Warn("event log replay failed", "err", replayErr)
 			m.ReplayFailuresTotal.Inc()
 		} else if len(entries) > 0 {
-			replayed := 0
+			replayedGraph, replayedTrace := 0, 0
 			for i := range entries {
 				m.ReplayLagSeconds.Set(time.Since(entries[i].LoggedAt).Seconds())
 				if !entries[i].SampledInGraph {
 					continue
 				}
-				g := ingestServer.Builder().Build(entries[i].Event)
-				graphStore.Merge(g)
-				replayed++
+				result := ingestServer.Builder().BuildResult(entries[i].Event)
+
+				// Graph: only merge entries newer than the snapshot.
+				if entries[i].LoggedAt.After(snapshotSavedAt) {
+					graphStore.Merge(result.Graph)
+					replayedGraph++
+				}
+
+				// Trace store: merge everything in the hot window.
+				if result.Span != nil {
+					traceStore.Upsert(entries[i].Event.Request.TraceID, core.ID("request", entries[i].Event.Request.TraceID), result.Span)
+					replayedTrace++
+				}
 			}
-			slog.Info("event log replay complete", "total", len(entries), "replayed", replayed)
+			m.TraceStoreRecords.Set(float64(traceStore.Count()))
+			m.TraceStoreSpans.Set(float64(traceStore.SpanCount()))
+			m.TraceStoreCohorts.Set(float64(traceStore.CohortCount()))
+			slog.Info("event log replay complete",
+				"total", len(entries),
+				"graph_replayed", replayedGraph,
+				"trace_replayed", replayedTrace,
+			)
 		}
 		m.ReplayLagSeconds.Set(0)
 		m.ReplayInProgress.Set(0)
@@ -347,7 +384,7 @@ func main() {
 	defer stop()
 
 	go func() {
-		slog.Info("ingest listening", "addr", addr, "graph_retention", graphRetention)
+		slog.Info("ingest listening", "addr", addr, "graph_hot_window", graphHotWindow)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("ingest server error", "err", err)
 			os.Exit(1)
@@ -385,13 +422,21 @@ func main() {
 				snapshotCount++
 
 				// Enforce retention: prune nodes older than the retention window.
-				graphStore.PruneOlderThan(time.Now().Add(-graphRetention))
+				cutoff := time.Now().Add(-graphHotWindow)
+				graphStore.PruneOlderThan(cutoff)
+				deletedTraces, _ := traceStore.PruneOlderThan(cutoff)
 				m.GraphPrunedTotal.Inc()
+				if deletedTraces > 0 {
+					m.TraceStorePruned.Add(float64(deletedTraces))
+				}
 
 				g := graphStore.Snapshot()
 
 				m.GraphNodes.Set(float64(len(g.Nodes)))
 				m.GraphEdges.Set(float64(len(g.Edges)))
+				m.TraceStoreRecords.Set(float64(traceStore.Count()))
+				m.TraceStoreSpans.Set(float64(traceStore.SpanCount()))
+				m.TraceStoreCohorts.Set(float64(traceStore.CohortCount()))
 
 				if len(g.Nodes) == 0 {
 					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {

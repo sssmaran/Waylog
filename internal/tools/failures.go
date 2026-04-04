@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 )
 
 type failuresInput struct {
@@ -32,6 +34,11 @@ type failuresOutput struct {
 	HasMore       bool           `json:"has_more"`
 }
 
+type failureRecord struct {
+	entry  failureEntry
+	seenAt time.Time
+}
+
 func handleFailures(ctx context.Context, store Store, params json.RawMessage) (any, error) {
 	_ = ctx
 	var input failuresInput
@@ -42,60 +49,58 @@ func handleFailures(ctx context.Context, store Store, params json.RawMessage) (a
 	}
 
 	g := store.Snapshot()
-	var out []failureEntry
+	now := time.Now()
+	var out []failureRecord
 
-	for _, e := range g.Edges {
-		if e.Type != core.EdgeFailedWith {
-			continue
-		}
-		req, ok := g.Nodes[e.From]
-		if !ok || req.Type != core.NodeRequest {
-			continue
-		}
-
-		var userTier string
-		for _, ed := range g.OutEdges[req.ID] {
-			if ed.Type == core.EdgeRequestBy {
-				user, ok := g.Nodes[ed.To]
-				if ok && user.Attr != nil {
-					userTier, _ = user.Attr["tier"].(string)
-				}
-				break
-			}
-		}
-
+	store.ForEachRequestFact(time.Time{}, now, func(f graphstore.RequestFacts) {
+		userTier := f.UserTier
 		if input.Tier != "" && userTier != input.Tier {
-			continue
+			return
 		}
 
-		errNode := g.Nodes[e.To]
-		errorCode := ""
-		if errNode.Attr != nil {
-			errorCode, _ = errNode.Attr["code"].(string)
+		errorCodes := uniqueStrings(f.Errors)
+		if len(errorCodes) == 0 {
+			errorCodes = requestErrorCodesFromGraph(g, f.RequestID)
+		}
+		if len(errorCodes) == 0 {
+			return
 		}
 
-		var latency any
-		if req.Attr != nil {
-			latency = req.Attr["latency_ms"]
+		traceID := f.TraceID
+		if traceID == "" {
+			traceID = traceIDForRequest(g, f.RequestID)
 		}
-
-		traceID := ""
-		if req.Attr != nil {
-			if tid, ok := req.Attr["trace_id"].(string); ok {
-				traceID = tid
-			}
+		latency := any(f.LatencyMs)
+		for _, errorCode := range errorCodes {
+			out = append(out, failureRecord{
+				entry: failureEntry{
+					RequestID: f.RequestID,
+					TraceID:   traceID,
+					LatencyMs: latency,
+					Tier:      userTier,
+					ErrorCode: errorCode,
+				},
+				seenAt: f.SeenAt,
+			})
 		}
+	})
 
-		out = append(out, failureEntry{
-			RequestID: req.ID,
-			TraceID:   traceID,
-			LatencyMs: latency,
-			Tier:      userTier,
-			ErrorCode: errorCode,
-		})
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].seenAt.Equal(out[j].seenAt) {
+			return out[i].seenAt.After(out[j].seenAt)
+		}
+		if out[i].entry.RequestID != out[j].entry.RequestID {
+			return out[i].entry.RequestID < out[j].entry.RequestID
+		}
+		return out[i].entry.ErrorCode < out[j].entry.ErrorCode
+	})
+
+	failures := make([]failureEntry, 0, len(out))
+	for _, record := range out {
+		failures = append(failures, record.entry)
 	}
 
-	page, totalCount, hasMore := applyPagination(out, input.Limit, input.Offset)
+	page, totalCount, hasMore := applyPagination(failures, input.Limit, input.Offset)
 	return failuresOutput{SchemaVersion: "1.0", Failures: page, TotalCount: totalCount, HasMore: hasMore}, nil
 }
 
@@ -194,14 +199,12 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 	}
 
 	g := store.Snapshot()
-
-	// Try error index for fast lookup
-	var requestIDs []string
-	useIndex := false
 	ids, ready := store.ErrorIndex(input.ErrorCode)
+	requestIDs := map[string]struct{}{}
 	if ready {
-		requestIDs = ids
-		useIndex = true
+		for _, id := range ids {
+			requestIDs[id] = struct{}{}
+		}
 	}
 
 	weightRequest := config.GetenvFloat("BLAST_WEIGHT_REQUEST", 1.0)
@@ -216,40 +219,19 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 	flags := map[string]bool{}
 	vipUsers := map[string]bool{}
 	premiumUsers := map[string]bool{}
+	now := time.Now()
+	store.ForEachRequestFact(time.Time{}, now, func(f graphstore.RequestFacts) {
+		if ready {
+			if _, ok := requestIDs[f.RequestID]; !ok {
+				return
+			}
+		} else if !f.HasError(input.ErrorCode) && !requestHasErrorCode(g, f.RequestID, input.ErrorCode) {
+			return
+		}
 
-	if useIndex {
-		for _, reqID := range requestIDs {
-			if requests[reqID] {
-				continue
-			}
-			requests[reqID] = true
-			collectBlastNeighbors(g, reqID, users, services, tiers, flags, vipUsers, premiumUsers)
-		}
-	} else {
-		spanToRequest := spanToRequestIndex(g)
-		for _, e := range g.Edges {
-			if e.Type != core.EdgeFailedWith {
-				continue
-			}
-			errNode := g.Nodes[e.To]
-			code := ""
-			if errNode.Attr != nil {
-				code, _ = errNode.Attr["code"].(string)
-			}
-			if code != input.ErrorCode {
-				continue
-			}
-			reqID, ok := requestIDForFailureEdge(g, e, spanToRequest)
-			if !ok {
-				continue
-			}
-			if requests[reqID] {
-				continue
-			}
-			requests[reqID] = true
-			collectBlastNeighbors(g, reqID, users, services, tiers, flags, vipUsers, premiumUsers)
-		}
-	}
+		requests[f.RequestID] = true
+		collectBlastNeighbors(g, f, users, services, tiers, flags, vipUsers, premiumUsers)
+	})
 
 	out := blastOutput{
 		SchemaVersion:    "1.0",
@@ -283,30 +265,55 @@ func handleBlastRadius(ctx context.Context, store Store, params json.RawMessage)
 	return out, nil
 }
 
-func collectBlastNeighbors(g *core.Graph, reqID string, users map[string]int, services map[string]int, tiers map[string]int, flags map[string]bool, vipUsers map[string]bool, premiumUsers map[string]bool) {
-	for _, ed := range g.OutEdges[reqID] {
-		switch ed.Type {
-		case core.EdgeRequestBy:
-			u := g.Nodes[ed.To]
-			users[u.ID]++
-			if t, ok := u.Attr["tier"].(string); ok {
-				tiers[t]++
-				if t == "premium" {
-					premiumUsers[u.ID] = true
-				}
+func collectBlastNeighbors(g *core.Graph, fact graphstore.RequestFacts, users map[string]int, services map[string]int, tiers map[string]int, flags map[string]bool, vipUsers map[string]bool, premiumUsers map[string]bool) {
+	serviceNames := uniqueStrings(fact.Services)
+	if len(serviceNames) == 0 {
+		serviceNames = requestServicesFromGraph(g, fact.RequestID)
+	}
+	for _, name := range serviceNames {
+		services[name]++
+	}
+
+	flagNames := uniqueStrings(fact.FeatureFlags)
+	if len(flagNames) == 0 {
+		flagNames = requestFeatureFlagsFromGraph(g, fact.RequestID)
+	}
+	for _, name := range flagNames {
+		flags[name] = true
+	}
+
+	userID := fact.UserID
+	userTier := fact.UserTier
+	userRegion := fact.UserRegion
+	userVIP := fact.UserVIP
+	if userID == "" || userTier == "" || userRegion == "" {
+		if fallbackID, fallbackTier, fallbackRegion, fallbackVIP, ok := requestUserInfoFromGraph(g, fact.RequestID); ok {
+			if userID == "" {
+				userID = fallbackID
 			}
-			if vip, ok := u.Attr["vip"].(bool); ok && vip {
-				vipUsers[u.ID] = true
+			if userTier == "" {
+				userTier = fallbackTier
 			}
-		case core.EdgeHandledBy:
-			s := g.Nodes[ed.To]
-			services[serviceNameForNode(s)]++
-		case core.EdgeUsedFlag:
-			f := g.Nodes[ed.To]
-			if name, ok := f.Attr["name"].(string); ok {
-				flags[name] = true
+			if userRegion == "" {
+				userRegion = fallbackRegion
+			}
+			if !userVIP {
+				userVIP = fallbackVIP
 			}
 		}
+	}
+
+	if userID != "" {
+		users[userID]++
+	}
+	if userTier != "" {
+		tiers[userTier]++
+		if userTier == "premium" && userID != "" {
+			premiumUsers[userID] = true
+		}
+	}
+	if userVIP && userID != "" {
+		vipUsers[userID] = true
 	}
 }
 
@@ -372,4 +379,148 @@ func handleFailureChain(ctx context.Context, store Store, params json.RawMessage
 	}
 
 	return chainOutput{SchemaVersion: "1.0", RequestID: input.RequestID, Services: svcs}, nil
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+func traceIDForRequest(g *core.Graph, reqID string) string {
+	if g == nil {
+		return ""
+	}
+	req, ok := g.Nodes[reqID]
+	if !ok || req.Attr == nil {
+		return ""
+	}
+	traceID, _ := req.Attr["trace_id"].(string)
+	return traceID
+}
+
+func requestErrorCodesFromGraph(g *core.Graph, reqID string) []string {
+	if g == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type != core.EdgeFailedWith {
+			continue
+		}
+		errNode, ok := g.Nodes[e.To]
+		if !ok || errNode.Attr == nil {
+			continue
+		}
+		code, _ := errNode.Attr["code"].(string)
+		if code == "" {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		out = append(out, code)
+	}
+	return out
+}
+
+func requestHasErrorCode(g *core.Graph, reqID, code string) bool {
+	for _, current := range requestErrorCodesFromGraph(g, reqID) {
+		if current == code {
+			return true
+		}
+	}
+	return false
+}
+
+func requestServicesFromGraph(g *core.Graph, reqID string) []string {
+	if g == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type != core.EdgeHandledBy {
+			continue
+		}
+		svc, ok := g.Nodes[e.To]
+		if !ok {
+			continue
+		}
+		name := serviceNameForNode(svc)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func requestFeatureFlagsFromGraph(g *core.Graph, reqID string) []string {
+	if g == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type != core.EdgeUsedFlag {
+			continue
+		}
+		flagNode, ok := g.Nodes[e.To]
+		if !ok || flagNode.Attr == nil {
+			continue
+		}
+		name, _ := flagNode.Attr["name"].(string)
+		if name == "" {
+			name = e.To
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func requestUserInfoFromGraph(g *core.Graph, reqID string) (userID, tier, region string, vip bool, ok bool) {
+	if g == nil {
+		return "", "", "", false, false
+	}
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type != core.EdgeRequestBy {
+			continue
+		}
+		userNode, found := g.Nodes[e.To]
+		if !found {
+			return "", "", "", false, false
+		}
+		if userNode.Attr != nil {
+			userID, _ = userNode.Attr["id"].(string)
+			if userID == "" {
+				userID = e.To
+			}
+			tier, _ = userNode.Attr["tier"].(string)
+			region, _ = userNode.Attr["region"].(string)
+			vip, _ = userNode.Attr["vip"].(bool)
+		}
+		return userID, tier, region, vip, true
+	}
+	return "", "", "", false, false
 }

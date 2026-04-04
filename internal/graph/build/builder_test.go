@@ -101,6 +101,10 @@ func TestBuilder_Build_SpanErrorEdge_OnlyWhenBothExist(t *testing.T) {
 				}
 			}
 		}
+
+		if got := builder.BuildResult(ev).Span; got != nil {
+			t.Fatalf("expected no trace-store span record, got %+v", got)
+		}
 	})
 
 	t.Run("with span, no error", func(t *testing.T) {
@@ -109,19 +113,12 @@ func TestBuilder_Build_SpanErrorEdge_OnlyWhenBothExist(t *testing.T) {
 			// No error
 		)
 
-		g := builder.Build(ev)
-
-		// Span should exist
-		spanID := core.ID("span", ev.Request.TraceID, ev.Request.SpanID)
-		if _, ok := g.Nodes[spanID]; !ok {
-			t.Fatal("expected span node to exist")
+		result := builder.BuildResult(ev)
+		if result.Span == nil {
+			t.Fatal("expected trace-store span record to exist")
 		}
-
-		// No EdgeFailedWith edges from span
-		for _, e := range g.Edges {
-			if e.From == spanID && e.Type == core.EdgeFailedWith {
-				t.Errorf("should not have span→error edge when there's no error, but found edge to %s", e.To)
-			}
+		if result.Span.SpanID != ev.Request.SpanID {
+			t.Fatalf("span record span_id = %q, want %q", result.Span.SpanID, ev.Request.SpanID)
 		}
 	})
 
@@ -132,28 +129,34 @@ func TestBuilder_Build_SpanErrorEdge_OnlyWhenBothExist(t *testing.T) {
 		)
 
 		g := builder.Build(ev)
-
-		spanID := core.ID("span", ev.Request.TraceID, ev.Request.SpanID)
 		errID := core.ID("error", ev.Error.Code)
 
-		// Both should exist
-		if _, ok := g.Nodes[spanID]; !ok {
-			t.Fatal("expected span node to exist")
-		}
 		if _, ok := g.Nodes[errID]; !ok {
 			t.Fatal("expected error node to exist")
 		}
 
-		// span→error edge should exist
-		hasEdge := false
+		hasRequestErrorEdge := false
 		for _, e := range g.Edges {
-			if e.From == spanID && e.To == errID && e.Type == core.EdgeFailedWith {
-				hasEdge = true
-				break
+			if e.To == errID && e.Type == core.EdgeFailedWith {
+				fromNode := g.Nodes[e.From]
+				if fromNode.Type == core.NodeSpan {
+					t.Fatalf("unexpected legacy span→error edge %q -> %q", e.From, e.To)
+				}
+				if fromNode.Type == core.NodeRequest {
+					hasRequestErrorEdge = true
+				}
 			}
 		}
-		if !hasEdge {
-			t.Error("expected span→error edge with EdgeFailedWith")
+		if !hasRequestErrorEdge {
+			t.Error("expected request→error edge with EdgeFailedWith")
+		}
+
+		result := builder.BuildResult(ev)
+		if result.Span == nil {
+			t.Fatal("expected trace-store span record to exist")
+		}
+		if result.Span.ErrorCode != ev.Error.Code {
+			t.Fatalf("span record error_code = %q, want %q", result.Span.ErrorCode, ev.Error.Code)
 		}
 	})
 }
@@ -221,7 +224,7 @@ func TestBuilder_Build_ServiceNode(t *testing.T) {
 	}
 }
 
-func TestBuilder_Build_UserNode(t *testing.T) {
+func TestBuilder_Build_UserAttrsOnRequestNode(t *testing.T) {
 	builder := NewBuilder()
 	ev := testutil.MakeEvent(
 		testutil.WithUser("user-456", "premium", "eu-west-1"),
@@ -229,19 +232,22 @@ func TestBuilder_Build_UserNode(t *testing.T) {
 
 	g := builder.Build(ev)
 
-	userID := core.ID("user", ev.User.ID)
-	user, ok := g.Nodes[userID]
+	reqID := core.ID("request", ev.Request.TraceID)
+	req, ok := g.Nodes[reqID]
 	if !ok {
-		t.Fatalf("expected user node %s to exist", userID)
+		t.Fatalf("expected request node %s to exist", reqID)
 	}
-	if user.Type != core.NodeUser {
-		t.Errorf("expected node type %v, got %v", core.NodeUser, user.Type)
+	if req.Attr["user_tier"] != ev.User.Tier {
+		t.Errorf("expected user_tier %s, got %v", ev.User.Tier, req.Attr["user_tier"])
 	}
-	if user.Attr["tier"] != ev.User.Tier {
-		t.Errorf("expected tier %s, got %v", ev.User.Tier, user.Attr["tier"])
+	if req.Attr["user_id"] != ev.User.ID {
+		t.Errorf("expected user_id %s, got %v", ev.User.ID, req.Attr["user_id"])
 	}
-	if user.Attr["id"] != ev.User.ID {
-		t.Errorf("expected id %s, got %v", ev.User.ID, user.Attr["id"])
+	if req.Attr["user_region"] != ev.User.Region {
+		t.Errorf("expected user_region %s, got %v", ev.User.Region, req.Attr["user_region"])
+	}
+	if _, ok := g.Nodes[core.ID("user", ev.User.ID)]; ok {
+		t.Fatal("legacy user node should not be present in flattened graph")
 	}
 }
 
@@ -301,7 +307,7 @@ func TestBuilder_Build_DownstreamService(t *testing.T) {
 	}
 }
 
-func TestBuilder_Build_FeatureFlags(t *testing.T) {
+func TestBuilder_Build_FeatureFlagsOnRequestNode(t *testing.T) {
 	builder := NewBuilder()
 	ev := testutil.MakeEvent(
 		testutil.WithFeatureFlags("dark-mode", "new-checkout"),
@@ -310,33 +316,22 @@ func TestBuilder_Build_FeatureFlags(t *testing.T) {
 	g := builder.Build(ev)
 
 	reqID := core.ID("request", ev.Request.TraceID)
-
-	for _, flag := range ev.Request.FeatureFlags {
-		flagID := core.ID("feature_flag", flag)
-		flagNode, ok := g.Nodes[flagID]
-		if !ok {
-			t.Errorf("expected flag node %s to exist", flagID)
-			continue
+	req := g.Nodes[reqID]
+	flags, ok := req.Attr["feature_flags"].([]string)
+	if !ok {
+		t.Fatalf("feature_flags attr should be []string, got %T", req.Attr["feature_flags"])
+	}
+	for i, flag := range ev.Request.FeatureFlags {
+		if flags[i] != flag {
+			t.Fatalf("feature_flags[%d] = %q, want %q", i, flags[i], flag)
 		}
-		if flagNode.Type != core.NodeFlag {
-			t.Errorf("expected node type %v, got %v", core.NodeFlag, flagNode.Type)
-		}
-
-		// Check edge
-		hasEdge := false
-		for _, e := range g.Edges {
-			if e.From == reqID && e.To == flagID && e.Type == core.EdgeUsedFlag {
-				hasEdge = true
-				break
-			}
-		}
-		if !hasEdge {
-			t.Errorf("expected request→flag edge for %s", flag)
+		if _, ok := g.Nodes[core.ID("feature_flag", flag)]; ok {
+			t.Fatalf("legacy feature_flag node for %q should not be present", flag)
 		}
 	}
 }
 
-func TestBuilder_Build_SpanNodeEnrichedAttrs(t *testing.T) {
+func TestBuilder_Build_SpanRecordEnrichedAttrs(t *testing.T) {
 	builder := NewBuilder()
 	ev := testutil.MakeEvent(
 		testutil.WithTraceID("0123456789abcdef0123456789abcdef"),
@@ -349,44 +344,55 @@ func TestBuilder_Build_SpanNodeEnrichedAttrs(t *testing.T) {
 		testutil.WithError("PMT_502", "payment failed"),
 	)
 
-	g := builder.Build(ev)
-
-	spanID := core.ID("span", ev.Request.TraceID, ev.Request.SpanID)
-	span, ok := g.Nodes[spanID]
-	if !ok {
-		t.Fatalf("expected span node %s to exist", spanID)
+	result := builder.BuildResult(ev)
+	if result.Span == nil {
+		t.Fatal("expected trace-store span record")
 	}
 
 	checks := map[string]any{
-		"trace_id":           ev.Request.TraceID,
-		"span_id":            ev.Request.SpanID,
-		"parent_span_id":     ev.Request.ParentSpanID,
-		"service":            "payment-service",
-		"event_name":         ev.EventName,
-		"status_code":        502,
-		"success":            false,
-		"latency_ms":         int64(42),
-		"caller_service":     "checkout",
-		"downstream_service": "stripe",
-		"error_code":         "PMT_502",
+		"SpanID":            ev.Request.SpanID,
+		"ParentSpanID":      ev.Request.ParentSpanID,
+		"Service":           "payment-service",
+		"EventName":         ev.EventName,
+		"StatusCode":        502,
+		"Success":           false,
+		"LatencyMs":         int64(42),
+		"CallerService":     "checkout",
+		"DownstreamService": "stripe",
+		"ErrorCode":         "PMT_502",
 	}
-	for key, want := range checks {
-		got, exists := span.Attr[key]
-		if !exists {
-			t.Errorf("span attr %q missing", key)
-			continue
-		}
-		if got != want {
-			t.Errorf("span attr %q = %v (%T), want %v (%T)", key, got, got, want, want)
-		}
+	if result.Span.SpanID != checks["SpanID"] {
+		t.Fatalf("SpanID = %q, want %q", result.Span.SpanID, checks["SpanID"])
 	}
-
-	// flow and timestamp should also be present
-	if _, ok := span.Attr["flow"]; !ok {
-		t.Error("span attr \"flow\" missing")
+	if result.Span.ParentSpanID != checks["ParentSpanID"] {
+		t.Fatalf("ParentSpanID = %q, want %q", result.Span.ParentSpanID, checks["ParentSpanID"])
 	}
-	if _, ok := span.Attr["timestamp"]; !ok {
-		t.Error("span attr \"timestamp\" missing")
+	if result.Span.Service != checks["Service"] {
+		t.Fatalf("Service = %q, want %q", result.Span.Service, checks["Service"])
+	}
+	if result.Span.EventName != checks["EventName"] {
+		t.Fatalf("EventName = %q, want %q", result.Span.EventName, checks["EventName"])
+	}
+	if result.Span.StatusCode != checks["StatusCode"] {
+		t.Fatalf("StatusCode = %d, want %v", result.Span.StatusCode, checks["StatusCode"])
+	}
+	if result.Span.Success != checks["Success"] {
+		t.Fatalf("Success = %v, want %v", result.Span.Success, checks["Success"])
+	}
+	if result.Span.LatencyMs != checks["LatencyMs"] {
+		t.Fatalf("LatencyMs = %d, want %v", result.Span.LatencyMs, checks["LatencyMs"])
+	}
+	if result.Span.CallerService != checks["CallerService"] {
+		t.Fatalf("CallerService = %q, want %q", result.Span.CallerService, checks["CallerService"])
+	}
+	if result.Span.DownstreamService != checks["DownstreamService"] {
+		t.Fatalf("DownstreamService = %q, want %q", result.Span.DownstreamService, checks["DownstreamService"])
+	}
+	if result.Span.ErrorCode != checks["ErrorCode"] {
+		t.Fatalf("ErrorCode = %q, want %q", result.Span.ErrorCode, checks["ErrorCode"])
+	}
+	if result.Span.Timestamp.IsZero() {
+		t.Fatal("expected Timestamp to be populated")
 	}
 }
 
