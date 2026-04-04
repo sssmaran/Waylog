@@ -62,8 +62,21 @@ func ComputeBlastRadius(g *core.Graph, errorCode string, start, end time.Time) B
 	for reqID := range matchedRequests {
 		req := g.Nodes[reqID]
 		svc := core.ServiceFromNode(req)
+		if svc == "" && req.Attr != nil {
+			if name, ok := req.Attr["service"].(string); ok {
+				svc = name
+			}
+			if root, ok := req.Attr["root_service"].(string); ok && root != "" {
+				svc = root
+			}
+		}
 		if svc != "" {
 			services[svc]++
+		}
+		if req.Attr != nil {
+			if userID, ok := req.Attr["user_id"].(string); ok && userID != "" {
+				users[userID] = true
+			}
 		}
 		for _, uid := range reqUsers[reqID] {
 			users[uid] = true

@@ -8,76 +8,6 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 )
 
-// rootSpanIDsForTrace finds root spans (spans with no parent) for a given request.
-func rootSpanIDsForTrace(g *core.Graph, reqID string) []string {
-	hasParent := map[string]bool{}
-	for _, e := range g.Edges {
-		if e.Type == core.EdgeSpanChildOf {
-			hasParent[e.From] = true
-		}
-	}
-	var roots []string
-	seen := map[string]bool{}
-	for _, e := range g.OutEdges[reqID] {
-		if e.Type != core.EdgeRequestHasSpan {
-			continue
-		}
-		if seen[e.To] {
-			continue
-		}
-		seen[e.To] = true
-		if !hasParent[e.To] {
-			roots = append(roots, e.To)
-		}
-	}
-	return roots
-}
-
-// spanPathsForRoots builds service paths from root spans.
-func spanPathsForRoots(g *core.Graph, roots []string) [][]string {
-	if len(roots) == 0 {
-		return nil
-	}
-	children := map[string][]string{}
-	for _, e := range g.Edges {
-		if e.Type == core.EdgeSpanChildOf {
-			// e.From = child, e.To = parent
-			children[e.To] = append(children[e.To], e.From)
-		}
-	}
-
-	var paths [][]string
-	for _, root := range roots {
-		dfsSpanPaths(g, root, children, nil, &paths)
-	}
-	return paths
-}
-
-func dfsSpanPaths(g *core.Graph, spanID string, children map[string][]string, prefix []string, out *[][]string) {
-	n, ok := g.Nodes[spanID]
-	if !ok {
-		return
-	}
-	service := ""
-	if n.Attr != nil {
-		if s, ok := n.Attr["service"].(string); ok {
-			service = s
-		}
-	}
-	if service == "" {
-		service = spanID
-	}
-	path := append(prefix, service)
-	kids := children[spanID]
-	if len(kids) == 0 {
-		*out = append(*out, path)
-		return
-	}
-	for _, child := range kids {
-		dfsSpanPaths(g, child, children, path, out)
-	}
-}
-
 // serviceChainForRequest returns the chain of services for a request.
 func serviceChainForRequest(g *core.Graph, reqID string) []string {
 	serviceID := ""
@@ -116,40 +46,6 @@ func serviceChainForRequest(g *core.Graph, reqID string) []string {
 		curr = next
 	}
 	return services
-}
-
-func spanToRequestIndex(g *core.Graph) map[string]string {
-	index := map[string]string{}
-	for id, n := range g.Nodes {
-		if n.Type != core.NodeRequest {
-			continue
-		}
-		for _, e := range g.OutEdges[id] {
-			if e.Type == core.EdgeRequestHasSpan {
-				index[e.To] = id
-			}
-		}
-	}
-	return index
-}
-
-func requestIDForFailureEdge(g *core.Graph, edge core.Edge, spanToRequest map[string]string) (string, bool) {
-	fromNode, ok := g.Nodes[edge.From]
-	if !ok {
-		return "", false
-	}
-	switch fromNode.Type {
-	case core.NodeRequest:
-		return edge.From, true
-	case core.NodeSpan:
-		reqID, ok := spanToRequest[edge.From]
-		if !ok || reqID == "" {
-			return "", false
-		}
-		return reqID, true
-	default:
-		return "", false
-	}
 }
 
 // errorCodeForID returns the error code attribute for an error node ID.

@@ -102,6 +102,52 @@ func TestSummarizeWindow_DedupServicesFlags(t *testing.T) {
 	}
 }
 
+func TestSummarizeWindow_UsesFlattenedFeatureFlags(t *testing.T) {
+	s := NewStore()
+	now := time.Now()
+	s.requestFacts["req-1"] = RequestFacts{
+		RequestID:    "req-1",
+		SeenAt:       now,
+		Services:     []string{"checkout"},
+		Errors:       []string{"ERR_A"},
+		FeatureFlags: []string{"flag-a", "flag-b", "flag-a"},
+		LatencyMs:    25,
+		Status:       "error",
+	}
+	s.requestFacts["req-2"] = RequestFacts{
+		RequestID:    "req-2",
+		SeenAt:       now.Add(time.Second),
+		Services:     []string{"checkout"},
+		FeatureFlags: []string{"flag-b"},
+		LatencyMs:    75,
+		Status:       "ok",
+	}
+
+	summary := s.SummarizeWindow(now.Add(-time.Minute), now.Add(time.Minute))
+
+	if summary.TotalRequests != 2 {
+		t.Fatalf("TotalRequests = %d, want 2", summary.TotalRequests)
+	}
+	if summary.TotalFailures != 1 {
+		t.Fatalf("TotalFailures = %d, want 1", summary.TotalFailures)
+	}
+	if got := summary.ServiceRequestCount["checkout"]; got != 2 {
+		t.Fatalf("ServiceRequestCount[checkout] = %d, want 2", got)
+	}
+	if got := summary.FlagRequestCount["flag-a"]; got != 1 {
+		t.Fatalf("FlagRequestCount[flag-a] = %d, want 1", got)
+	}
+	if got := summary.FlagRequestCount["flag-b"]; got != 2 {
+		t.Fatalf("FlagRequestCount[flag-b] = %d, want 2", got)
+	}
+	if got := summary.FlagErrorCount["flag-a"]["ERR_A"]; got != 1 {
+		t.Fatalf("FlagErrorCount[flag-a][ERR_A] = %d, want 1", got)
+	}
+	if got := summary.FlagErrorCount["flag-b"]["ERR_A"]; got != 1 {
+		t.Fatalf("FlagErrorCount[flag-b][ERR_A] = %d, want 1", got)
+	}
+}
+
 func TestPercentile(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -5,6 +5,7 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 )
 
 type Store interface {
@@ -12,4 +13,5 @@ type Store interface {
 	SummarizeWindow(start, end time.Time) graphstore.WindowSummary
 	ForEachRequestFact(start, end time.Time, fn func(graphstore.RequestFacts))
 	ErrorIndex(errorCode string) ([]string, bool)
+	TraceStore() *tracestore.Store
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	"github.com/sssmaran/WaylogCLI/internal/graph/window"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 )
 
 type Store struct {
@@ -16,6 +17,7 @@ type Store struct {
 	requestFacts    map[string]RequestFacts
 	seenRequests    map[string]struct{}
 	counters        *Counters
+	serviceStats    map[string]*ServiceStats
 	edgeSet         map[string]struct{}            // "from:to:type" for dedup
 	traceToRequest  map[string]string              // trace_id -> request node ID
 	traceToSpans    map[string][]string            // trace_id -> []span node IDs
@@ -29,6 +31,7 @@ func NewStore() *Store {
 		requestFacts:    map[string]RequestFacts{},
 		seenRequests:    map[string]struct{}{},
 		counters:        NewCounters(),
+		serviceStats:    map[string]*ServiceStats{},
 		edgeSet:         map[string]struct{}{},
 		traceToRequest:  map[string]string{},
 		traceToSpans:    map[string][]string{},
@@ -68,7 +71,7 @@ func (s *Store) Merge(g *core.Graph) {
 		// Merge time ranges (imp!)
 		mergeNodeTime(&existing, &incoming)
 
-		// Deterministic merge for request and span nodes
+		// Deterministic merge for request and legacy span nodes.
 		if existing.Type == core.NodeRequest {
 			mergeRequestAttrs(&existing, &incoming)
 		}
@@ -160,7 +163,7 @@ func (s *Store) applyFactsToCountersLocked(f RequestFacts) {
 			m[errID]++
 		}
 		// flag -> error
-		for _, flagID := range f.Flags {
+		for _, flagID := range f.FeatureFlags {
 			m := s.counters.FlagErrorCount[flagID]
 			if m == nil {
 				m = map[string]int{}
@@ -170,6 +173,21 @@ func (s *Store) applyFactsToCountersLocked(f RequestFacts) {
 		}
 	}
 
+	services := f.Services
+	if len(services) == 0 && f.RootService != "" {
+		services = []string{f.RootService}
+	}
+	for _, svcID := range services {
+		stats := s.serviceStats[svcID]
+		if stats == nil {
+			stats = &ServiceStats{}
+			s.serviceStats[svcID] = stats
+		}
+		stats.Invocations++
+		if len(f.Errors) > 0 {
+			stats.Errors++
+		}
+	}
 }
 
 func (s *Store) reverseFactsFromCountersLocked(f RequestFacts) {
@@ -190,7 +208,7 @@ func (s *Store) reverseFactsFromCountersLocked(f RequestFacts) {
 				}
 			}
 		}
-		for _, flagID := range f.Flags {
+		for _, flagID := range f.FeatureFlags {
 			m := s.counters.FlagErrorCount[flagID]
 			if m != nil {
 				m[errID]--
@@ -203,12 +221,30 @@ func (s *Store) reverseFactsFromCountersLocked(f RequestFacts) {
 			}
 		}
 	}
+
+	services := f.Services
+	if len(services) == 0 && f.RootService != "" {
+		services = []string{f.RootService}
+	}
+	for _, svcID := range services {
+		stats := s.serviceStats[svcID]
+		if stats == nil {
+			continue
+		}
+		stats.Invocations--
+		if len(f.Errors) > 0 {
+			stats.Errors--
+		}
+		if stats.Invocations <= 0 && stats.Errors <= 0 {
+			delete(s.serviceStats, svcID)
+		}
+	}
 }
 
 func factsEqual(a, b RequestFacts) bool {
 	return sortedEqual(a.Services, b.Services) &&
 		sortedEqual(a.Errors, b.Errors) &&
-		sortedEqual(a.Flags, b.Flags)
+		sortedEqual(a.FeatureFlags, b.FeatureFlags)
 }
 
 func sortedEqual(a, b []string) bool {
@@ -261,6 +297,17 @@ func mergeRequestAttrs(dst, src *core.Node) {
 		dst.Attr["success"] = false
 	}
 
+	mergeRequestScalar(dst.Attr, src.Attr, "version")
+	mergeRequestScalar(dst.Attr, src.Attr, "user_id")
+	mergeRequestScalar(dst.Attr, src.Attr, "user_tier")
+	mergeRequestScalar(dst.Attr, src.Attr, "user_region")
+	if _, ok := dst.Attr["user_vip"]; !ok {
+		if v, ok := src.Attr["user_vip"]; ok {
+			dst.Attr["user_vip"] = v
+		}
+	}
+	mergeRequestStringSlice(dst.Attr, src.Attr, "feature_flags")
+
 	// If incoming event is from root span, its values become the trace-level summary
 	if isRoot, ok := src.Attr["is_root"].(bool); ok && isRoot {
 		if v, ok := src.Attr["status_code"]; ok {
@@ -291,6 +338,39 @@ func mergeRequestAttrs(dst, src *core.Node) {
 	mergeErrorCodes(dst, src)
 }
 
+func mergeRequestScalar(dst, src map[string]any, key string) {
+	if _, ok := dst[key]; ok {
+		return
+	}
+	if v, ok := src[key]; ok {
+		dst[key] = v
+	}
+}
+
+func mergeRequestStringSlice(dst, src map[string]any, key string) {
+	values := append(AttrToStringSlice(dst[key]), AttrToStringSlice(src[key])...)
+	if len(values) == 0 {
+		return
+	}
+	dst[key] = dedupeStringSlice(values)
+}
+
+func dedupeStringSlice(in []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
 func mergeErrorCodes(dst, src *core.Node) {
 	var codes []string
 	seen := map[string]struct{}{}
@@ -306,13 +386,13 @@ func mergeErrorCodes(dst, src *core.Node) {
 	}
 
 	// Include prior merged state first, then single-code attrs, then incoming values.
-	for _, c := range attrToStringSlice(dst.Attr["error_codes"]) {
+	for _, c := range AttrToStringSlice(dst.Attr["error_codes"]) {
 		appendCode(c)
 	}
 	if dstErr, ok := dst.Attr["error_code"].(string); ok {
 		appendCode(dstErr)
 	}
-	for _, c := range attrToStringSlice(src.Attr["error_codes"]) {
+	for _, c := range AttrToStringSlice(src.Attr["error_codes"]) {
 		appendCode(c)
 	}
 	if srcErr, ok := src.Attr["error_code"].(string); ok {
@@ -324,7 +404,9 @@ func mergeErrorCodes(dst, src *core.Node) {
 	}
 }
 
-func attrToStringSlice(v any) []string {
+// AttrToStringSlice extracts a []string from an attribute value that may be
+// typed as []string or []any (the latter occurs after JSON round-trip).
+func AttrToStringSlice(v any) []string {
 	switch values := v.(type) {
 	case []string:
 		return values
@@ -494,6 +576,7 @@ func (s *Store) rebuildDerivedIndexesLocked() {
 	s.requestFacts = map[string]RequestFacts{}
 	s.seenRequests = map[string]struct{}{}
 	s.counters = NewCounters()
+	s.serviceStats = map[string]*ServiceStats{}
 	s.edgeSet = map[string]struct{}{}
 	s.traceToRequest = map[string]string{}
 	s.traceToSpans = map[string][]string{}
@@ -665,8 +748,12 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 		SeenAt:    reqNode.LastSeen,
 	}
 
-	// Extract attrs from request node
+	// Extract attrs from request node when available. This supports the
+	// flattened graph shape while remaining compatible with legacy snapshots.
 	if reqNode.Attr != nil {
+		if rs, ok := reqNode.Attr["root_service"].(string); ok {
+			f.RootService = rs
+		}
 		switch v := reqNode.Attr["latency_ms"].(type) {
 		case int64:
 			f.LatencyMs = v
@@ -675,8 +762,37 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 		case float64:
 			f.LatencyMs = int64(v)
 		}
-		if rs, ok := reqNode.Attr["root_service"].(string); ok {
-			f.RootService = rs
+		if st, ok := reqNode.Attr["status"].(string); ok {
+			f.Status = st
+		} else if success, ok := reqNode.Attr["success"].(bool); ok {
+			if success {
+				f.Status = "success"
+			} else {
+				f.Status = "failure"
+			}
+		}
+		if version, ok := reqNode.Attr["version"].(string); ok {
+			f.Version = version
+		}
+		if uid, ok := reqNode.Attr["user_id"].(string); ok {
+			f.UserID = uid
+		}
+		if tier, ok := reqNode.Attr["user_tier"].(string); ok {
+			f.UserTier = tier
+		}
+		if vip, ok := reqNode.Attr["user_vip"].(bool); ok {
+			f.UserVIP = vip
+		}
+		if region, ok := reqNode.Attr["user_region"].(string); ok {
+			f.UserRegion = region
+		}
+		if flags := AttrToStringSlice(reqNode.Attr["feature_flags"]); len(flags) > 0 {
+			f.FeatureFlags = append([]string(nil), flags...)
+		}
+		if len(f.FeatureFlags) == 0 {
+			if legacyFlags := AttrToStringSlice(reqNode.Attr["flags"]); len(legacyFlags) > 0 {
+				f.FeatureFlags = append([]string(nil), legacyFlags...)
+			}
 		}
 	}
 
@@ -699,7 +815,11 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 					f.Errors = append(f.Errors, n.ID)
 				}
 			case core.NodeFlag:
-				f.Flags = append(f.Flags, n.ID)
+				if name, _ := n.Attr["name"].(string); name != "" {
+					f.FeatureFlags = append(f.FeatureFlags, name)
+				} else {
+					f.FeatureFlags = append(f.FeatureFlags, n.ID)
+				}
 			}
 		}
 	}
@@ -719,10 +839,33 @@ func extractRequestFactsFromGraph(g *core.Graph, reqID string) (RequestFacts, bo
 					f.Errors = append(f.Errors, n.ID)
 				}
 			case core.NodeFlag:
-				f.Flags = append(f.Flags, n.ID)
+				if name, _ := n.Attr["name"].(string); name != "" {
+					f.FeatureFlags = append(f.FeatureFlags, name)
+				} else {
+					f.FeatureFlags = append(f.FeatureFlags, n.ID)
+				}
 			}
 		}
 	}
 
 	return f, true
+}
+
+// TraceStore returns nil. The graph store does not own a trace store; callers
+// that need one should inject it via a wrapper (e.g. frozenStore in the ingest
+// handler). This method exists so *Store satisfies the tools.Store interface.
+func (s *Store) TraceStore() *tracestore.Store { return nil }
+
+func (s *Store) ServiceStats() map[string]ServiceStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string]ServiceStats, len(s.serviceStats))
+	for name, stats := range s.serviceStats {
+		if stats == nil {
+			continue
+		}
+		out[name] = *stats
+	}
+	return out
 }

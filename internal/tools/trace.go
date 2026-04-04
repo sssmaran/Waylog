@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 )
 
 type traceGraphInput struct {
@@ -38,8 +39,15 @@ func handleTraceGraph(ctx context.Context, store Store, params json.RawMessage) 
 	reqID := core.ID("request", input.TraceID)
 	var roots []traceSpan
 
-	for _, spanID := range rootSpanIDsForTrace(g, reqID) {
-		roots = append(roots, buildTraceSpan(g, spanID, map[string]bool{}))
+	if ts := traceStoreFrom(store); ts != nil {
+		if rec, ok := ts.Get(input.TraceID); ok {
+			roots = traceTreeToSpans(tracestore.BuildTree(rec.Spans))
+		}
+	}
+	if len(roots) == 0 {
+		for _, spanID := range rootSpanIDsFromGraph(g, reqID) {
+			roots = append(roots, buildTraceSpanFromGraph(g, spanID, map[string]bool{}))
+		}
 	}
 
 	return traceGraphOutput{
@@ -49,7 +57,7 @@ func handleTraceGraph(ctx context.Context, store Store, params json.RawMessage) 
 	}, nil
 }
 
-func buildTraceSpan(g *core.Graph, spanID string, visited map[string]bool) traceSpan {
+func buildTraceSpanFromGraph(g *core.Graph, spanID string, visited map[string]bool) traceSpan {
 	if visited[spanID] {
 		return traceSpan{}
 	}
@@ -69,7 +77,7 @@ func buildTraceSpan(g *core.Graph, spanID string, visited map[string]bool) trace
 
 	for _, e := range g.InEdges[spanID] {
 		if e.Type == core.EdgeSpanChildOf {
-			out.Children = append(out.Children, buildTraceSpan(g, e.From, visited))
+			out.Children = append(out.Children, buildTraceSpanFromGraph(g, e.From, visited))
 		}
 	}
 
@@ -122,9 +130,19 @@ func handleTraceSummary(ctx context.Context, store Store, params json.RawMessage
 		}
 	}
 
-	rootSpans := rootSpanIDsForTrace(g, reqID)
-	out.RootSpanIDs = rootSpans
-	out.Paths = spanPathsForRoots(g, rootSpans)
+	if ts := traceStoreFrom(store); ts != nil {
+		if rec, ok := ts.Get(input.TraceID); ok {
+			out.RequestID = rec.RequestID
+			roots := tracestore.BuildTree(rec.Spans)
+			out.RootSpanIDs = traceRootIDs(roots)
+			out.Paths = traceTreePaths(roots)
+		}
+	}
+	if len(out.RootSpanIDs) == 0 {
+		rootSpans := rootSpanIDsFromGraph(g, reqID)
+		out.RootSpanIDs = rootSpans
+		out.Paths = spanPathsForRootsFromGraph(g, rootSpans)
+	}
 
 	if len(out.Paths) == 0 {
 		if chain := serviceChainForRequest(g, reqID); len(chain) > 0 {
@@ -133,4 +151,125 @@ func handleTraceSummary(ctx context.Context, store Store, params json.RawMessage
 	}
 
 	return out, nil
+}
+
+func traceTreeToSpans(nodes []*tracestore.TreeNode) []traceSpan {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]traceSpan, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, traceSpan{
+			SpanID:   node.Span.SpanID,
+			Service:  node.Span.Service,
+			Children: traceTreeToSpans(node.Children),
+		})
+	}
+	return out
+}
+
+func traceRootIDs(nodes []*tracestore.TreeNode) []string {
+	if len(nodes) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Span.SpanID != "" {
+			ids = append(ids, node.Span.SpanID)
+		}
+	}
+	return ids
+}
+
+func traceTreePaths(nodes []*tracestore.TreeNode) [][]string {
+	var paths [][]string
+	var walk func(node *tracestore.TreeNode, prefix []string)
+	walk = func(node *tracestore.TreeNode, prefix []string) {
+		if node == nil {
+			return
+		}
+		service := node.Span.Service
+		if service == "" {
+			service = node.Span.SpanID
+		}
+		next := append(prefix, service)
+		if len(node.Children) == 0 {
+			paths = append(paths, next)
+			return
+		}
+		for _, child := range node.Children {
+			walk(child, next)
+		}
+	}
+	for _, root := range nodes {
+		walk(root, nil)
+	}
+	return paths
+}
+
+func rootSpanIDsFromGraph(g *core.Graph, reqID string) []string {
+	hasParent := map[string]bool{}
+	for _, e := range g.Edges {
+		if e.Type == core.EdgeSpanChildOf {
+			hasParent[e.From] = true
+		}
+	}
+	var roots []string
+	seen := map[string]bool{}
+	for _, e := range g.OutEdges[reqID] {
+		if e.Type != core.EdgeRequestHasSpan {
+			continue
+		}
+		if seen[e.To] {
+			continue
+		}
+		seen[e.To] = true
+		if !hasParent[e.To] {
+			roots = append(roots, e.To)
+		}
+	}
+	return roots
+}
+
+func spanPathsForRootsFromGraph(g *core.Graph, roots []string) [][]string {
+	if len(roots) == 0 {
+		return nil
+	}
+	children := map[string][]string{}
+	for _, e := range g.Edges {
+		if e.Type == core.EdgeSpanChildOf {
+			children[e.To] = append(children[e.To], e.From)
+		}
+	}
+
+	var paths [][]string
+	for _, root := range roots {
+		dfsSpanPathsFromGraph(g, root, children, nil, &paths)
+	}
+	return paths
+}
+
+func dfsSpanPathsFromGraph(g *core.Graph, spanID string, children map[string][]string, prefix []string, out *[][]string) {
+	n, ok := g.Nodes[spanID]
+	if !ok {
+		return
+	}
+	service := ""
+	if n.Attr != nil {
+		if s, ok := n.Attr["service"].(string); ok {
+			service = s
+		}
+	}
+	if service == "" {
+		service = spanID
+	}
+	path := append(prefix, service)
+	kids := children[spanID]
+	if len(kids) == 0 {
+		*out = append(*out, path)
+		return
+	}
+	for _, child := range kids {
+		dfsSpanPathsFromGraph(g, child, children, path, out)
+	}
 }

@@ -29,6 +29,11 @@ type Metrics struct {
 	GraphNodes          prometheus.Gauge
 	GraphEdges          prometheus.Gauge
 	GraphPrunedTotal    prometheus.Counter
+	TraceUpsertDuration prometheus.Histogram
+	TraceStoreRecords   prometheus.Gauge
+	TraceStoreSpans     prometheus.Gauge
+	TraceStoreCohorts   prometheus.Gauge
+	TraceStorePruned    prometheus.Counter
 
 	AskRequestsTotal     *prometheus.CounterVec
 	AskDuration          prometheus.Histogram
@@ -118,6 +123,27 @@ func New(reg *prometheus.Registry) *Metrics {
 		Name: "waylog_graph_pruned_total",
 		Help: "Number of retention prune cycles executed.",
 	})
+	m.TraceUpsertDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_trace_upsert_duration_seconds",
+		Help:    "Trace store upsert time.",
+		Buckets: defaultBuckets,
+	})
+	m.TraceStoreRecords = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "waylog_trace_store_records",
+		Help: "Current trace record count.",
+	})
+	m.TraceStoreSpans = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "waylog_trace_store_spans",
+		Help: "Current total span count in trace store.",
+	})
+	m.TraceStoreCohorts = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "waylog_trace_store_cohorts",
+		Help: "Current trace-store time cohort count.",
+	})
+	m.TraceStorePruned = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_trace_store_pruned_total",
+		Help: "Total trace records pruned from the trace store.",
+	})
 
 	m.AskRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "waylog_ask_requests_total",
@@ -200,6 +226,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.InFlightRequests,
 		m.SnapshotLastSuccess, m.SnapshotLastError,
 		m.GraphNodes, m.GraphEdges, m.GraphPrunedTotal,
+		m.TraceUpsertDuration, m.TraceStoreRecords, m.TraceStoreSpans, m.TraceStoreCohorts, m.TraceStorePruned,
 		m.AskRequestsTotal, m.AskDuration,
 		m.AskToolCallsTotal, m.AskToolDuration,
 		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
