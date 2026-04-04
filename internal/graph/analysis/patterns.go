@@ -97,7 +97,6 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 	return out
 }
 
-
 // DetectFailurePatternsFromSummary builds failure patterns
 // using window summaries instead of graph traversal.
 func DetectFailurePatternsFromSummary(sum store.WindowSummary) []FailurePattern {

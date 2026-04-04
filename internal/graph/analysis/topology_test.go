@@ -21,7 +21,6 @@ func TestBuildTopology_BasicGraph(t *testing.T) {
 	st := graphstore.NewStore()
 	ts := tracestore.NewStore()
 
-
 	// Event 1: frontend calls api-gateway (success)
 	ev1 := testutil.MakeEvent(
 		testutil.WithService("api-gateway"),
@@ -149,7 +148,6 @@ func TestBuildTopology_WindowFiltering(t *testing.T) {
 	builder := build.NewBuilder()
 	st := graphstore.NewStore()
 	ts := tracestore.NewStore()
-
 
 	// Event inside window
 	ev1 := testutil.MakeEvent(

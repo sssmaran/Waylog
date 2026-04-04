@@ -21,8 +21,8 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/sampler"
 	"github.com/sssmaran/WaylogCLI/internal/testutil"
-	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
