@@ -22,7 +22,7 @@ type coded interface {
 
 func main() {
 	cfg := waylog.Config{
-		Service:      "payment-demo",
+		Service:      "payment",
 		Env:          "dev",
 		Version:      "0.1.0",
 		DeploymentID: os.Getenv("DEPLOYMENT_ID"),

@@ -26,6 +26,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
+	otelhttp "github.com/sssmaran/WaylogCLI/internal/otel"
 	"github.com/sssmaran/WaylogCLI/internal/persist"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 	"github.com/sssmaran/WaylogCLI/internal/tracestore"
@@ -117,6 +118,7 @@ func main() {
 	prometheusURL := config.Getenv("PROMETHEUS_URL", "")
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
 	graphUI := config.GetenvBool("GRAPH_UI", false)
+	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
 
 	causalEnabled := config.GetenvBool("CAUSAL_ENABLED", false)
 	causalInterval := config.GetenvDuration("CAUSAL_INTERVAL", 30*time.Second)
@@ -184,6 +186,7 @@ func main() {
 		ColdStore:           coldDB,
 		PlanStore:           planStore,
 		GraphHotWindow:      graphHotWindow,
+		OTLPEnabled:         otlpEnabled,
 	})
 
 	// SSE hub for real-time dashboard updates
@@ -300,6 +303,29 @@ func main() {
 	// Write endpoints.
 	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(ingestServer.Events)))
 	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(ingestServer.Validate)))
+
+	// OTLP/HTTP traces — routed through a dedicated pipeline that reuses the
+	// same store, builder, sampler, WAL, cold store, and SSE hub as the SDK
+	// path so counters and /v1/overview reflect OTLP traffic too.
+	if otlpEnabled {
+		otlpPipeline := ingest.NewPipeline(ingest.PipelineConfig{
+			Store:      graphStore,
+			TraceStore: traceStore,
+			Builder:    ingestServer.Builder(),
+			Sampler:    ingestServer.Sampler(),
+			EventLog:   ingestServer.EventLog,
+			ColdWriter: coldWriter,
+			ColdStore:  coldDB,
+			Counters:   ingestServer.Counters(),
+			Accepted:   ingestServer.AcceptedPtr(),
+			Metrics:    m,
+			Notifier:   ingestServer.SSEHub(),
+			Validator:  ingest.OTLPValidator,
+		})
+		otlpHandler := otelhttp.NewHandler(otlpPipeline, m, maxBody)
+		mux.Handle("/v1/otlp/v1/traces", writeAuth(http.HandlerFunc(otlpHandler.ServeHTTP)))
+		slog.Info("otlp enabled", "endpoint", "/v1/otlp/v1/traces")
+	}
 
 	// Read endpoints — CORS outermost so OPTIONS preflight passes without auth.
 	readCORS := func(h http.HandlerFunc) http.Handler {

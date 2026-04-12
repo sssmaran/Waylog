@@ -24,7 +24,7 @@ func NewGatewayHandler(checkoutURL string) *GatewayHandler {
 	return &GatewayHandler{
 		checkoutURL: checkoutURL,
 		client: &http.Client{
-			Transport: wayloghttp.WrapTransport(http.DefaultTransport, "checkout-demo"),
+			Transport: wayloghttp.WrapTransport(http.DefaultTransport, "checkout"),
 		},
 		uiHTML: uiHTML,
 	}

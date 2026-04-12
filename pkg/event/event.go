@@ -1,7 +1,6 @@
 package event
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -72,57 +71,54 @@ type MetricsContext struct {
 }
 
 func (e WideEvent) Validate() error {
+	var errs ValidationErrors
+
 	if e.SchemaVersion == "" {
-		return errors.New("schema_version is required")
-	}
-	if err := supportedSchema(e.SchemaVersion); err != nil {
-		return err
+		errs = append(errs, ValidationError{Field: "schema_version", Message: "schema_version is required"})
+	} else if err := supportedSchema(e.SchemaVersion); err != nil {
+		errs = append(errs, ValidationError{Field: "schema_version", Message: err.Error()})
 	}
 	if e.EventName == "" {
-		return errors.New("event_name is required")
+		errs = append(errs, ValidationError{Field: "event_name", Message: "event_name is required"})
 	}
 	if e.Timestamp.IsZero() {
-		return errors.New("timestamp is required")
+		errs = append(errs, ValidationError{Field: "timestamp", Message: "timestamp is required"})
 	}
-
 	if e.User.ID == "" {
-		return errors.New("user.id is required")
+		errs = append(errs, ValidationError{Field: "user.id", Message: "user.id is required"})
 	}
 	if e.Request.TraceID == "" {
-		return errors.New("request.trace_id is required")
+		errs = append(errs, ValidationError{Field: "request.trace_id", Message: "request.trace_id is required"})
 	}
-	// If ParentSpanID is set, SpanID must be set
 	if e.Request.ParentSpanID != "" && e.Request.SpanID == "" {
-		return errors.New("request.span_id is required when request.parent_span_id is set")
+		errs = append(errs, ValidationError{Field: "request.span_id", Message: "request.span_id is required when request.parent_span_id is set"})
 	}
-
 	if e.Request.HTTPMethod != "" && !validHTTPMethod(e.Request.HTTPMethod) {
-		return fmt.Errorf("request.http_method %q is not a valid HTTP method", e.Request.HTTPMethod)
+		errs = append(errs, ValidationError{Field: "request.http_method", Message: fmt.Sprintf("request.http_method %q is not a valid HTTP method", e.Request.HTTPMethod)})
 	}
 	if e.Request.RouteTemplate != "" && e.Request.RouteTemplate[0] != '/' {
-		return errors.New("request.route_template must start with /")
+		errs = append(errs, ValidationError{Field: "request.route_template", Message: "request.route_template must start with /"})
 	}
-
 	if e.System.Service == "" {
-		return errors.New("system.service is required")
+		errs = append(errs, ValidationError{Field: "system.service", Message: "system.service is required"})
 	}
 	if e.System.Env == "" {
-		return errors.New("system.env is required")
+		errs = append(errs, ValidationError{Field: "system.env", Message: "system.env is required"})
 	}
 	if e.Outcome.StatusCode == 0 {
-		return errors.New("outcome.status_code is required")
+		errs = append(errs, ValidationError{Field: "outcome.status_code", Message: "outcome.status_code is required"})
 	}
-
-	// If success=false, error must exist and be coded.
 	if !e.Outcome.Success {
 		if e.Error == nil {
-			return errors.New("error must be set when outcome.success=false")
-		}
-		if e.Error.Code == "" {
-			return errors.New("error.code is required for failures")
+			errs = append(errs, ValidationError{Field: "error", Message: "error must be set when outcome.success=false"})
+		} else if e.Error.Code == "" {
+			errs = append(errs, ValidationError{Field: "error.code", Message: "error.code is required for failures"})
 		}
 	}
 
+	if len(errs) > 0 {
+		return errs
+	}
 	return nil
 }
 

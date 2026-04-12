@@ -54,6 +54,17 @@ type Metrics struct {
 	CausalRunDuration prometheus.Histogram
 	CausalRunFailures prometheus.Counter
 	CausalClaimsTotal *prometheus.CounterVec // labels: type, tier
+
+	// OTLP ingestion metrics
+	OTLPRequestsTotal     *prometheus.CounterVec // labels: status
+	OTLPSpansReceived     prometheus.Counter
+	OTLPSpansConverted    prometheus.Counter
+	OTLPSpansDropped      *prometheus.CounterVec // labels: reason
+	OTLPValidationRejects prometheus.Counter
+	OTLPDecodeFailures    prometheus.Counter
+	OTLPInfraFailures     prometheus.Counter
+	OTLPRequestDuration   prometheus.Histogram
+	OTLPRequestSizeBytes  prometheus.Histogram
 }
 
 // New creates a Metrics instance and registers all collectors with the given registry.
@@ -219,6 +230,45 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help: "Total causal claims produced.",
 	}, []string{"type", "tier"})
 
+	m.OTLPRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_otlp_requests_total",
+		Help: "Total OTLP trace ingestion requests.",
+	}, []string{"status"})
+	m.OTLPSpansReceived = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_otlp_spans_received_total",
+		Help: "Total spans in decoded OTLP requests.",
+	})
+	m.OTLPSpansConverted = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_otlp_spans_converted_total",
+		Help: "Spans successfully converted to WideEvents.",
+	})
+	m.OTLPSpansDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_otlp_spans_dropped_total",
+		Help: "Spans the converter could not convert.",
+	}, []string{"reason"})
+	m.OTLPValidationRejects = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_otlp_validation_rejects_total",
+		Help: "Converted events that failed validation.",
+	})
+	m.OTLPDecodeFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_otlp_decode_failures_total",
+		Help: "Protobuf decode failures.",
+	})
+	m.OTLPInfraFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_otlp_infra_failures_total",
+		Help: "WAL/cold store failures during OTLP ingest.",
+	})
+	m.OTLPRequestDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_otlp_request_duration_seconds",
+		Help:    "OTLP endpoint latency.",
+		Buckets: defaultBuckets,
+	})
+	m.OTLPRequestSizeBytes = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_otlp_request_size_bytes",
+		Help:    "OTLP request body size post-decompression.",
+		Buckets: prometheus.ExponentialBuckets(1024, 4, 8),
+	})
+
 	reg.MustRegister(
 		m.IngestLatency, m.MergeLatency,
 		m.EventsAccepted, m.EventsRejected, m.EventlogFails,
@@ -233,6 +283,9 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.ColdEventsWritten, m.ColdEventsDropped, m.ColdBatchLatency,
 		m.DeployUpsertsTotal, m.DeployUpsertErrors,
 		m.CausalRunsTotal, m.CausalRunDuration, m.CausalRunFailures, m.CausalClaimsTotal,
+		m.OTLPRequestsTotal, m.OTLPSpansReceived, m.OTLPSpansConverted,
+		m.OTLPSpansDropped, m.OTLPValidationRejects, m.OTLPDecodeFailures,
+		m.OTLPInfraFailures, m.OTLPRequestDuration, m.OTLPRequestSizeBytes,
 	)
 
 	return m

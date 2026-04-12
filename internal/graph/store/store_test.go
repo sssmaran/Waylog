@@ -25,12 +25,12 @@ func TestStore_Merge_RequestDeterministicMerge(t *testing.T) {
 		testutil.WithTraceID(traceID),
 		testutil.WithSpanID("cccccccccccccccc"),
 		testutil.WithParentSpanID("pppppppppppppppp"),
-		testutil.WithService("payment-demo"),
+		testutil.WithService("payment"),
 		testutil.WithFlow("payment"),
 		testutil.WithStatusCode(502),
 		testutil.WithLatency(12),
 		testutil.WithError("PMT_502", "payment failed"),
-		testutil.WithEventName("payment-demo.error"),
+		testutil.WithEventName("payment.error"),
 	)
 	s.Merge(b.Build(childEv))
 
@@ -99,7 +99,7 @@ func TestStore_TraceStore_SpanMergeBySpanID(t *testing.T) {
 		testutil.WithTraceID(traceID),
 		testutil.WithSpanID(childSpanID),
 		testutil.WithParentSpanID(parentSpanID),
-		testutil.WithService("checkout-demo"),
+		testutil.WithService("checkout"),
 		testutil.WithStatusCode(200),
 		testutil.WithLatency(32),
 	)
@@ -225,7 +225,7 @@ func TestStore_TraceStore_Get_ReturnsUniqueSpans(t *testing.T) {
 		testutil.WithTraceID(traceID),
 		testutil.WithSpanID("2222222222222222"),
 		testutil.WithParentSpanID("1111111111111111"),
-		testutil.WithService("checkout-demo"),
+		testutil.WithService("checkout"),
 	)
 
 	for _, current := range []struct {

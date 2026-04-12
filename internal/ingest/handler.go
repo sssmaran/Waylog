@@ -138,6 +138,10 @@ type Server struct {
 	lastReplayAttempt time.Time
 	lastReplaySuccess time.Time
 
+	// OTLP capability flag — reported by /v1/capabilities. Set via
+	// ServerConfig when the OTLP handler is mounted in main.go.
+	otlpEnabled bool
+
 	// SSE
 	sseHub               *SSEHub
 	sseHeartbeatInterval time.Duration // configurable for testing, defaults to 15s
@@ -194,6 +198,7 @@ type ServerConfig struct {
 	ColdStore           coldstore.Store
 	PlanStore           *PlanStore
 	GraphHotWindow      time.Duration
+	OTLPEnabled         bool
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -231,6 +236,7 @@ func NewServer(cfg ServerConfig) *Server {
 		coldStore:           cfg.ColdStore,
 		planStore:           cfg.PlanStore,
 		graphHotWindow:      cfg.GraphHotWindow,
+		otlpEnabled:         cfg.OTLPEnabled,
 		rateLimit:           map[string][]time.Time{},
 		replayStatus:        "none",
 	}
@@ -552,6 +558,25 @@ func (s *Server) Builder() *build.Builder {
 	return s.builder
 }
 
+// Sampler returns the server's sampler so external wiring (e.g., OTLP
+// pipeline construction in main.go) can share the same sampling policy.
+func (s *Server) Sampler() *sampler.Sampler { return s.sampler }
+
+// SSEHub returns the server's SSE hub for reuse as a Pipeline Notifier.
+func (s *Server) SSEHub() *SSEHub { return s.sseHub }
+
+// Counters returns the shared unsampled windowed counters. Used so the
+// OTLP pipeline contributes to the same windowed error rate as the SDK path.
+func (s *Server) Counters() *unsampledCounters { return &s.counters }
+
+// AcceptedPtr returns a pointer to the accepted-events atomic counter so the
+// shared pipeline can bump it in lockstep with the SDK Events() handler.
+func (s *Server) AcceptedPtr() *atomic.Uint64 { return &s.accepted }
+
+// SetOTLPEnabled toggles the OTLP capability flag reported by /v1/capabilities.
+// Called once at startup after the OTLP route has been registered.
+func (s *Server) SetOTLPEnabled(enabled bool) { s.otlpEnabled = enabled }
+
 // EventSearch handles GET /v1/events/search.
 // Both cold-store and JSONL paths return the same []coldstore.SearchResult shape.
 func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
@@ -736,6 +761,9 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 			"grafana":    s.grafanaURL,
 		},
 		"graph": s.graphUI,
+		"otlp": map[string]any{
+			"http_traces": s.otlpEnabled,
+		},
 		"architecture": map[string]any{
 			"flattened": true,
 			"graph": map[string]any{

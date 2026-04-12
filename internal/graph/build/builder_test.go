@@ -251,6 +251,52 @@ func TestBuilder_Build_UserAttrsOnRequestNode(t *testing.T) {
 	}
 }
 
+// TestBuilder_Build_EmptyUserID_NoUserNodeOrEdge is a regression guard for
+// OTLP ingestion, which produces events with no user concept. The flattened
+// graph stores user info as attributes on the request node (not as a
+// separate user node), so empty User.ID must not produce synthetic nodes
+// or edges. Downstream analysis (blast, explain) already guards on
+// non-empty user_id, so empty attrs are inert.
+func TestBuilder_Build_EmptyUserID_NoUserNodeOrEdge(t *testing.T) {
+	builder := NewBuilder()
+	ev := testutil.MakeEvent(
+		testutil.WithUser("", "", ""),
+	)
+
+	g := builder.Build(ev)
+
+	// No user nodes at all (flattened graph invariant).
+	for _, n := range g.Nodes {
+		if n.Type == core.NodeUser {
+			t.Errorf("expected no user node when User.ID is empty, found %s", n.ID)
+		}
+	}
+	// No request_by edges at all (flattened graph invariant).
+	for _, e := range g.Edges {
+		if e.Type == core.EdgeRequestBy {
+			t.Errorf("expected no request_by edge when User.ID is empty, found %s→%s", e.From, e.To)
+		}
+	}
+	// Request and service nodes still build normally.
+	reqID := core.ID("request", ev.Request.TraceID)
+	if _, ok := g.Nodes[reqID]; !ok {
+		t.Error("expected request node to still be built")
+	}
+	svcID := core.ID("service", ev.System.Service, ev.System.Env)
+	if _, ok := g.Nodes[svcID]; !ok {
+		t.Error("expected service node to still be built")
+	}
+	// User attrs on the request node are empty strings, not synthetic values.
+	if req, ok := g.Nodes[reqID]; ok {
+		if v, _ := req.Attr["user_id"].(string); v != "" {
+			t.Errorf("expected empty user_id attr, got %q", v)
+		}
+		if v, _ := req.Attr["user_tier"].(string); v != "" {
+			t.Errorf("expected empty user_tier attr, got %q", v)
+		}
+	}
+}
+
 func TestBuilder_Build_CallerService(t *testing.T) {
 	builder := NewBuilder()
 	ev := testutil.MakeEvent(

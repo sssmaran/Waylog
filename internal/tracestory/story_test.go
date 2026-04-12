@@ -27,7 +27,7 @@ func TestBuildWithTraceStore_SuccessChain(t *testing.T) {
 	if !story.Success || story.FirstFailHop != nil {
 		t.Fatalf("unexpected story success state: %+v", story)
 	}
-	want := []string{"api-gateway", "checkout-demo", "payment-demo"}
+	want := []string{"api-gateway", "checkout", "payment"}
 	for i := range want {
 		if story.Chain[i].Service != want[i] {
 			t.Fatalf("Chain[%d].Service = %q, want %q", i, story.Chain[i].Service, want[i])
@@ -55,8 +55,8 @@ func TestBuildWithTraceStore_FailureChain(t *testing.T) {
 	if story.FirstFailHop == nil {
 		t.Fatal("expected first failing hop")
 	}
-	if story.FirstFailHop.Service != "payment-demo" {
-		t.Fatalf("FirstFailHop.Service = %q, want payment-demo", story.FirstFailHop.Service)
+	if story.FirstFailHop.Service != "payment" {
+		t.Fatalf("FirstFailHop.Service = %q, want payment", story.FirstFailHop.Service)
 	}
 	if story.FirstFailHop.ErrorCode != "PMT_502" {
 		t.Fatalf("FirstFailHop.ErrorCode = %q, want PMT_502", story.FirstFailHop.ErrorCode)
@@ -112,21 +112,21 @@ func TestBuildWithTraceStore_OrdersSiblingHopsByTimestamp(t *testing.T) {
 			testutil.WithTraceID(traceID),
 			testutil.WithSpanID("bbbbbbbbbbbbbbbb"),
 			testutil.WithParentSpanID("aaaaaaaaaaaaaaaa"),
-			testutil.WithService("checkout-demo"),
+			testutil.WithService("checkout"),
 			testutil.WithTimestamp(base.Add(2*time.Millisecond)),
 		),
 		testutil.MakeEvent(
 			testutil.WithTraceID(traceID),
 			testutil.WithSpanID("dddddddddddddddd"),
 			testutil.WithParentSpanID("bbbbbbbbbbbbbbbb"),
-			testutil.WithService("payment-demo"),
+			testutil.WithService("payment"),
 			testutil.WithTimestamp(base.Add(4*time.Millisecond)),
 		),
 		testutil.MakeEvent(
 			testutil.WithTraceID(traceID),
 			testutil.WithSpanID("cccccccccccccccc"),
 			testutil.WithParentSpanID("bbbbbbbbbbbbbbbb"),
-			testutil.WithService("db-demo"),
+			testutil.WithService("db"),
 			testutil.WithTimestamp(base.Add(3*time.Millisecond)),
 		),
 	}
@@ -139,7 +139,7 @@ func TestBuildWithTraceStore_OrdersSiblingHopsByTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildWithTraceStore() error: %v", err)
 	}
-	want := []string{"api-gateway", "checkout-demo", "db-demo", "payment-demo"}
+	want := []string{"api-gateway", "checkout", "db", "payment"}
 	if len(story.Chain) != len(want) {
 		t.Fatalf("chain length = %d, want %d", len(story.Chain), len(want))
 	}
@@ -182,7 +182,7 @@ func buildThreeHopTrace(t *testing.T, traceID string, paymentFail bool) (*store.
 			testutil.WithTraceID(traceID),
 			testutil.WithSpanID("bbbbbbbbbbbbbbbb"),
 			testutil.WithParentSpanID("aaaaaaaaaaaaaaaa"),
-			testutil.WithService("checkout-demo"),
+			testutil.WithService("checkout"),
 			testutil.WithStatusCode(200),
 			testutil.WithLatency(32),
 			testutil.WithUser("user-42", "premium", "us-west-2"),
@@ -194,22 +194,22 @@ func buildThreeHopTrace(t *testing.T, traceID string, paymentFail bool) (*store.
 		testutil.WithTraceID(traceID),
 		testutil.WithSpanID("cccccccccccccccc"),
 		testutil.WithParentSpanID("bbbbbbbbbbbbbbbb"),
-		testutil.WithService("payment-demo"),
+		testutil.WithService("payment"),
 		testutil.WithStatusCode(200),
 		testutil.WithLatency(12),
 		testutil.WithUser("user-42", "premium", "us-west-2"),
-		testutil.WithCallerService("checkout-demo"),
+		testutil.WithCallerService("checkout"),
 	)
 	if paymentFail {
 		payment = testutil.MakeEvent(
 			testutil.WithTraceID(traceID),
 			testutil.WithSpanID("cccccccccccccccc"),
 			testutil.WithParentSpanID("bbbbbbbbbbbbbbbb"),
-			testutil.WithService("payment-demo"),
+			testutil.WithService("payment"),
 			testutil.WithStatusCode(502),
 			testutil.WithLatency(12),
 			testutil.WithUser("user-42", "premium", "us-west-2"),
-			testutil.WithCallerService("checkout-demo"),
+			testutil.WithCallerService("checkout"),
 			testutil.WithError("PMT_502", "payment failed"),
 		)
 	}

@@ -1694,6 +1694,7 @@
               '<tr><td colspan="10" class="empty">No routes in the last ' +
               routeWindowText[routeWindow] +
               filterText +
+              ". Send traffic via <a href=\"http://localhost:9081/demo\" target=\"_blank\">the demo app</a> or the SDK." +
               "</td></tr>";
             return;
           }
@@ -1812,7 +1813,7 @@
             tbody.innerHTML =
               '<tr><td colspan="' +
               colspan +
-              '" class="empty">No traces yet</td></tr>';
+              '" class="empty">No traces yet. Open <a href="http://localhost:9081/demo" target="_blank">the demo app</a> and send a request, or run <code>./scripts/demo-cascade-failure.sh</code> to inject a fixture.</td></tr>';
             return;
           }
           tbody.innerHTML = traces

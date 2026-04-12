@@ -22,10 +22,10 @@ func NewCheckoutHandler(paymentURL, dbURL string) *CheckoutHandler {
 		paymentURL: paymentURL,
 		dbURL:      dbURL,
 		paymentClient: &http.Client{
-			Transport: wayloghttp.WrapTransport(http.DefaultTransport, "payment-demo"),
+			Transport: wayloghttp.WrapTransport(http.DefaultTransport, "payment"),
 		},
 		dbClient: &http.Client{
-			Transport: wayloghttp.WrapTransport(http.DefaultTransport, "db-demo"),
+			Transport: wayloghttp.WrapTransport(http.DefaultTransport, "db"),
 		},
 	}
 }

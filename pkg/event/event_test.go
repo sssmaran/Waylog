@@ -1,6 +1,7 @@
 package event
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,64 @@ func TestIsError(t *testing.T) {
 	ev.Error = &ErrorContext{Code: "E1"}
 	if !ev.IsError() {
 		t.Error("event with error context should be error")
+	}
+}
+
+func TestValidate_ReturnsValidationErrors(t *testing.T) {
+	ev := WideEvent{} // completely empty
+	err := ev.Validate()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ve ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T", err)
+	}
+}
+
+func TestValidationErrors_HasOnly(t *testing.T) {
+	ev := WideEvent{
+		SchemaVersion: "1.0",
+		EventName:     "svc.request",
+		Timestamp:     time.Now(),
+		// User.ID deliberately empty
+		Request: RequestContext{TraceID: "aaaabbbbccccddddeeeeffffaaaabbbb", SpanID: "aaaabbbbccccdddd"},
+		System:  SystemContext{Service: "svc", Env: "prod"},
+		Outcome: OutcomeContext{Success: true, StatusCode: 200},
+	}
+	err := ev.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing user.id")
+	}
+	var ve ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T", err)
+	}
+	if !ve.HasOnly("user.id") {
+		t.Errorf("expected HasOnly(user.id)=true, got false; errors: %v", ve)
+	}
+	if ve.HasOnly("system.service") {
+		t.Error("expected HasOnly(system.service)=false")
+	}
+}
+
+func TestValidationErrors_HasOnly_MultipleErrors(t *testing.T) {
+	ev := WideEvent{
+		SchemaVersion: "1.0",
+		EventName:     "svc.request",
+		Timestamp:     time.Now(),
+		// User.ID empty AND system.service empty
+		Request: RequestContext{TraceID: "aaaabbbbccccddddeeeeffffaaaabbbb"},
+		System:  SystemContext{Env: "prod"},
+		Outcome: OutcomeContext{Success: true, StatusCode: 200},
+	}
+	err := ev.Validate()
+	var ve ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T", err)
+	}
+	if ve.HasOnly("user.id") {
+		t.Error("expected HasOnly(user.id)=false when multiple errors present")
 	}
 }
 

@@ -1,322 +1,293 @@
-<div align="center"><pre><img width="461" height="129" alt="Screenshot 2026-03-17 at 2 36 01 PM" src="https://github.com/user-attachments/assets/fdec0a1b-055a-47e3-b52c-cf1cf80fe373" />
+<div align="center"><pre><img width="461" height="129" alt="Screenshot 2026-03-17 at 2 36 01 PM" src="https://github.com/user-attachments/assets/fdec0a1b-055a-47e3-b52c-cf1cf80fe373" />
 </pre></div>
 
 <p align="center">
-  <strong>Agent-native observability for incident triage.</strong><br>
-  Go SDK • Hot graph analysis • SQLite cold storage • SSE dashboard • Deterministic tool APIs • Plan execution
+  <strong>See how failures propagate through your services.</strong><br>
+  Impact analysis for backend systems. Agent-native by design.
+</p>
+
+<p align="center">
+  <em>Public alpha — an impact-analysis engine for backend systems built on WideEvents.</em>
 </p>
 
 ---
 
-## What is WAYLOG?
-Waylog is an agent-native observability platform for incident triage.
-It ingests structured request events from Go services, builds a hot in-memory graph for real-time analysis, persists cold history in SQLite, and exposes deterministic APIs for failure investigation, deploy correlation, blast-radius analysis, and multi-step plan execution.
+## The propagation chain
 
-The current repo includes:
-
-- a Go SDK for HTTP or Kafka-backed event ingestion
-- an ingest server with read APIs, direct tool execution, Ask, and deterministic plans
-- an embedded dashboard with SSE live updates
-- a CLI, Bubble Tea live TUI, and MCP-compatible agent surface
-- a containerized demo stack with Kafka, Prometheus, Grafana, and sample services
-
-## Why WAYLOG?
-
-Waylog is built for the common incident loop:
-
-1. something is failing
-2. which service is the most likely failure origin?
-3. who is affected?
-4. what changed recently?
-
-Instead of treating observability as raw logs plus a chat box, Waylog models requests, services, errors, users, and deployments as graph entities and lets both humans and agents query that graph directly.
-
-## Core Capabilities
-
-- **Go SDK**: instrument services with `waylog.Init(...)` and `wayloghttp.Middleware(...)`
-- **Hybrid storage**: hot in-memory graph plus SQLite cold store and append-only event log
-- **Deterministic tools**: 11 graph analysis tools including `explain_request`, `failure_patterns`, `blast_radius`, `compare_windows`, and `graph_insights`
-- **Agent-native API**: direct `/v1/tools/*`, `/v1/ask`, and `/v1/plans/execute` endpoints with structured errors, idempotency, and response envelopes
-- **Deploy-aware incident triage**: deployment tracking, "What Changed", causal shadow-mode claims, and blast-radius APIs
-- **Real-time UI**: embedded dashboard at `/ui` with SSE updates, failure-origin analysis, topology, trace drilldown, and deploy correlation
-- **Demo and ops stack**: Docker Compose services, Prometheus, Grafana, demo scripts, and integration tests
-
-## Architecture
+When something breaks in a request that crosses three services, Waylog turns the event stream into a single answer:
 
 ```text
-Go services / SDK / demo services
-        |
-        |  HTTP or Kafka wide events
-        v
-  ingest server
-    |- hot graph store
-    |- append-only event log
-    |- SQLite cold store
-    |- tool registry + Ask + plan execution
-    |- SSE dashboard / plan progress streams
-    `- health + metrics + OpenAPI
-        |
-        +--> /ui dashboard
-        +--> /v1/tools/* and /v1/plans/execute
-        +--> CLI / MCP / agents
+  trace 7f3a2b9c…   flow=purchase   user=standard   region=us-east-1
+
+  api-gateway        502   GW_DOWNSTREAM         14 ms   (root)
+      └─ checkout    502   CHK_DOWNSTREAM         9 ms
+          └─ db      200   —                      3 ms
+          └─ payment 502   PMT_502                5 ms   ← first failure
+
+  blast radius:  12 requests · 8 users · 4 services
 ```
 
-## Prerequisites
+That is not a log search. It is a precomputed answer, built from a live graph of requests, services, errors, users, and deployments. Ask for a trace id — get a chain. Ask for an error code — get the blast radius. Ask who's affected — get the user cohort.
 
-- Go 1.24+
-- Docker and Docker Compose for the full demo stack
-- a Gemini or Google API key if you want to use Ask / LLM-backed flows
+Every line above matches real output from the live demo at `http://localhost:9081/demo` (click **Purchase (Payment Fail)**). Run `make docker-dev` and reproduce it yourself.
 
-## Quick Start
+**Agent-native by design.** Every answer above is available as a deterministic HTTP tool call with structured outputs and idempotency keys. Agents and humans hit the same API; no scraping a chat UI, no brittle log regexes.
 
-### Option 1: full local stack with Docker
+## How it works
 
-This is the fastest way to see the product end to end.
+1. **Ingest** — services emit WideEvents over HTTP via the Go SDK, or push spans to the OTLP/HTTP endpoint at `/v1/otlp/v1/traces`. The event log is the source of truth.
+2. **Build** — the ingest server flattens spans into a hot in-memory graph of requests, services, errors, users, and deployments.
+3. **Traverse** — deterministic tools walk the graph to answer specific questions: propagation chain, blast radius, failure patterns, what changed.
+4. **Query** — CLI, REST, MCP, TUI, dashboard, and agent plan execution all query the same graph through the same tool registry.
+
+## Get traces in
+
+Waylog supports two entry points:
+
+### OTLP/HTTP traces (Phase A)
+
+Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1/traces`. The endpoint accepts protobuf (with optional gzip), converts spans to WideEvents, and feeds them through the same hot graph as the SDK path — `/v1/traces/recent`, `blast_radius`, and the dashboard all light up identically. Phase A covers traces over HTTP; gRPC, logs, and metrics are not yet shipping.
+
+### Go SDK
+
+```go
+import (
+    waylog "github.com/sssmaran/WaylogCLI/pkg"
+    wayloghttp "github.com/sssmaran/WaylogCLI/pkg/http"
+)
+
+func main() {
+    _ = waylog.Init(waylog.Config{
+        Service:   "checkout",
+        Env:       "prod",
+        Version:   "1.2.3",
+        IngestURL: "http://localhost:8080",
+    })
+    defer waylog.Shutdown(context.Background())
+
+    http.Handle("/", wayloghttp.Middleware(yourHandler))
+}
+```
+
+The SDK validates `Service`, `Env`, and exactly one transport (`IngestURL`, Kafka brokers, or a custom transport) at init time.
+
+## Quick start
 
 ```bash
 make docker-dev
 ```
 
-Then open:
+This brings up the full live demo: the ingest server, embedded dashboard, Prometheus, Grafana, and four real Go services wired together with the Waylog SDK middleware (`api-gateway → checkout → db → payment`).
 
-- dashboard: [http://localhost:8080/ui](http://localhost:8080/ui)
-- Prometheus: [http://localhost:9090](http://localhost:9090)
-- Grafana: [http://localhost:3000](http://localhost:3000)
+Once the stack is up, drive real traffic and watch the graph build:
 
-The default dev profile enables:
+1. Open the demo app at <http://localhost:9081/demo> and click a button:
+   - **Purchase (Success)** — healthy 4-service flow
+   - **Purchase (DB Fail)** — `DB_503` cascading up through checkout and the gateway
+   - **Purchase (Payment Fail)** — `PMT_502` cascading up through checkout
+   - **Purchase (Checkout Fail)** — `CHK_500` short-circuit at checkout
+2. Open the dashboard at <http://localhost:8080/ui> — KPIs, recent traces, and topology populate live via SSE.
+3. Click into a failing trace to see the rendered propagation chain.
 
-- `HAPPY_SAMPLE_RATE_PCT=100`
-- `GRAPH_UI=1`
-- `CAUSAL_ENABLED=true`
-- SQLite cold storage at `/data/waylog.db`
+Stop with `make docker-down`. Wipe persistent volumes with `make docker-reset`.
 
-To stop the stack:
+> Don't want to drive the live app? `./scripts/demo-cascade-failure.sh` injects an equivalent fixture by POSTing synthetic events directly. It's a fixture, not a substitute for the live path above.
 
-```bash
-make docker-down
-```
-
-To wipe volumes:
-
-```bash
-make docker-reset
-```
-
-### Option 2: run the ingest server directly
+### Alternative: local ingest server (no Docker)
 
 ```bash
 make ingest
 ```
 
-Useful environment variables:
+Runs only the ingest server. Useful when developing the server itself; you'll need to point your own service at it via the SDK or OTLP. See `docs/env.md` for the full environment variable reference.
 
-- `INGEST_ADDR` default `:8080`
-- `SNAPSHOT_PATH` default `./data/graph_snapshot.json`
-- `EVENT_LOG_DIR` for append-only JSONL event storage
-- `SQLITE_PATH` for cold storage
-- `WAYLOG_API_KEY` for write auth on `/v1/events`
-- `WAYLOG_AGENT_KEY` for agent endpoints such as `/v1/tools/*`, `/v1/ask`, and `/v1/plans/execute`
-- `GEMINI_API_KEY` or `GOOGLE_API_KEY` for Ask / LLM-backed flows
-
-### Option 3: run the demo services
-
-```bash
-make micro-demo
-```
-
-Or use the scripted scenarios:
-
-```bash
-./scripts/demo-cascade-failure.sh
-./scripts/demo-deploy-failure.sh
-./scripts/demo-comparison.sh
-./scripts/demo-agent-triage.sh
-```
-
-## SDK Example
-
-```go
-package main
-
-import (
-	"context"
-	"os"
-
-	"github.com/sssmaran/WaylogCLI/pkg/waylog"
-	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
-)
-
-func main() {
-	if err := waylog.Init(waylog.Config{
-		Service:      "checkout",
-		Env:          "dev",
-		Version:      "1.2.3",
-		DeploymentID: os.Getenv("DEPLOY_ID"),
-		IngestURL:    "http://localhost:8080",
-	}); err != nil {
-		panic(err)
-	}
-	defer waylog.Shutdown(context.Background())
-
-	_ = wayloghttp.Middleware(nil)
-}
-```
-
-The SDK validates required config at init time:
-
-- `Service` is required
-- `Env` is required
-- exactly one transport source should be used: `IngestURL`, Kafka brokers, or a custom transport
-
-## Main Interfaces
-
-### Dashboard
-
-The embedded dashboard is served by the ingest server:
-
-- `GET /ui`
-- `GET /v1/stream/dashboard`
-
-The dashboard includes:
-
-- KPI overview and time series
-- recent traces and trace drilldown
-- "Most likely failure origin"
-- "Who's affected"
-- deploy-aware "What Changed"
-- topology and routes views
-
-### HTTP API
-
-Important endpoints:
-
-- `POST /v1/events`
-- `POST /v1/events/validate`
-- `GET /v1/events/search`
-- `GET /v1/traces/recent`
-- `GET /v1/traces/story`
-- `GET /v1/routes`
-- `GET /v1/deployments`
-- `POST /v1/deployments`
-- `GET /v1/topology`
-- `GET /v1/blast_radius`
-- `GET /v1/tools`
-- `POST /v1/tools/{name}`
-- `POST /v1/ask`
-- `POST /v1/plans/execute`
-- `GET /v1/stream/plans/{id}`
-
-OpenAPI lives at [docs/openapi.yaml](docs/openapi.yaml).
+## What you can ask
 
 ### CLI
 
-The CLI currently supports:
-
 ```bash
-go run ./cmd/waylog "show top errors"
-go run ./cmd/waylog "explain request <trace-id>"
-go run ./cmd/waylog tools
+waylog "show top errors"
+waylog "explain request 7f3a2b..."
+waylog "trace summary for 7f3a2b..."
+waylog "graph_query expr='error_code=PMT_502' window='10m'"
+waylog "compare_windows current='10m' baseline='10m' offset='1h'"
 ```
 
-Today, the CLI ask path still runs against a local graph snapshot plus local LLM/tool execution, while tool discovery prefers the ingest server when available.
-
-### Live TUI
+### REST (direct tool call)
 
 ```bash
-make waylog-live
-```
-
-## Tool and Plan Examples
-
-If `WAYLOG_AGENT_KEY` is configured, include `Authorization: Bearer <key>` or `X-API-Key: <key>` on agent-facing requests.
-
-List tools:
-
-```bash
-curl http://localhost:8080/v1/tools
-```
-
-Call a deterministic tool:
-
-```bash
-curl -X POST http://localhost:8080/v1/tools/failure_patterns \
+curl -X POST http://localhost:8080/v1/tools/blast_radius \
   -H 'Content-Type: application/json' \
-  -d '{"window":"10m"}'
+  -H "Authorization: Bearer $WAYLOG_AGENT_KEY" \
+  -d '{"error_code":"PMT_502","window":"10m","include_services":true}'
 ```
 
-Execute a deterministic plan:
+### REST (multi-step plan)
 
 ```bash
 curl -X POST http://localhost:8080/v1/plans/execute \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $WAYLOG_AGENT_KEY" \
   -d '{
     "steps": [
-      {
-        "id": "patterns",
-        "tool": "failure_patterns",
-        "params": {"window": "10m"}
-      }
+      {"id":"patterns", "tool":"failure_patterns", "params":{"window":"10m"}},
+      {"id":"blast",    "tool":"blast_radius",     "params":{"error_code":"PMT_502","window":"10m"}}
     ]
   }'
 ```
 
+Plans execute deterministically server-side with SSE progress on `/v1/stream/plans/{id}`.
+
+### MCP (agent surface)
+
+```bash
+make ingest-mcp    # MCP_STDIO=1
+```
+
+Exposes the same tool registry over MCP stdio for Claude, Cursor, and other MCP clients. Same semantics as the REST API.
+
+## Dashboard
+
+The embedded dashboard at `/ui` is the fastest way to see a running system:
+
+- KPI overview with time series (error rate, p50/p95/p99)
+- recent traces and trace drill-down with the propagation chain view
+- **most likely failure origin** — root cause attribution per window
+- **who's affected** — user cohort by tier and region
+- **what changed** — deploy correlation with causal shadow-mode claims
+- graph topology (Cytoscape, cose layout) — gated by `GRAPH_UI=1`
+- SSE live updates, no polling
+
+<!-- TODO: dashboard screenshot -->
+
+## Analysis tools
+
+All ten tools are deterministic, idempotent, and available via CLI, REST `/v1/tools/{name}`, MCP, and plan execution.
+
+| Tool               | Answers                                                       |
+| ------------------ | ------------------------------------------------------------- |
+| `graph_stats`      | Overall shape of the graph right now                          |
+| `explain_request`  | Why did this specific trace fail?                             |
+| `trace_summary`    | Span tree and timing for a trace                              |
+| `graph_failures`   | Which requests are currently failing?                         |
+| `failure_patterns` | What error codes dominate this window?                        |
+| `blast_radius`     | How many requests, users, and services does this error touch? |
+| `failure_chain`    | How did this failure propagate through services?              |
+| `graph_query`      | DSL query over the graph (`expr` + `window`)                  |
+| `compare_windows`  | Diff error rates between two windows                          |
+| `graph_insights`   | Windowed rollup of top errors and patterns                    |
+
+Full schemas: `GET /v1/tools` or `docs/openapi.yaml`.
+
+## Architecture
+
+```text
+Go services (SDK) · OTLP/HTTP collectors
+        │  WideEvents (HTTP or Kafka) · OTLP traces
+        ▼
+  ingest server
+    ├─ event log (append-only, source of truth)
+    ├─ hot graph  (requests · services · errors · users · deploys)
+    ├─ SQLite cold store
+    ├─ tool registry · Ask · plan execution
+    └─ SSE dashboard · health · metrics · OpenAPI
+        │
+        ├──▶ /ui dashboard
+        ├──▶ /v1/tools/* · /v1/plans/execute
+        └──▶ CLI · TUI · MCP · agents
+```
+
+Internals (durability model, retention, graph merge semantics, readiness policy, counter buffer): see `docs/internals.md`.
+
+## HTTP API
+
+| Method   | Path                                                      | Scope       |
+| -------- | --------------------------------------------------------- | ----------- |
+| POST     | `/v1/events`                                              | write       |
+| POST     | `/v1/events/validate`                                     | write       |
+| POST     | `/v1/otlp/v1/traces`                                      | write       |
+| GET      | `/v1/events/search`                                       | read        |
+| GET      | `/v1/traces/recent` · `/v1/traces/story`                  | read        |
+| GET      | `/v1/overview` · `/v1/overview/timeseries` · `/v1/routes` | read        |
+| GET/POST | `/v1/deployments`                                         | read/write  |
+| GET      | `/v1/topology` · `/v1/blast_radius`                       | read        |
+| GET      | `/v1/stream/dashboard`                                    | read (SSE)  |
+| GET      | `/v1/tools` · POST `/v1/tools/{name}`                     | agent       |
+| POST     | `/v1/ask` · `/v1/plans/execute`                           | agent       |
+| GET      | `/v1/stream/plans/{id}`                                   | agent (SSE) |
+| GET      | `/livez` · `/readyz` · `/healthz` · `/metrics`            | —           |
+
+Full contract: [`docs/openapi.yaml`](docs/openapi.yaml).
+
+## Documentation
+
+| Doc                                                          | What it covers                                                         |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| [`docs/internals.md`](docs/internals.md)                     | Durability model, retention, merge semantics, sampling, counter buffer |
+| [`docs/env.md`](docs/env.md)                                 | Environment variable reference                                         |
+| [`docs/openapi.yaml`](docs/openapi.yaml)                     | Full HTTP API contract                                                 |
+| [`docs/waylog-sdk-contract.md`](docs/waylog-sdk-contract.md) | Language-agnostic WideEvent schema for SDK authors                     |
+
 ## Development
 
-Build binaries:
-
 ```bash
-make build
-make build-examples
+make build          # core binaries
+make build-examples # demo services
+make fmt vet test   # checks
+make test-race      # race detector
+make ci             # fmt + vet + test-race
 ```
 
-Run checks:
+## Auth
 
-```bash
-make fmt
-make vet
-make test
-make test-race
-```
+Waylog uses three scoped keys. They are independent — the dashboard never holds the agent key.
 
-CI currently runs:
+| Key                | Protects                                |
+| ------------------ | --------------------------------------- |
+| `WAYLOG_WRITE_KEY` | `/v1/events` (SDKs, collectors)         |
+| `WAYLOG_READ_KEY`  | Read APIs, dashboard session            |
+| `WAYLOG_AGENT_KEY` | `/v1/tools/*`, `/v1/ask`, `/v1/plans/*` |
 
-- `gofmt -l ./cmd ./internal ./pkg ./examples`
-- `go vet ./...`
-- `go test -race -timeout 120s ./...`
+`WAYLOG_API_KEY` is kept as a legacy alias for the write scope. The dashboard uses server-side `/ui/ask` and `/ui/explain` handlers so browsers never see the agent key. `ParseConfig` validates the auth matrix at startup and refuses to boot with an unsafe combination.
 
-## Repository Map
+## Known limitations
 
-- [cmd/ingest/main.go](cmd/ingest/main.go): ingest server and route wiring
-- [cmd/waylog/main.go](cmd/waylog/main.go): CLI entry point
-- [internal/ingest](internal/ingest): handlers, envelope, dedup, SSE, plans
-- [internal/tools](internal/tools): deterministic graph tools and schemas
-- [internal/graph](internal/graph): hot graph store, analysis, causal logic
-- [internal/coldstore](internal/coldstore): SQLite-backed persistence
-- [internal/dashboard/static/index.html](internal/dashboard/static/index.html): embedded dashboard
-- [pkg/waylog](pkg/waylog): SDK
-- [scripts](scripts): demos and local automation helpers
-- [docs/openapi.yaml](docs/openapi.yaml): HTTP API contract
+- Single-node only. No HA, no clustering.
+- Alpha quality. APIs may break before 1.0.
+- Go SDK is the only stable transport. OTLP/HTTP traces are Phase A — functional end-to-end but not yet battle-tested at scale.
+- SQLite cold store fits demos and small deployments; not sized for production-scale retention.
+- No built-in alerting or paging. Waylog answers questions, it doesn't wake you up.
+- No multi-tenancy. One instance = one trust boundary.
 
-## Auth Model
+## Support matrix
 
-Waylog uses scoped keys:
+| Capability        | Today                 | Next                          |
+| ----------------- | --------------------- | ----------------------------- |
+| Ingest            | Go SDK + OTLP/HTTP    | OTLP gRPC (Phase B)          |
+| Languages         | Go                    | Python, TypeScript via OTLP   |
+| Deploy mode       | Single-node, Docker   | —                             |
+| Cold storage      | SQLite                | Postgres (Phase 2)            |
+| HA / multi-node   | Not supported         | Not on alpha roadmap          |
 
-- `WAYLOG_API_KEY`: write access for `/v1/events`
-- `WAYLOG_AGENT_KEY`: agent-facing execution endpoints
+## Status
 
-The dashboard does not hold the agent key directly. Browser-facing dashboard flows use server-side UI handlers such as `/ui/ask` and `/ui/explain`.
+Public alpha. APIs may break before 1.0.
 
-## Current Status
+- Go SDK v2 with HTTP transport
+- OTLP/HTTP traces ingestion at `/v1/otlp/v1/traces` (Phase A — traces only, end-to-end into the hot graph)
+- durable ingest with WAL + replay
+- hot graph + SQLite cold store
+- 10 deterministic analysis tools
+- deploy tracking + causal shadow mode
+- agent-native REST (`/v1/tools/*`, `/v1/ask`, `/v1/plans/execute`) with idempotency and structured envelopes
+- embedded dashboard with SSE, topology (Cytoscape), and trace drill-down
+- live TUI, MCP stdio, CLI with LLM tool routing
+- scoped auth (write/read/agent) with startup validation
 
-The repo has moved beyond a logging demo. It now includes:
+**Planned:**
 
-- SDK v2 HTTP transport
-- durable ingest and replay
-- SQLite cold storage
-- deploy tracking and causal shadow mode
-- real-time incident triage dashboard
-- deterministic plan execution with SSE progress streaming
+- OTLP gRPC, logs, and metrics (Phase B)
+- Python and TypeScript SDKs
+- broader language coverage via OTLP
 
-If you want the fastest product walkthrough, start with `make docker-dev`, open `/ui`, and run one of the demo scripts.
-
-The current product is strongest for Go services today. Python and TypeScript SDKs, the OTel adapter, and broader deployment work are part of the planned expansion, not shipped capabilities yet.
+**Fastest walkthrough:** `make docker-dev`, open <http://localhost:9081/demo>, click a failure button, then open <http://localhost:8080/ui> to see the propagation chain live.
