@@ -42,3 +42,7 @@ profile.cov
 /db-demo
 /payment-demo
 /.DS_Store
+
+!docs/internals.md
+!docs/env.md
+!docs/waylog-sdk-contract.md

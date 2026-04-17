@@ -19,6 +19,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
 	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/internal/dashboard"
+	"github.com/sssmaran/WaylogCLI/internal/detect"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
@@ -343,6 +344,7 @@ func main() {
 	mux.Handle("/v1/topology", readCORS(ingestServer.Topology))
 	mux.Handle("/v1/blast_radius", readCORS(ingestServer.BlastRadius))
 	mux.Handle("/v1/stream/dashboard", readCORS(ingestServer.SSEStream))
+	mux.Handle("/v1/insight", readCORS(ingestServer.Insight))
 
 	// Deployments — dual method: GET=read, POST=write.
 	mux.Handle("/v1/deployments", http.HandlerFunc(
@@ -532,6 +534,19 @@ func main() {
 				}
 			}
 		}()
+	}
+
+	// ---------------- Anomaly detection ticker ----------------
+
+	detectCfg := detect.ParseConfig()
+	if detectCfg.Enabled {
+		var deploySrc detect.DeploySource
+		if coldDB != nil {
+			deploySrc = coldDB
+		}
+		detector := detect.NewDetector(detectCfg, graphStore, traceStore, deploySrc)
+		ingestServer.SetDetector(detector)
+		go detector.Run(ctx)
 	}
 
 	// ---------------- Causal inference ticker ----------------

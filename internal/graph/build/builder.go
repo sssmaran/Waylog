@@ -169,6 +169,7 @@ func (b *Builder) BuildResult(ev event.WideEvent) BuildResult {
 			Attr: map[string]any{
 				"code":    ev.Error.Code,
 				"message": ev.Error.Message,
+				"service": ev.System.Service,
 			},
 		}
 		touch(&errNode, ev.Timestamp)

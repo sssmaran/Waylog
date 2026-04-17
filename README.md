@@ -12,9 +12,9 @@
 
 ---
 
-## The propagation chain
+## What Waylog does
 
-When something breaks in a request that crosses three services, Waylog turns the event stream into a single answer:
+A request hits your API gateway, fans out to three services, and one of them fails. The gateway returns 502. Your logs say "upstream error." Waylog tells you exactly what happened:
 
 ```text
   trace 7f3a2b9c…   flow=purchase   user=standard   region=us-east-1
@@ -27,26 +27,26 @@ When something breaks in a request that crosses three services, Waylog turns the
   blast radius:  12 requests · 8 users · 4 services
 ```
 
-That is not a log search. It is a precomputed answer, built from a live graph of requests, services, errors, users, and deployments. Ask for a trace id — get a chain. Ask for an error code — get the blast radius. Ask who's affected — get the user cohort.
+This is not a log search. Waylog builds a live in-memory graph from every request flowing through your services. When you ask a question — "why did this trace fail?", "who is affected by PMT_502?", "what changed in the last 10 minutes?" — it walks the graph and returns a precomputed, structured answer.
 
-Every line above matches real output from the live demo at `http://localhost:9081/demo` (click **Purchase (Payment Fail)**). Run `make docker-dev` and reproduce it yourself.
+Every line above is real output from the live demo. Run `make docker-dev`, open `http://localhost:9081/demo`, click **Purchase (Payment Fail)**, and see it yourself.
 
-**Agent-native by design.** Every answer above is available as a deterministic HTTP tool call with structured outputs and idempotency keys. Agents and humans hit the same API; no scraping a chat UI, no brittle log regexes.
+**Agent-native by design.** Every answer is available as a deterministic HTTP tool call with structured outputs and idempotency keys. Agents and humans hit the same API — no scraping a chat UI, no brittle log regexes.
 
 ## How it works
 
-1. **Ingest** — services emit WideEvents over HTTP via the Go SDK, or push spans to the OTLP/HTTP endpoint at `/v1/otlp/v1/traces`. The event log is the source of truth.
-2. **Build** — the ingest server flattens spans into a hot in-memory graph of requests, services, errors, users, and deployments.
-3. **Traverse** — deterministic tools walk the graph to answer specific questions: propagation chain, blast radius, failure patterns, what changed.
+1. **Ingest** — services emit [WideEvents](docs/waylog-sdk-contract.md) over HTTP via the Go SDK, or push spans to the OTLP/HTTP endpoint at `/v1/otlp/v1/traces`. Every event is durably logged (WAL + fsync) before it enters the graph.
+2. **Build** — the ingest server flattens spans into a hot in-memory graph of requests, services, errors, users, and deployments. No external database in the hot path.
+3. **Traverse** — 10 deterministic tools walk the graph to answer specific questions: propagation chain, blast radius, failure patterns, what changed.
 4. **Query** — CLI, REST, MCP, TUI, dashboard, and agent plan execution all query the same graph through the same tool registry.
 
 ## Get traces in
 
-Waylog supports two entry points:
+Waylog supports two ingestion paths. Both feed into the same hot graph — the dashboard, tools, and APIs light up identically regardless of which path you use.
 
 ### OTLP/HTTP traces (Phase A)
 
-Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1/traces`. The endpoint accepts protobuf (with optional gzip), converts spans to WideEvents, and feeds them through the same hot graph as the SDK path — `/v1/traces/recent`, `blast_radius`, and the dashboard all light up identically. Phase A covers traces over HTTP; gRPC, logs, and metrics are not yet shipping.
+Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1/traces`. The endpoint accepts protobuf (with optional gzip), converts spans to WideEvents, and merges them into the graph. Phase A covers traces over HTTP; gRPC, logs, and metrics are not yet shipping.
 
 ### Go SDK
 
@@ -77,9 +77,9 @@ The SDK validates `Service`, `Env`, and exactly one transport (`IngestURL`, Kafk
 make docker-dev
 ```
 
-This brings up the full live demo: the ingest server, embedded dashboard, Prometheus, Grafana, and four real Go services wired together with the Waylog SDK middleware (`api-gateway → checkout → db → payment`).
+This starts the full stack: the ingest server, embedded dashboard, Prometheus, Grafana, and four real Go services wired together with the Waylog SDK middleware (`api-gateway → checkout → db → payment`). No mocks, no synthetic data — these are real services making real HTTP calls.
 
-Once the stack is up, drive real traffic and watch the graph build:
+Once the stack is up:
 
 1. Open the demo app at <http://localhost:9081/demo> and click a button:
    - **Purchase (Success)** — healthy 4-service flow
@@ -91,7 +91,7 @@ Once the stack is up, drive real traffic and watch the graph build:
 
 Stop with `make docker-down`. Wipe persistent volumes with `make docker-reset`.
 
-> Don't want to drive the live app? `./scripts/demo-cascade-failure.sh` injects an equivalent fixture by POSTing synthetic events directly. It's a fixture, not a substitute for the live path above.
+> `./scripts/demo-cascade-failure.sh` injects an equivalent fixture by POSTing synthetic events directly. It's a fixture, not a substitute for the live path above.
 
 ### Alternative: local ingest server (no Docker)
 
@@ -186,18 +186,21 @@ Go services (SDK) · OTLP/HTTP collectors
         │  WideEvents (HTTP or Kafka) · OTLP traces
         ▼
   ingest server
-    ├─ event log (append-only, source of truth)
+    ├─ event log (append-only WAL, source of truth)
     ├─ hot graph  (requests · services · errors · users · deploys)
-    ├─ SQLite cold store
+    ├─ trace store (span-level detail, time-bucketed)
+    ├─ SQLite cold store (events · deployments · causal claims)
     ├─ tool registry · Ask · plan execution
     └─ SSE dashboard · health · metrics · OpenAPI
         │
-        ├──▶ /ui dashboard
-        ├──▶ /v1/tools/* · /v1/plans/execute
+        ├──▶ /ui dashboard (Geist dark theme, Chart.js, Cytoscape.js)
+        ├──▶ /v1/tools/* · /v1/plans/execute (agent-native)
         └──▶ CLI · TUI · MCP · agents
 ```
 
-Internals (durability model, retention, graph merge semantics, readiness policy, counter buffer): see `docs/internals.md`.
+The hot graph is a flattened 3-node-type model (request, service, error) with span detail offloaded to a dedicated trace store. This keeps the graph lean for topology queries while preserving full span trees for drill-down. Events are durably logged before entering the graph — if the process crashes, replay rebuilds the graph from the WAL on next boot.
+
+Internals (durability model, retention, graph merge semantics, readiness policy, counter buffer): see [`docs/internals.md`](docs/internals.md).
 
 ## HTTP API
 
@@ -276,7 +279,8 @@ Public alpha. APIs may break before 1.0.
 - Go SDK v2 with HTTP transport
 - OTLP/HTTP traces ingestion at `/v1/otlp/v1/traces` (Phase A — traces only, end-to-end into the hot graph)
 - durable ingest with WAL + replay
-- hot graph + SQLite cold store
+- hot graph with flattened 3-node model + dedicated trace store
+- SQLite cold store (events, deployments, causal claims)
 - 10 deterministic analysis tools
 - deploy tracking + causal shadow mode
 - agent-native REST (`/v1/tools/*`, `/v1/ask`, `/v1/plans/execute`) with idempotency and structured envelopes

@@ -78,6 +78,16 @@ func (s *Store) Merge(g *core.Graph) {
 		if existing.Type == core.NodeSpan {
 			mergeSpanAttrs(&existing, &incoming)
 		}
+		// Backfill error node service attribute (added after initial release).
+		if existing.Type == core.NodeError {
+			if existing.Attr != nil && incoming.Attr != nil {
+				if _, ok := existing.Attr["service"]; !ok {
+					if svc, ok := incoming.Attr["service"].(string); ok && svc != "" {
+						existing.Attr["service"] = svc
+					}
+				}
+			}
+		}
 		s.graph.Nodes[id] = existing
 	}
 	// Merge edges (deduplicated); collect FailedWith edges for deferred error index update

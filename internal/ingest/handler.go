@@ -24,6 +24,7 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
 	"github.com/sssmaran/WaylogCLI/internal/config"
+	"github.com/sssmaran/WaylogCLI/internal/detect"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
@@ -151,10 +152,16 @@ type Server struct {
 	causalEnabled   bool
 	causalLastRun   time.Time
 	causalLastError string
+
+	// Anomaly detector
+	detector interface{ Current() *detect.Insight }
 }
 
 // SetSSEHub sets the SSE hub for real-time dashboard updates.
 func (s *Server) SetSSEHub(hub *SSEHub) { s.sseHub = hub }
+
+// SetDetector sets the anomaly detector for the /v1/insight endpoint.
+func (s *Server) SetDetector(d interface{ Current() *detect.Insight }) { s.detector = d }
 
 // SetCausalEnabled marks the causal engine as active.
 // Called once at startup before HTTP traffic, no lock needed.
@@ -781,6 +788,25 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	})
+}
+
+// Insight handles GET /v1/insight. Returns the current anomaly insight or 204.
+func (s *Server) Insight(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.detector == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	insight := s.detector.Current()
+	if insight == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(insight)
 }
 
 func runtimeGraphHotWindow() (time.Duration, string) {

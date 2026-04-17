@@ -525,6 +525,42 @@
         gap: 12px;
         margin-bottom: 24px;
       }
+      /* Anomaly insight banner */
+      .insight-banner {
+        background: var(--bg-card);
+        border: 1px solid var(--red);
+        border-left: 4px solid var(--red);
+        border-radius: var(--radius-card);
+        padding: 16px 20px;
+        margin-bottom: 16px;
+        box-shadow: var(--shadow);
+        animation: insightFadeIn 0.3s ease-out;
+      }
+      .insight-banner[hidden] { display: none; }
+      .insight-banner .insight-headline {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--red);
+        margin-bottom: 6px;
+        font-family: var(--font-mono);
+      }
+      .insight-banner .insight-detail {
+        font-size: 13px;
+        color: var(--fg-muted);
+        font-family: var(--font-mono);
+        line-height: 1.6;
+      }
+      .insight-banner .insight-deploy {
+        font-size: 12px;
+        color: var(--fg-muted);
+        margin-top: 4px;
+        font-family: var(--font-mono);
+      }
+      @keyframes insightFadeIn {
+        from { opacity: 0; transform: translateY(-8px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+
       .kpi-card {
         background: var(--bg-card);
         border: 1px solid var(--border);
@@ -891,6 +927,13 @@
       <!-- Dashboard tab panel -->
       <div id="panel-dashboard" role="tabpanel" aria-labelledby="tab-dashboard">
 
+      <!-- Anomaly Insight Banner -->
+      <div id="insight-banner" class="insight-banner" hidden>
+        <div class="insight-headline" id="insight-headline"></div>
+        <div class="insight-detail" id="insight-detail"></div>
+        <div class="insight-deploy" id="insight-deploy"></div>
+      </div>
+
       <!-- KPI Cards -->
       <section aria-label="Key metrics">
         <h2 id="kpi-heading" style="scroll-margin-top: 24px">
@@ -925,43 +968,47 @@
         </div>
       </section>
 
-      <!-- Time-series chart -->
-      <section aria-label="Request and error rate chart">
-        <h2 style="scroll-margin-top: 24px">Traffic (1h)</h2>
-        <div class="chart-container">
-          <canvas
-            id="ts-chart"
-            role="img"
-            aria-label="Time-series chart of requests and error rate"
-          ></canvas>
-        </div>
-      </section>
+      <!-- Bento grid: chart left, incident triage right -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem;">
 
-      <!-- Incident triage panels -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem;">
-        <div id="what-changed" style="display:none;padding:12px;background:#1a1a1a;border-radius:8px;border:1px solid #333"></div>
-        <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;" id="failure-origin-section">
+        <!-- Left: Traffic chart -->
+        <section aria-label="Request and error rate chart" style="grid-row:1 / 3;">
+          <h2 style="scroll-margin-top: 24px">Traffic (1h)</h2>
+          <div class="chart-container">
+            <canvas
+              id="ts-chart"
+              role="img"
+              aria-label="Time-series chart of requests and error rate"
+            ></canvas>
+          </div>
+          <div id="what-changed" style="display:none;padding:12px;background:#1a1a1a;border-radius:8px;border:1px solid #333;margin-top:12px;"></div>
+        </section>
+
+        <!-- Right top: Failure Origin -->
+        <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;display:flex;flex-direction:column;" id="failure-origin-section">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
             <h2 style="font-size:1rem;font-weight:600;">Most Likely Failure Origin</h2>
             <label style="font-size:0.75rem;color:var(--fg-secondary);cursor:pointer;">
               <input type="checkbox" id="follow-latest-toggle" checked> Follow latest
             </label>
           </div>
-          <div id="failure-origin-content" style="min-height:80px;">
+          <div id="failure-origin-content" style="min-height:80px;flex:1;">
             <p style="color:var(--fg-muted);">Waiting for failures...</p>
           </div>
         </section>
-      </div>
 
-      <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;margin-bottom:1.5rem;" id="whos-affected-section">
-        <h2 style="font-size:1rem;font-weight:600;margin-bottom:12px;">Who's Affected</h2>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1rem;">
-          <div class="kpi-card"><div class="value" id="blast-requests">--</div><div class="label">Requests</div></div>
-          <div class="kpi-card"><div class="value" id="blast-users">--</div><div class="label">Users</div></div>
-          <div class="kpi-card"><div class="value" id="blast-services">--</div><div class="label">Services</div></div>
-        </div>
-        <div id="mini-topology" style="height:200px;border:1px solid var(--border);border-radius:8px;"></div>
-      </section>
+        <!-- Right bottom: Who's Affected -->
+        <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;display:flex;flex-direction:column;" id="whos-affected-section">
+          <h2 style="font-size:1rem;font-weight:600;margin-bottom:12px;">Who's Affected</h2>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.75rem;margin-bottom:1rem;">
+            <div class="kpi-card"><div class="value" id="blast-requests">--</div><div class="label">Requests</div></div>
+            <div class="kpi-card"><div class="value" id="blast-users">--</div><div class="label">Users</div></div>
+            <div class="kpi-card"><div class="value" id="blast-services">--</div><div class="label">Services</div></div>
+          </div>
+          <div id="mini-topology" style="flex:1;min-height:180px;border:1px solid var(--border);border-radius:8px;"></div>
+        </section>
+
+      </div>
 
       <!-- Routes table -->
       <section aria-label="Routes">
@@ -2206,11 +2253,48 @@
             refreshChart();
             refreshRoutes();
             refreshTraces();
+            refreshInsight();
           } else if (activeTab === "graph") {
             refreshGraph();
           }
           document.getElementById("last-update").textContent =
             "Updated " + new Date().toLocaleTimeString();
+        }
+
+        function refreshInsight() {
+          fetch("/v1/insight", { credentials: "same-origin" })
+            .then(function (res) {
+              var banner = document.getElementById("insight-banner");
+              if (res.status === 204 || !res.ok) {
+                banner.hidden = true;
+                return;
+              }
+              return res.json().then(function (d) {
+                var liftStr = d.lift >= 10 ? Math.round(d.lift) + "x" : d.lift.toFixed(1) + "x";
+                document.getElementById("insight-headline").textContent =
+                  "\u26a0 " + d.top_error_code + " spike detected \u2014 " + liftStr + " baseline";
+                document.getElementById("insight-detail").textContent =
+                  d.affected_requests + " requests \u00b7 " +
+                  d.affected_users + " users \u00b7 " +
+                  d.vip_users + " VIP \u00b7 " +
+                  d.services.length + " services \u00b7 " +
+                  "severity " + d.severity_score.toFixed(1);
+                var deployEl = document.getElementById("insight-deploy");
+                if (d.deploy_correlation) {
+                  deployEl.textContent = "Deploy: " + d.deploy_correlation.service +
+                    " " + d.deploy_correlation.deployment_id +
+                    " (confidence: " + d.deploy_correlation.confidence.toFixed(2) + ")";
+                  deployEl.hidden = false;
+                } else {
+                  deployEl.textContent = "";
+                  deployEl.hidden = true;
+                }
+                banner.hidden = false;
+              });
+            })
+            .catch(function () {
+              document.getElementById("insight-banner").hidden = true;
+            });
         }
 
         document.querySelectorAll("[data-route-window]").forEach(function (btn) {
@@ -2454,7 +2538,7 @@
             const data = body.data || body;
             renderFailureOrigin(el, data);
             if (data.error_code) {
-              loadBlastRadius(data.error_code);
+              loadBlastRadius(data.error_code, data.span_chain);
             }
           } catch (e) {
             currentExplainTraceId = null;
@@ -2471,8 +2555,9 @@
           if (data.error_code) {
             html += '<span style="display:inline-block;background:var(--red);color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;font-family:var(--font-mono);margin-bottom:8px;">' + esc(data.error_code) + '</span> ';
           }
-          if (data.service) {
-            html += '<span style="color:var(--fg-secondary);font-size:13px;">' + esc(data.service) + '</span>';
+          var originSvc = data.span_service || data.service;
+          if (originSvc) {
+            html += '<span style="color:var(--fg-secondary);font-size:13px;">' + esc(originSvc) + '</span>';
           }
           if (data.summary || data.answer) {
             html += '<p style="margin-top:8px;color:var(--fg);font-size:13px;line-height:1.5;">' + esc(data.summary || data.answer) + '</p>';
@@ -2513,7 +2598,7 @@
           return html;
         }
 
-        async function loadBlastRadius(errorCode) {
+        async function loadBlastRadius(errorCode, spanChain) {
           if (!errorCode) return;
           try {
             const resp = await fetch("/v1/blast_radius?error_code=" + encodeURIComponent(errorCode) + "&window=1h");
@@ -2523,8 +2608,14 @@
             document.getElementById("blast-requests").textContent = nf.format(data.affected_requests || 0);
             document.getElementById("blast-users").textContent = nf.format(data.affected_users || 0);
             var svcArr = Array.isArray(data.services) ? data.services : [];
-            document.getElementById("blast-services").textContent = nf.format(svcArr.length);
-            var svcNames = svcArr.map(function (s) { return s.service; });
+            // Merge span chain services (root cause path) with blast radius services
+            var svcSet = {};
+            svcArr.forEach(function (s) { svcSet[s.service] = true; });
+            if (Array.isArray(spanChain)) {
+              spanChain.forEach(function (s) { if (s.service) svcSet[s.service] = true; });
+            }
+            var svcNames = Object.keys(svcSet);
+            document.getElementById("blast-services").textContent = nf.format(svcNames.length);
             if (svcNames.length > 0) {
               loadMiniTopology(svcNames);
             }
@@ -2630,104 +2721,14 @@
           });
         }
 
-        // --- SSE integration ---
-
-        let pollingInterval = null;
-
-        function startPolling() {
-          if (pollingInterval) return;
-          pollingInterval = setInterval(refreshAll, refreshIntervalMs);
-        }
-
-        function stopPolling() {
-          if (pollingInterval) {
-            clearInterval(pollingInterval);
-            pollingInterval = null;
-          }
-        }
-
-        function initSSE() {
-          if (typeof EventSource === "undefined") {
-            startPolling();
-            return;
-          }
-          const startTime = Date.now();
-          let sseReceivedEvent = false;
-          const es = new EventSource("/v1/stream/dashboard");
-
-          es.onopen = function () {
-            stopPolling();
-          };
-
-          es.addEventListener("overview", function (e) {
-            sseReceivedEvent = true;
-            try {
-              const data = JSON.parse(e.data);
-              renderKPIs(data);
-              document.getElementById("last-update").textContent =
-                "Updated " + new Date().toLocaleTimeString();
-            } catch (err) {
-              console.error("SSE overview parse error:", err);
-            }
-          });
-
-          es.addEventListener("timeseries", function (e) {
-            try {
-              const data = JSON.parse(e.data);
-              renderChart(data);
-            } catch (err) {
-              console.error("SSE timeseries parse error:", err);
-            }
-          });
-
-          es.addEventListener("routes", function (e) {
-            try {
-              // Only apply SSE routes when dashboard is using default filters,
-              // otherwise the user's selected window/filter would be overwritten.
-              if (routeWindow !== "1h" || routeFailuresOnly) return;
-              const data = JSON.parse(e.data);
-              renderRoutes(data);
-            } catch (err) {
-              console.error("SSE routes parse error:", err);
-            }
-          });
-
-          es.addEventListener("deployments", function (e) {
-            try {
-              const data = JSON.parse(e.data);
-              const deploys = data.deployments || [];
-              currentDeployments = deploys;
-              renderWhatChanged(deploys);
-              if (tsChart) {
-                tsChart.options.plugins = tsChart.options.plugins || {};
-                tsChart.options.plugins.annotation = {
-                  annotations: makeDeployAnnotations(deploys)
-                };
-                tsChart.update('none');
-              }
-            } catch (err) {
-              console.error("SSE deployments parse error:", err);
-            }
-          });
-
-          es.onerror = function () {
-            if (!sseReceivedEvent && Date.now() - startTime < 5000) {
-              // SSE never connected successfully — fall back to polling permanently
-              es.close();
-              console.warn("SSE failed quickly, falling back to polling");
-              startPolling();
-            }
-            // Otherwise EventSource will auto-reconnect; no action needed.
-          };
-        }
+        // --- Polling-based live updates ---
 
         setRouteFailuresOnly(routeFailuresOnly, false);
         setRouteWindow(routeWindow, false);
         loadCapabilities().finally(function () {
-          // Apply saved tab after capabilities are loaded (so graph tab is visible if enabled)
           if (activeTab !== "dashboard") switchTab(activeTab);
           refreshAll();
-          initSSE();
+          setInterval(refreshAll, refreshIntervalMs);
         });
       })();
     </script>
