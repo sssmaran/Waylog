@@ -47,6 +47,15 @@ func (c *Client) assembleEvent(
 	httpMethod, _ := httpMethodFromContext(ctx)
 	routeTemplate, _ := routeTemplateFromContext(ctx)
 
+	state, _ := requestStateFromContext(ctx)
+	attempt, _ := state.Attempt()
+	parentRequestID, _ := state.ParentRequestID()
+	metadata, _ := state.Metadata()
+	var retryCtx *event.RetryContext
+	if r, ok := state.Retry(); ok {
+		retryCtx = &event.RetryContext{Of: r.Of, PreviousAttemptID: r.PreviousAttemptID}
+	}
+
 	tc, _ := trace.FromContext(ctx)
 	traceID := tc.TraceID
 	spanID := tc.SpanID
@@ -84,6 +93,12 @@ func (c *Client) assembleEvent(
 			Code:    code,
 			Message: message,
 		}
+		if reason, ok := state.ErrorReason(); ok {
+			errContext.Reason = reason
+		}
+		if path, ok := state.ErrorPath(); ok {
+			errContext.Path = path
+		}
 	}
 
 	return event.WideEvent{
@@ -100,6 +115,7 @@ func (c *Client) assembleEvent(
 			RouteTemplate: routeTemplate,
 			Flow:          flow,
 			FeatureFlags:  flags,
+			Attempt:       attempt,
 		},
 		System:  system,
 		Outcome: outcome,
@@ -107,6 +123,9 @@ func (c *Client) assembleEvent(
 		Metrics: event.MetricsContext{
 			LatencyMs: latencyMs,
 		},
+		ParentRequestID: parentRequestID,
+		Metadata:        metadata,
+		Retry:           retryCtx,
 	}
 }
 

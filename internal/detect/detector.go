@@ -24,11 +24,11 @@ type DeploySource interface {
 // Detector runs a periodic loop that compares error rates across
 // two time windows and surfaces structured insights when a spike is detected.
 type Detector struct {
-	cfg        Config
-	store      *store.Store
-	traces     *tracestore.Store // nil OK — falls back to graph topology
-	deploys    DeploySource      // nil if cold store unavailable
-	current    atomic.Pointer[Insight]
+	cfg     Config
+	store   *store.Store
+	traces  *tracestore.Store // nil OK — falls back to graph topology
+	deploys DeploySource      // nil if cold store unavailable
+	current atomic.Pointer[Insight]
 }
 
 func NewDetector(cfg Config, s *store.Store, ts *tracestore.Store, deploys DeploySource) *Detector {

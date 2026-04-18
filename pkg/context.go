@@ -18,8 +18,21 @@ type RequestState struct {
 	flags             []string
 	httpMethod        string
 	routeTemplate     string
-	once              sync.Once
-	mu                sync.Mutex
+
+	errorReason     string
+	errorPath       string
+	parentRequestID string
+	metadata        map[string]any
+	attempt         int
+	retry           *Retry
+
+	once sync.Once
+	mu   sync.Mutex
+}
+
+type Retry struct {
+	Of                int
+	PreviousAttemptID string
 }
 
 type requestStateKey struct{}
@@ -265,4 +278,168 @@ func routeTemplateFromContext(ctx context.Context) (string, bool) {
 	}
 	rt, ok := ctx.Value(routeTemplateKey{}).(string)
 	return rt, ok
+}
+
+func (s *RequestState) SetErrorReason(v string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.errorReason = v
+}
+
+func (s *RequestState) ErrorReason() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.errorReason, s.errorReason != ""
+}
+
+func (s *RequestState) SetErrorPath(v string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.errorPath = v
+}
+
+func (s *RequestState) ErrorPath() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.errorPath, s.errorPath != ""
+}
+
+func (s *RequestState) SetParentRequestID(v string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.parentRequestID = v
+}
+
+func (s *RequestState) ParentRequestID() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.parentRequestID, s.parentRequestID != ""
+}
+
+func (s *RequestState) SetMetadata(key string, value any) {
+	if s == nil || key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.metadata == nil {
+		s.metadata = make(map[string]any)
+	}
+	s.metadata[key] = value
+}
+
+func (s *RequestState) Metadata() (map[string]any, bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.metadata) == 0 {
+		return nil, false
+	}
+	copied := make(map[string]any, len(s.metadata))
+	for k, v := range s.metadata {
+		copied[k] = v
+	}
+	return copied, true
+}
+
+func (s *RequestState) SetAttempt(n int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempt = n
+}
+
+func (s *RequestState) Attempt() (int, bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempt, s.attempt != 0
+}
+
+func (s *RequestState) SetRetry(r Retry) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := r
+	s.retry = &cp
+}
+
+func (s *RequestState) Retry() (Retry, bool) {
+	if s == nil {
+		return Retry{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.retry == nil {
+		return Retry{}, false
+	}
+	return *s.retry, true
+}
+
+func WithErrorReason(ctx context.Context, reason string) context.Context {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		state.SetErrorReason(reason)
+	}
+	return ctx
+}
+
+func WithErrorPath(ctx context.Context, path string) context.Context {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		state.SetErrorPath(path)
+	}
+	return ctx
+}
+
+func WithParentRequestID(ctx context.Context, id string) context.Context {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		state.SetParentRequestID(id)
+	}
+	return ctx
+}
+
+func WithMetadataKey(ctx context.Context, key string, value any) context.Context {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		state.SetMetadata(key, value)
+	}
+	return ctx
+}
+
+func WithAttempt(ctx context.Context, n int) context.Context {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		state.SetAttempt(n)
+	}
+	return ctx
+}
+
+func WithRetry(ctx context.Context, r Retry) context.Context {
+	if state, ok := requestStateFromContext(ctx); ok && state != nil {
+		state.SetRetry(r)
+	}
+	return ctx
 }
