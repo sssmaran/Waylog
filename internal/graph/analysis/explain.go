@@ -115,56 +115,17 @@ func explainFromTraceRecord(g *core.Graph, req core.Node, requestID string, rec 
 		return Explanation{}, false
 	}
 
-	depthCache := map[string]int{}
-	visiting := map[string]bool{}
-	var depth func(string) int
-	depth = func(id string) int {
-		if d, ok := depthCache[id]; ok {
-			return d
-		}
-		if visiting[id] {
-			depthCache[id] = 0
-			return 0
-		}
-		visiting[id] = true
-		pid, hasParent := parentOf[id]
-		if !hasParent || pid == "" {
-			depthCache[id] = 0
-			delete(visiting, id)
-			return 0
-		}
-		if _, ok := spans[pid]; !ok {
-			depthCache[id] = 0
-			delete(visiting, id)
-			return 0
-		}
-		d := depth(pid) + 1
-		depthCache[id] = d
-		delete(visiting, id)
-		return d
-	}
-	for id := range spans {
-		depth(id)
-	}
+	depthCache := computeSpanDepths(spans, parentOf)
 
-	var rootCauseID string
-	rootCauseDepth := -1
-	var rootCauseTime time.Time
+	candidates := make([]rootCauseCandidate, 0, len(spans))
 	for id, span := range spans {
 		if span.Success || span.ErrorCode == "" {
 			continue
 		}
-		d := depthCache[id]
-		ts := span.Timestamp
-		switch {
-		case d > rootCauseDepth:
-			rootCauseID, rootCauseDepth, rootCauseTime = id, d, ts
-		case d == rootCauseDepth && !ts.IsZero() && (rootCauseTime.IsZero() || ts.Before(rootCauseTime)):
-			rootCauseID, rootCauseDepth, rootCauseTime = id, d, ts
-		case d == rootCauseDepth && ts.Equal(rootCauseTime) && id < rootCauseID:
-			rootCauseID, rootCauseDepth, rootCauseTime = id, d, ts
-		}
+		candidates = append(candidates, rootCauseCandidate{id: id, depth: depthCache[id], ts: span.Timestamp})
 	}
+	rootCauseID := pickRootCauseCandidate(candidates)
+	rootCauseDepth := depthCache[rootCauseID]
 	if rootCauseID == "" {
 		for _, e := range g.OutEdges[requestID] {
 			if e.Type == core.EdgeFailedWith {
@@ -290,51 +251,17 @@ func explainFromGraph(g *core.Graph, requestID string) (Explanation, bool) {
 		}
 	}
 
-	depthCache := map[string]int{}
-	visiting := map[string]bool{}
-	var depth func(string) int
-	depth = func(id string) int {
-		if d, ok := depthCache[id]; ok {
-			return d
-		}
-		if visiting[id] {
-			depthCache[id] = 0
-			return 0
-		}
-		visiting[id] = true
-		pid, hasParent := parentOf[id]
-		if !hasParent {
-			depthCache[id] = 0
-			delete(visiting, id)
-			return 0
-		}
-		d := depth(pid) + 1
-		depthCache[id] = d
-		delete(visiting, id)
-		return d
-	}
-	for id := range spans {
-		depth(id)
-	}
+	depthCache := computeSpanDepths(spans, parentOf)
 
-	var rootCauseID string
-	rootCauseDepth := -1
-	var rootCauseTime time.Time
+	candidates := make([]rootCauseCandidate, 0, len(spans))
 	for id, si := range spans {
 		if si.errNode == nil {
 			continue
 		}
-		d := depthCache[id]
-		ts := spanTimestamp(si.node)
-		switch {
-		case d > rootCauseDepth:
-			rootCauseID, rootCauseDepth, rootCauseTime = id, d, ts
-		case d == rootCauseDepth && !ts.IsZero() && (rootCauseTime.IsZero() || ts.Before(rootCauseTime)):
-			rootCauseID, rootCauseDepth, rootCauseTime = id, d, ts
-		case d == rootCauseDepth && ts.Equal(rootCauseTime) && id < rootCauseID:
-			rootCauseID, rootCauseDepth, rootCauseTime = id, d, ts
-		}
+		candidates = append(candidates, rootCauseCandidate{id: id, depth: depthCache[id], ts: spanTimestamp(si.node)})
 	}
+	rootCauseID := pickRootCauseCandidate(candidates)
+	rootCauseDepth := depthCache[rootCauseID]
 
 	if rootCauseID == "" {
 		for _, e := range g.OutEdges[requestID] {
