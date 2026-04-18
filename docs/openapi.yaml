@@ -863,6 +863,8 @@ components:
       properties:
         schema_version:
           type: string
+          description: 'Schema version. Ingest accepts any 1.x. Current emitted: 1.1.'
+          example: "1.1"
         event_name:
           type: string
         timestamp:
@@ -880,6 +882,15 @@ components:
           $ref: '#/components/schemas/ErrorContext'
         metrics:
           $ref: '#/components/schemas/MetricsContext'
+        parent_request_id:
+          type: string
+          description: 'Schema 1.1. Optional cross-trace link to a parent request (e.g. job → triggering HTTP request). Display-only.'
+        metadata:
+          type: object
+          additionalProperties: true
+          description: 'Schema 1.1. Free-form application-specific attributes. Display-only.'
+        retry:
+          $ref: '#/components/schemas/RetryContext'
     UserContext:
       type: object
       required: [id, tier, region, vip]
@@ -936,7 +947,23 @@ components:
       required: [code, message]
       properties:
         code: { type: string }
+        path:
+          type: string
+          description: 'Schema 1.1. Runbook URL or doc path operators can open to triage this code.'
         message: { type: string }
+        reason:
+          type: string
+          description: 'Schema 1.1. Short operator-facing explanation of the failure.'
+    RetryContext:
+      type: object
+      description: 'Schema 1.1. Retry metadata. Attempt number lives in request.attempt; together they read "attempt N of M". Validation: retry.of must be 0 or >= request.attempt.'
+      properties:
+        of:
+          type: integer
+          description: 'Total expected attempts. 0 means unknown total.'
+        previous_attempt_id:
+          type: string
+          description: 'Span/request ID of the previous attempt for sibling linking.'
     MetricsContext:
       type: object
       required: [latency_ms]

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = "1.0"
+const SchemaVersion = "1.1"
 
 type WideEvent struct {
 	SchemaVersion string    `json:"schema_version"`
@@ -21,6 +21,10 @@ type WideEvent struct {
 	Outcome OutcomeContext `json:"outcome"`
 	Error   *ErrorContext  `json:"error,omitempty"`
 	Metrics MetricsContext `json:"metrics"`
+
+	ParentRequestID string         `json:"parent_request_id,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	Retry           *RetryContext  `json:"retry,omitempty"`
 }
 
 type UserContext struct {
@@ -62,8 +66,15 @@ type OutcomeContext struct {
 }
 
 type ErrorContext struct {
-	Code    string `json:"code"`    // stable error code (PMT_402)
+	Code    string `json:"code"` // stable error code (PMT_402)
+	Path    string `json:"path,omitempty"`
 	Message string `json:"message"` // short, not a stack dump
+	Reason  string `json:"reason,omitempty"`
+}
+
+type RetryContext struct {
+	Of                int    `json:"of,omitempty"`
+	PreviousAttemptID string `json:"previous_attempt_id,omitempty"`
 }
 
 type MetricsContext struct {
@@ -114,6 +125,9 @@ func (e WideEvent) Validate() error {
 		} else if e.Error.Code == "" {
 			errs = append(errs, ValidationError{Field: "error.code", Message: "error.code is required for failures"})
 		}
+	}
+	if e.Retry != nil && e.Retry.Of != 0 && e.Retry.Of < e.Request.Attempt {
+		errs = append(errs, ValidationError{Field: "retry.of", Message: "retry.of must be 0 or >= request.attempt"})
 	}
 
 	if len(errs) > 0 {

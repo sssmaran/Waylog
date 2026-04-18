@@ -16,7 +16,7 @@ and the graph will build correctly—regardless of implementation language.
 ## 2) Required Fields (Must Always Be Set)
 
 **Top-level**
-- `schema_version` = `"1.0"`
+- `schema_version` = `"1.x"` (current: `"1.1"`; ingest accepts any `1.x`)
 - `event_name`
 - `timestamp` (UTC)
 
@@ -177,7 +177,47 @@ Rules:
 }
 ```
 
-## 11) Implementation Checklist (Any Language)
+## 11) Schema 1.1 Additions (Optional, Back-Compat)
+
+Schema 1.1 introduces additive fields. All are optional; ingest still accepts 1.0 events
+unchanged. OTLP-origin events leave these unset and remain valid.
+
+**`error` (ErrorContext) — structured triage fields**
+- `error.path` — runbook URL or doc path operators can open to triage this code.
+- `error.reason` — *short* operator-facing explanation of the failure (one or two sentences).
+
+**WideEvent (top-level)**
+- `parent_request_id` — opt-in cross-trace link to a parent request (e.g. job → triggering
+  HTTP request). Display-only; does not affect graph indexing.
+- `metadata` — free-form `map<string, any>` for application-specific attributes. Display-only.
+- `retry` — see below.
+
+**`retry` (RetryContext)**
+- `retry.of` — total expected attempts for this logical operation. `0` means "unknown total".
+- `retry.previous_attempt_id` — span/request ID of the previous attempt for sibling linking.
+
+The attempt **number** stays in `request.attempt` (existing 1.0 field). Together they read
+"attempt N of M". Validation rule: `retry.of` must be `0` or `>= request.attempt`.
+
+### OTLP attribute mapping
+
+When ingesting via `/v1/otlp/v1/traces`, the following span attributes map onto 1.1 fields.
+All mappings are best-effort; absent attributes leave the corresponding field unset.
+
+| OTLP span attribute        | WideEvent field             |
+|----------------------------|------------------------------|
+| `waylog.error.path`        | `error.path`                |
+| `waylog.error.reason`      | `error.reason`              |
+| `waylog.parent_request_id` | `parent_request_id`         |
+| `waylog.metadata.*`        | `metadata[*]` (per attr)    |
+| `waylog.retry.of`          | `retry.of`                  |
+| `waylog.retry.previous_attempt_id` | `retry.previous_attempt_id` |
+| `waylog.request.attempt`   | `request.attempt`           |
+
+OTLP events without any of these attributes still validate (the OTLP relaxed validator
+already tolerates missing `user.id`).
+
+## 12) Implementation Checklist (Any Language)
 
 - [ ] Add HTTP middleware to capture trace + status + latency
 - [ ] Ensure `user.id` always set (default `system`)
