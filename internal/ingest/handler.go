@@ -1182,12 +1182,13 @@ func (s *Server) TraceStory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "trace_id required", http.StatusBadRequest)
 		return
 	}
+	format := r.URL.Query().Get("format")
 
 	snap, ok := s.snapshotOrServiceUnavailable(w)
 	if !ok {
 		return
 	}
-	story, ctx, err := tracestory.BuildWithTraceStore(snap, s.traceStore, traceID)
+	story, ctx, err := tracestory.BuildWithFormat(snap, s.traceStore, traceID, format)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

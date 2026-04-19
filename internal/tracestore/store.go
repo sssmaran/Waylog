@@ -16,11 +16,16 @@ type SpanRecord struct {
 	LatencyMs         int64
 	ErrorCode         string
 	ErrorMessage      string
+	ErrorPath         string
+	ErrorReason       string
 	CallerService     string
 	DownstreamService string
 	Timestamp         time.Time
 	HTTPMethod        string
 	RouteTemplate     string
+	RetryOf           int
+	RetryPreviousID   string
+	Metadata          map[string]any
 }
 
 type TraceRecord struct {
@@ -208,6 +213,12 @@ func mergeSpanRecord(dst *SpanRecord, src SpanRecord) {
 	}
 	if dst.ErrorMessage == "" && src.ErrorMessage != "" {
 		dst.ErrorMessage = src.ErrorMessage
+	}
+	if dst.ErrorPath == "" && src.ErrorPath != "" {
+		dst.ErrorPath = src.ErrorPath
+	}
+	if dst.ErrorReason == "" && src.ErrorReason != "" {
+		dst.ErrorReason = src.ErrorReason
 	}
 	if dst.CallerService == "" && src.CallerService != "" {
 		dst.CallerService = src.CallerService

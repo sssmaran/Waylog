@@ -23,12 +23,15 @@ type Hop struct {
 }
 
 // Story is the full trace narrative: an ordered chain of hops.
+// Tree is populated only when the caller requests the tree format; the flat
+// Chain always reflects root-first DFS order for back-compat with clients.
 type Story struct {
-	TraceID      string `json:"trace_id"`
-	Chain        []Hop  `json:"chain"`
-	Success      bool   `json:"success"`
-	FirstFailHop *Hop   `json:"first_fail_hop,omitempty"`
-	HopCount     int    `json:"hop_count"`
+	TraceID      string                 `json:"trace_id"`
+	Chain        []Hop                  `json:"chain"`
+	Success      bool                   `json:"success"`
+	FirstFailHop *Hop                   `json:"first_fail_hop,omitempty"`
+	HopCount     int                    `json:"hop_count"`
+	Tree         []*tracestore.TreeNode `json:"tree,omitempty"`
 }
 
 // Context provides user and request metadata for the trace.
@@ -50,8 +53,15 @@ func Build(g *core.Graph, traceID string) (Story, Context, error) {
 }
 
 // BuildWithTraceStore constructs a Story and Context from a graph plus an
-// optional trace store.
+// optional trace store. The flat Chain is populated; Tree is not.
 func BuildWithTraceStore(g *core.Graph, traceStore *tracestore.Store, traceID string) (Story, Context, error) {
+	return BuildWithFormat(g, traceStore, traceID, "")
+}
+
+// BuildWithFormat behaves like BuildWithTraceStore and additionally populates
+// Story.Tree when format == "tree". Any other format value yields the default
+// flat-Chain response so existing callers stay unchanged.
+func BuildWithFormat(g *core.Graph, traceStore *tracestore.Store, traceID, format string) (Story, Context, error) {
 	if g == nil {
 		return Story{}, Context{}, fmt.Errorf("graph is nil")
 	}
@@ -62,16 +72,31 @@ func BuildWithTraceStore(g *core.Graph, traceStore *tracestore.Store, traceID st
 		return Story{}, Context{}, fmt.Errorf("trace %s not found", traceID)
 	}
 
+	var (
+		story Story
+		ctx   Context
+		tree  []*tracestore.TreeNode
+		err   error
+	)
 	if traceStore != nil {
 		if rec, ok := traceStore.Get(traceID); ok {
-			return buildFromTraceRecord(g, traceID, reqID, reqNode, rec)
+			story, ctx, tree, err = buildFromTraceRecord(g, traceID, reqID, reqNode, rec)
+		} else {
+			story, ctx, err = buildFromGraph(g, reqID, reqNode)
 		}
+	} else {
+		story, ctx, err = buildFromGraph(g, reqID, reqNode)
 	}
-
-	return buildFromGraph(g, reqID, reqNode)
+	if err != nil {
+		return Story{}, Context{}, err
+	}
+	if format == "tree" {
+		story.Tree = tree
+	}
+	return story, ctx, nil
 }
 
-func buildFromTraceRecord(g *core.Graph, traceID, reqID string, reqNode core.Node, rec *tracestore.TraceRecord) (Story, Context, error) {
+func buildFromTraceRecord(g *core.Graph, traceID, reqID string, reqNode core.Node, rec *tracestore.TraceRecord) (Story, Context, []*tracestore.TreeNode, error) {
 	roots := tracestore.BuildTree(rec.Spans)
 
 	var chain []Hop
@@ -107,7 +132,7 @@ func buildFromTraceRecord(g *core.Graph, traceID, reqID string, reqNode core.Nod
 
 	ctx := buildContext(g, reqID, reqNode)
 
-	return story, ctx, nil
+	return story, ctx, roots, nil
 }
 
 func buildFromGraph(g *core.Graph, reqID string, reqNode core.Node) (Story, Context, error) {

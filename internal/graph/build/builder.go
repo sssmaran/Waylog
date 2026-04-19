@@ -57,6 +57,26 @@ func (b *Builder) BuildResult(ev event.WideEvent) BuildResult {
 	}
 	if ev.Error != nil {
 		req.Attr["error_code"] = ev.Error.Code
+		if ev.Error.Path != "" {
+			req.Attr["error_path"] = ev.Error.Path
+		}
+		if ev.Error.Reason != "" {
+			req.Attr["error_reason"] = ev.Error.Reason
+		}
+	}
+	if ev.ParentRequestID != "" {
+		req.Attr["parent_request_id"] = ev.ParentRequestID
+	}
+	if ev.Retry != nil {
+		if ev.Retry.Of != 0 {
+			req.Attr["retry_of"] = ev.Retry.Of
+		}
+		if ev.Retry.PreviousAttemptID != "" {
+			req.Attr["retry_previous_attempt_id"] = ev.Retry.PreviousAttemptID
+		}
+	}
+	if len(ev.Metadata) > 0 {
+		req.Attr["metadata"] = ev.Metadata
 	}
 	touch(&req, ev.Timestamp)
 	g.AddNode(req)
@@ -155,6 +175,15 @@ func (b *Builder) BuildResult(ev event.WideEvent) BuildResult {
 		if ev.Error != nil {
 			span.ErrorCode = ev.Error.Code
 			span.ErrorMessage = ev.Error.Message
+			span.ErrorPath = ev.Error.Path
+			span.ErrorReason = ev.Error.Reason
+		}
+		if ev.Retry != nil {
+			span.RetryOf = ev.Retry.Of
+			span.RetryPreviousID = ev.Retry.PreviousAttemptID
+		}
+		if len(ev.Metadata) > 0 {
+			span.Metadata = ev.Metadata
 		}
 	}
 

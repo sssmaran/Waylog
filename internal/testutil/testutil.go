@@ -175,6 +175,20 @@ func WithEventName(name string) EventOption {
 	}
 }
 
+// WithRetry marks the request as a retry of a previous attempt.
+func WithRetry(of int, previousAttemptID string) EventOption {
+	return func(ev *event.WideEvent) {
+		ev.Retry = &event.RetryContext{Of: of, PreviousAttemptID: previousAttemptID}
+	}
+}
+
+// WithParentRequestID links this request to a parent request (cross-trace).
+func WithParentRequestID(id string) EventOption {
+	return func(ev *event.WideEvent) {
+		ev.ParentRequestID = id
+	}
+}
+
 // MakeGraph creates a graph with the given nodes and edges.
 func MakeGraph(nodes []core.Node, edges []core.Edge) *core.Graph {
 	g := core.New()

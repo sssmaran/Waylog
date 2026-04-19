@@ -89,14 +89,20 @@ type traceSummaryInput struct {
 }
 
 type traceSummaryOutput struct {
-	SchemaVersion string     `json:"schema_version"`
-	TraceID       string     `json:"trace_id"`
-	RequestID     string     `json:"request_id"`
-	EventName     string     `json:"event_name,omitempty"`
-	Flow          string     `json:"flow,omitempty"`
-	LatencyMs     any        `json:"latency_ms,omitempty"`
-	RootSpanIDs   []string   `json:"root_span_ids,omitempty"`
-	Paths         [][]string `json:"paths,omitempty"`
+	SchemaVersion   string     `json:"schema_version"`
+	TraceID         string     `json:"trace_id"`
+	RequestID       string     `json:"request_id"`
+	EventName       string     `json:"event_name,omitempty"`
+	Flow            string     `json:"flow,omitempty"`
+	LatencyMs       any        `json:"latency_ms,omitempty"`
+	ErrorCode       string     `json:"error_code,omitempty"`
+	ErrorPath       string     `json:"error_path,omitempty"`
+	ErrorReason     string     `json:"error_reason,omitempty"`
+	RetryOf         int        `json:"retry_of,omitempty"`
+	RetryPreviousID string     `json:"retry_previous_attempt_id,omitempty"`
+	ParentRequestID string     `json:"parent_request_id,omitempty"`
+	RootSpanIDs     []string   `json:"root_span_ids,omitempty"`
+	Paths           [][]string `json:"paths,omitempty"`
 }
 
 func handleTraceSummary(ctx context.Context, store Store, params json.RawMessage) (any, error) {
@@ -127,6 +133,27 @@ func handleTraceSummary(ctx context.Context, store Store, params json.RawMessage
 				out.Flow = flow
 			}
 			out.LatencyMs = req.Attr["latency_ms"]
+			if code, ok := req.Attr["error_code"].(string); ok {
+				out.ErrorCode = code
+			}
+			if path, ok := req.Attr["error_path"].(string); ok {
+				out.ErrorPath = path
+			}
+			if reason, ok := req.Attr["error_reason"].(string); ok {
+				out.ErrorReason = reason
+			}
+			if parent, ok := req.Attr["parent_request_id"].(string); ok {
+				out.ParentRequestID = parent
+			}
+			if prev, ok := req.Attr["retry_previous_attempt_id"].(string); ok {
+				out.RetryPreviousID = prev
+			}
+			switch v := req.Attr["retry_of"].(type) {
+			case int:
+				out.RetryOf = v
+			case float64:
+				out.RetryOf = int(v)
+			}
 		}
 	}
 

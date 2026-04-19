@@ -20,11 +20,14 @@ type failuresInput struct {
 }
 
 type failureEntry struct {
-	RequestID string `json:"request_id"`
-	TraceID   string `json:"trace_id,omitempty"`
-	LatencyMs any    `json:"latency_ms,omitempty"`
-	Tier      string `json:"tier,omitempty"`
-	ErrorCode string `json:"error_code,omitempty"`
+	RequestID   string `json:"request_id"`
+	TraceID     string `json:"trace_id,omitempty"`
+	LatencyMs   any    `json:"latency_ms,omitempty"`
+	Tier        string `json:"tier,omitempty"`
+	ErrorCode   string `json:"error_code,omitempty"`
+	ErrorPath   string `json:"error_path,omitempty"`
+	ErrorReason string `json:"error_reason,omitempty"`
+	RetryOf     int    `json:"retry_of,omitempty"`
 }
 
 type failuresOutput struct {
@@ -71,14 +74,18 @@ func handleFailures(ctx context.Context, store Store, params json.RawMessage) (a
 			traceID = traceIDForRequest(g, f.RequestID)
 		}
 		latency := any(f.LatencyMs)
+		errPath, errReason, retryOf := requestErrorContext(g, f.RequestID)
 		for _, errorCode := range errorCodes {
 			out = append(out, failureRecord{
 				entry: failureEntry{
-					RequestID: f.RequestID,
-					TraceID:   traceID,
-					LatencyMs: latency,
-					Tier:      userTier,
-					ErrorCode: errorCode,
+					RequestID:   f.RequestID,
+					TraceID:     traceID,
+					LatencyMs:   latency,
+					Tier:        userTier,
+					ErrorCode:   errorCode,
+					ErrorPath:   errPath,
+					ErrorReason: errReason,
+					RetryOf:     retryOf,
 				},
 				seenAt: f.SeenAt,
 			})
@@ -404,6 +411,29 @@ func traceIDForRequest(g *core.Graph, reqID string) string {
 	}
 	traceID, _ := req.Attr["trace_id"].(string)
 	return traceID
+}
+
+func requestErrorContext(g *core.Graph, reqID string) (path, reason string, retryOf int) {
+	if g == nil {
+		return
+	}
+	req, ok := g.Nodes[reqID]
+	if !ok || req.Attr == nil {
+		return
+	}
+	if p, ok := req.Attr["error_path"].(string); ok {
+		path = p
+	}
+	if r, ok := req.Attr["error_reason"].(string); ok {
+		reason = r
+	}
+	switch v := req.Attr["retry_of"].(type) {
+	case int:
+		retryOf = v
+	case float64:
+		retryOf = int(v)
+	}
+	return
 }
 
 func requestErrorCodesFromGraph(g *core.Graph, reqID string) []string {
