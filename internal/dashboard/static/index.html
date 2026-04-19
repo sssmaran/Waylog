@@ -1,10 +1,27 @@
 <!doctype html>
-<html lang="en" style="color-scheme: dark">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="theme-color" content="#0a0a0a" id="theme-color-meta" />
     <title>Waylog Dashboard</title>
+    <script>
+      // Apply saved theme before first paint to avoid flash.
+      (function () {
+        try {
+          var saved = localStorage.getItem("waylog-theme");
+          var theme =
+            saved === "light" || saved === "dark"
+              ? saved
+              : window.matchMedia &&
+                  window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          document.documentElement.setAttribute("data-theme", theme);
+          document.documentElement.style.colorScheme = theme;
+        } catch (_) {}
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -20,25 +37,49 @@
         padding: 0;
       }
       :root {
+        /* Severity palette — deliberately serious tones that map to status-code
+         * class: blue=info/2xx, amber=warn/4xx, red=err/5xx, gray=neutral/3xx.
+         * Shared across themes so alert semantics never flip on toggle. */
+        --blue: #2563eb;
+        --blue-soft: rgba(37, 99, 235, 0.12);
+        --amber: #d97706;
+        --amber-soft: rgba(217, 119, 6, 0.15);
+        --red: #dc2626;
+        --red-soft: rgba(220, 38, 38, 0.15);
+        --green: #15803d;
+        --green-soft: rgba(21, 128, 61, 0.15);
+        --radius-card: 8px;
+        --radius-badge: 6px;
+        --radius-inline: 4px;
+        --font-sans: "Geist", system-ui, -apple-system, sans-serif;
+        --font-mono: "Geist Mono", "SF Mono", monospace;
+      }
+      :root,
+      [data-theme="dark"] {
         --bg: #0a0a0a;
         --bg-card: #111;
         --bg-elevated: #1a1a1a;
         --fg: #ededed;
-        --fg-secondary: #888;
-        --fg-muted: #666;
-        --border: #333;
-        --border-hover: #444;
-        --blue: #0070f3;
-        --red: #f31260;
-        --green: #17c964;
-        --amber: #f5a623;
-        --radius-card: 8px;
-        --radius-badge: 6px;
-        --radius-inline: 4px;
+        --fg-secondary: #a0a0a0;
+        --fg-muted: #6b6b6b;
+        --border: #262626;
+        --border-hover: #3a3a3a;
         --shadow:
-          0 0 0 1px rgba(255, 255, 255, 0.05), 0 4px 12px rgba(0, 0, 0, 0.4);
-        --font-sans: "Geist", system-ui, -apple-system, sans-serif;
-        --font-mono: "Geist Mono", "SF Mono", monospace;
+          0 0 0 1px rgba(255, 255, 255, 0.04),
+          0 4px 12px rgba(0, 0, 0, 0.45);
+      }
+      [data-theme="light"] {
+        --bg: #f7f8fa;
+        --bg-card: #ffffff;
+        --bg-elevated: #f1f3f5;
+        --fg: #0f172a;
+        --fg-secondary: #475569;
+        --fg-muted: #94a3b8;
+        --border: #e2e8f0;
+        --border-hover: #cbd5e1;
+        --shadow:
+          0 0 0 1px rgba(15, 23, 42, 0.04),
+          0 2px 6px rgba(15, 23, 42, 0.06);
       }
       html {
         background: var(--bg);
@@ -870,6 +911,15 @@
         <span class="last-update" id="last-update" aria-live="polite"></span>
         <a id="link-grafana" href="#" target="_blank" rel="noopener" class="window-btn" style="text-decoration:none;display:none">Grafana</a>
         <button
+          id="theme-toggle"
+          class="window-btn"
+          type="button"
+          aria-label="Toggle light or dark theme"
+          title="Toggle theme"
+        >
+          <span id="theme-toggle-label">Light</span>
+        </button>
+        <button
           id="ask-toggle"
           class="window-btn"
           type="button"
@@ -934,6 +984,17 @@
         <div class="insight-deploy" id="insight-deploy"></div>
       </div>
 
+      <!-- Top Failing Traces — leads the page so failures are the first thing
+           the operator sees. Populated from overview.recent_traces filtered to
+           success:false; hidden when the window is healthy. -->
+      <section id="failing-traces-section" aria-label="Top failing traces" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;margin-bottom:1.5rem;" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.75rem;">
+          <h2 style="font-size:1rem;font-weight:600;margin:0;">Top failing traces</h2>
+          <span style="font-size:0.75rem;color:var(--fg-muted);">click a row to open the story</span>
+        </div>
+        <div id="failing-traces-body" role="list"></div>
+      </section>
+
       <!-- KPI Cards -->
       <section aria-label="Key metrics">
         <h2 id="kpi-heading" style="scroll-margin-top: 24px">
@@ -966,13 +1027,18 @@
             <div class="value"></div>
           </div>
         </div>
+        <p style="font-size:0.75rem;color:var(--fg-muted);margin-top:0.5rem;">
+          Rollups count one root cause per failed request — not once per propagating hop.
+          Blast-radius counts downstream impact separately.
+        </p>
       </section>
 
-      <!-- Bento grid: chart left, incident triage right -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem;">
+      <!-- Bento grid: chart left, incident triage right. gap:1px + shared bg paints
+           hairline borders between tiles so sections touch with no visible gutter. -->
+      <div class="bento-grid" style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius-card);overflow:hidden;margin-bottom:1.5rem;">
 
         <!-- Left: Traffic chart -->
-        <section aria-label="Request and error rate chart" style="grid-row:1 / 3;">
+        <section aria-label="Request and error rate chart" style="grid-row:1 / 3;background:var(--bg-card);padding:16px;">
           <h2 style="scroll-margin-top: 24px">Traffic (1h)</h2>
           <div class="chart-container">
             <canvas
@@ -981,11 +1047,10 @@
               aria-label="Time-series chart of requests and error rate"
             ></canvas>
           </div>
-          <div id="what-changed" style="display:none;padding:12px;background:#1a1a1a;border-radius:8px;border:1px solid #333;margin-top:12px;"></div>
         </section>
 
         <!-- Right top: Failure Origin -->
-        <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;display:flex;flex-direction:column;" id="failure-origin-section">
+        <section style="background:var(--bg-card);padding:16px;display:flex;flex-direction:column;" id="failure-origin-section">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
             <h2 style="font-size:1rem;font-weight:600;">Most Likely Failure Origin</h2>
             <label style="font-size:0.75rem;color:var(--fg-secondary);cursor:pointer;">
@@ -998,7 +1063,7 @@
         </section>
 
         <!-- Right bottom: Who's Affected -->
-        <section style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;display:flex;flex-direction:column;" id="whos-affected-section">
+        <section style="background:var(--bg-card);padding:16px;display:flex;flex-direction:column;" id="whos-affected-section">
           <h2 style="font-size:1rem;font-weight:600;margin-bottom:12px;">Who's Affected</h2>
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.75rem;margin-bottom:1rem;">
             <div class="kpi-card"><div class="value" id="blast-requests">--</div><div class="label">Requests</div></div>
@@ -1009,6 +1074,12 @@
         </section>
 
       </div>
+
+      <!-- Deploy diff panel — recent deployments correlated with error-rate
+           change. Hidden by renderWhatChanged() when there's nothing to show. -->
+      <section aria-label="Recent deployments" style="margin-bottom:1.5rem;">
+        <div id="what-changed" style="display:none;padding:16px;background:var(--bg-card);border-radius:var(--radius-card);border:1px solid var(--border);"></div>
+      </section>
 
       <!-- Routes table -->
       <section aria-label="Routes">
@@ -1916,6 +1987,7 @@
             );
             const traces = Array.isArray(data) ? data : (Array.isArray(data.traces) ? data.traces : []);
             renderTraces(traces);
+            renderFailingTraces(traces);
           } catch (e) {
             console.error("Traces fetch error:", e);
           }
@@ -1988,7 +2060,7 @@
             return;
           }
           container.style.display = 'block';
-          var html = '<h3 style="color:#ededed;margin:0 0 8px">Recent Deployments</h3>';
+          var html = '<h3 style="color:var(--fg);font-size:1rem;font-weight:600;margin:0 0 8px">Recent Deployments</h3>';
           html += '<div style="display:flex;flex-direction:column;gap:4px">';
           for (var i = 0; i < deployments.length; i++) {
             var d = deployments[i];
@@ -1996,24 +2068,73 @@
             var isHot = d.error_rate_change != null && d.error_rate_change > 2.0;
             var newErrors = d.after_error_rate != null && d.after_error_rate > 0 &&
               (d.before_error_rate == null || d.before_error_rate === 0);
-            var color = isHot ? '#f5a623' : (newErrors ? '#f5a623' : '#888');
+            var hotColor = isHot || newErrors ? 'var(--amber)' : 'var(--fg-muted)';
             var rateText = '';
             if (d.error_rate_change != null) {
-              rateText = '<span style="color:' + color + '">' + d.error_rate_change.toFixed(1) + 'x error rate</span>';
+              rateText = '<span style="color:' + hotColor + '">' + d.error_rate_change.toFixed(1) + 'x error rate</span>';
             } else if (newErrors) {
-              rateText = '<span style="color:#f5a623">new errors appeared</span>';
+              rateText = '<span style="color:var(--amber)">new errors appeared</span>';
             } else {
-              rateText = '<span style="color:#555">insufficient data</span>';
+              rateText = '<span style="color:var(--fg-muted)">insufficient data</span>';
             }
             html += '<div style="display:flex;align-items:center;gap:8px;font-size:13px">' +
-              '<span style="background:#333;padding:2px 6px;border-radius:3px;color:#ccc">' + esc(d.service) + '</span>' +
-              '<span style="color:#aaa">' + esc(d.version || '') + '</span>' +
-              '<span style="color:#666">' + esc(ago) + '</span>' +
+              '<span style="background:var(--bg-elevated);padding:2px 6px;border-radius:var(--radius-inline);color:var(--fg-secondary);font-family:var(--font-mono)">' + esc(d.service) + '</span>' +
+              '<span style="color:var(--fg-secondary)">' + esc(d.version || '') + '</span>' +
+              '<span style="color:var(--fg-muted)">' + esc(ago) + '</span>' +
               rateText +
               '</div>';
           }
           html += '</div>';
           container.innerHTML = html;
+        }
+
+        // Recursively render a TreeNode from /v1/traces/story?format=tree.
+        // Span fields come from Go default casing (SpanID, Service, Success, ...)
+        // because tracestore.SpanRecord has no json tags.
+        function renderTreeNode(node, depth) {
+          if (!node || !node.Span) return '';
+          var s = node.Span;
+          var failed = s.Success === false;
+          var color = failed ? 'var(--red)' : 'var(--green)';
+          var indent = depth * 16;
+          var out = '<li style="padding:2px 0;padding-left:' + indent + 'px;color:var(--fg);">' +
+            '<span style="color:' + color + ';">' + (failed ? '✕' : '✓') + '</span> ' +
+            '<span style="color:var(--fg);">' + esc(s.Service || 'unknown') + '</span>' +
+            ' <span style="color:var(--fg-muted);">' + (s.StatusCode || 0) + ' · ' + nf.format(s.LatencyMs || 0) + 'ms</span>' +
+            (s.ErrorCode ? ' <span style="color:var(--red);">' + esc(s.ErrorCode) + '</span>' : '') +
+            '</li>';
+          if (node.Children && node.Children.length) {
+            node.Children.forEach(function (c) { out += renderTreeNode(c, depth + 1); });
+          }
+          return out;
+        }
+
+        // Populate the "Top failing traces" section from overview.recent_traces.
+        // Hides itself when there are no failures in the window.
+        function renderFailingTraces(traces) {
+          var section = document.getElementById('failing-traces-section');
+          var body = document.getElementById('failing-traces-body');
+          if (!section || !body) return;
+          var failures = (traces || []).filter(function (t) { return t.success === false; }).slice(0, 5);
+          if (failures.length === 0) {
+            section.hidden = true;
+            body.innerHTML = '';
+            return;
+          }
+          section.hidden = false;
+          var html = '';
+          failures.forEach(function (t) {
+            var code = t.status_code || 0;
+            var cls = code >= 500 ? 'var(--red)' : (code >= 400 ? 'var(--amber)' : 'var(--fg-muted)');
+            html += '<a href="#" role="listitem" class="trace-link" data-trace="' + esc(t.trace_id) + '"' +
+              ' style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);text-decoration:none;color:var(--fg);">' +
+              '<span style="color:' + cls + ';font-family:var(--font-mono);font-weight:500;min-width:3ch;">' + code + '</span>' +
+              '<span style="font-family:var(--font-mono);color:var(--fg-secondary);">' + esc(t.trace_id.slice(0, 16)) + '…</span>' +
+              '<span style="color:var(--fg);flex:1;">' + esc(t.event_name || '') + '</span>' +
+              '<span style="color:var(--fg-muted);">' + nf.format(t.latency_ms || 0) + 'ms</span>' +
+              '</a>';
+          });
+          body.innerHTML = html;
         }
 
         function deployTimeAgo(date) {
@@ -2038,7 +2159,7 @@
 
           try {
             const data = await fetchJSON(
-              "/v1/traces/story?trace_id=" + encodeURIComponent(traceId),
+              "/v1/traces/story?trace_id=" + encodeURIComponent(traceId) + "&format=tree",
             );
             var html = "";
 
@@ -2083,6 +2204,16 @@
               html += "</div>";
             } else {
               html += '<div class="empty">No hops found</div>';
+            }
+
+            // Span tree (format=tree). Rendered as a nested list so operators
+            // can see fan-out, not just the root-cause chain.
+            if (data.story && data.story.tree && data.story.tree.length > 0) {
+              html += '<div class="span-tree" style="margin-top:16px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius-card);">';
+              html += '<h3 style="font-size:0.875rem;font-weight:600;margin:0 0 8px;color:var(--fg-secondary);">Span tree</h3>';
+              html += '<ul style="list-style:none;margin:0;padding:0;font-family:var(--font-mono);font-size:12px;">';
+              data.story.tree.forEach(function (n) { html += renderTreeNode(n, 0); });
+              html += '</ul></div>';
             }
 
             // Context panel
@@ -2186,6 +2317,29 @@
         }
 
         // --- Init & auto-refresh ---
+
+        // Theme toggle — persists across reloads; pre-paint script in <head>
+        // handles the initial apply so this block only covers user-driven flips.
+        (function () {
+          var btn = document.getElementById("theme-toggle");
+          var label = document.getElementById("theme-toggle-label");
+          var meta = document.getElementById("theme-color-meta");
+          if (!btn || !label) return;
+          function syncLabel() {
+            var cur = document.documentElement.getAttribute("data-theme") || "dark";
+            label.textContent = cur === "dark" ? "Light" : "Dark";
+            if (meta) meta.content = cur === "dark" ? "#0a0a0a" : "#f7f8fa";
+          }
+          syncLabel();
+          btn.addEventListener("click", function () {
+            var cur = document.documentElement.getAttribute("data-theme") || "dark";
+            var next = cur === "dark" ? "light" : "dark";
+            document.documentElement.setAttribute("data-theme", next);
+            document.documentElement.style.colorScheme = next;
+            try { localStorage.setItem("waylog-theme", next); } catch (_) {}
+            syncLabel();
+          });
+        })();
 
         const askToggle = document.getElementById("ask-toggle");
         const askClose = document.getElementById("ask-close");
