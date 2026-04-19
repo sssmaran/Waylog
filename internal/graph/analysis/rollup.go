@@ -57,6 +57,12 @@ type RollupSummary struct {
 	LatencyP99 int64
 }
 
+// RollupSource is the minimal request-fact producer RollupWindow needs.
+// Both *store.Store and the tools-layer Store interface satisfy this.
+type RollupSource interface {
+	ForEachRequestFact(start, end time.Time, fn func(store.RequestFacts))
+}
+
 // RollupWindow computes root-cause-counted rollups for all requests seen
 // between [start, end].
 //
@@ -66,7 +72,7 @@ type RollupSummary struct {
 // for a failed request — for instance during a partial replay — the request
 // still counts toward TotalFailures but contributes nothing to
 // PrimaryErrorCount.
-func RollupWindow(g *core.Graph, s *store.Store, ts *tracestore.Store, start, end time.Time) RollupSummary {
+func RollupWindow(g *core.Graph, s RollupSource, ts *tracestore.Store, start, end time.Time) RollupSummary {
 	out := RollupSummary{
 		Start:               start,
 		End:                 end,

@@ -133,12 +133,9 @@ func handleFailurePatterns(ctx context.Context, store Store, params json.RawMess
 		}
 		end := time.Now()
 		start := end.Add(-d)
-		sum := store.SummarizeWindow(start, end)
-		patterns := analysis.DetectFailurePatternsFromSummary(sum)
 		g := store.Snapshot()
-		for i := range patterns {
-			patterns[i].ErrorCode = errorCodeForID(g, patterns[i].ErrorCode)
-		}
+		rollup := analysis.RollupWindow(g, store, traceStoreFrom(store), start, end)
+		patterns := analysis.FailurePatternsFromRollup(rollup)
 		page, totalCount, hasMore := applyPagination(patterns, input.Limit, input.Offset)
 		return patternsOutput{SchemaVersion: "1.0", Patterns: page, TotalCount: totalCount, HasMore: hasMore}, nil
 	}

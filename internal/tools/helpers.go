@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 )
 
@@ -149,19 +148,6 @@ func mapCountToTopUsers(m map[string]int, n int) []blastUser {
 	out := make([]blastUser, 0, n)
 	for i := 0; i < n; i++ {
 		out = append(out, blastUser{UserID: pairs[i].id, Count: pairs[i].count})
-	}
-	return out
-}
-
-func mapDiffEntries(g *core.Graph, entries []analysis.DiffEntry) []diffEntry {
-	out := make([]diffEntry, 0, len(entries))
-	for _, e := range entries {
-		out = append(out, diffEntry{
-			ErrorCode: errorCodeForID(g, e.ErrorCode),
-			Before:    e.Before,
-			After:     e.After,
-			Delta:     e.Delta,
-		})
 	}
 	return out
 }

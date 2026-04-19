@@ -912,15 +912,6 @@ type overviewErrorEntry struct {
 	Count int    `json:"count"`
 }
 
-type overviewRollup struct {
-	TotalRequests  int
-	TotalFailures  int
-	P50            int64
-	P95            int64
-	P99            int64
-	TopErrorByCode map[string]int
-}
-
 // Ask handles POST /v1/ask and returns an LLM answer backed by graph tools.
 func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1341,24 +1332,20 @@ func recentTracesFromGraphPaginated(g *core.Graph, limit int, failuresOnly bool,
 func (s *Server) overviewPayload(dur time.Duration, limit int) map[string]any {
 	now := time.Now()
 	start := now.Add(-dur)
-	summary := s.store.SummarizeWindow(start, now)
 	snap := s.store.Snapshot()
 
 	recent := recentTracesFromGraph(snap, limit, false)
-	rollup := summarizeOverviewFromGraph(snap, start, now)
-
-	totalRequests := summary.TotalRequests
-	totalFailures := summary.TotalFailures
+	rollup := analysis.RollupWindow(snap, s.store, s.traceStore, start, now)
 
 	errorRate := 0.0
 	if unsampledTotal, unsampledErrors := s.counters.Sum(dur); unsampledTotal > 0 {
 		errorRate = float64(unsampledErrors) / float64(unsampledTotal) * 100
-	} else if totalRequests > 0 {
-		errorRate = float64(totalFailures) / float64(totalRequests) * 100
+	} else if rollup.TotalRequests > 0 {
+		errorRate = float64(rollup.TotalFailures) / float64(rollup.TotalRequests) * 100
 	}
 
-	var topErrors []overviewErrorEntry
-	for code, count := range rollup.TopErrorByCode {
+	topErrors := make([]overviewErrorEntry, 0, len(rollup.PrimaryErrorCount))
+	for code, count := range rollup.PrimaryErrorCount {
 		topErrors = append(topErrors, overviewErrorEntry{Code: code, Count: count})
 	}
 	sort.Slice(topErrors, func(i, j int) bool {
@@ -1372,12 +1359,12 @@ func (s *Server) overviewPayload(dur time.Duration, limit int) map[string]any {
 
 	return map[string]any{
 		"window":                 dur.String(),
-		"total_requests":         totalRequests,
-		"total_failures":         totalFailures,
+		"total_requests":         rollup.TotalRequests,
+		"total_failures":         rollup.TotalFailures,
 		"error_rate":             errorRate,
-		"p50":                    rollup.P50,
-		"p95":                    rollup.P95,
-		"p99":                    rollup.P99,
+		"p50":                    rollup.LatencyP50,
+		"p95":                    rollup.LatencyP95,
+		"p99":                    rollup.LatencyP99,
 		"sampled":                s.sampleRatePct < 100,
 		"top_errors":             topErrors,
 		"recent_traces":          recent,
@@ -1570,34 +1557,6 @@ func (s *Server) OverviewTimeseries(w http.ResponseWriter, r *http.Request) {
 	payload := s.timeseriesPayload(window, step)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(payload)
-}
-
-func summarizeOverviewFromGraph(g *core.Graph, start, end time.Time) overviewRollup {
-	rollup := overviewRollup{TopErrorByCode: map[string]int{}}
-	var latencies []int64
-	for reqID, n := range g.Nodes {
-		if n.Type != core.NodeRequest || n.LastSeen.IsZero() || n.LastSeen.Before(start) || n.LastSeen.After(end) {
-			continue
-		}
-		rollup.TotalRequests++
-		if requestNodeFailed(n) {
-			rollup.TotalFailures++
-		}
-		if lat := attrToInt64(n.Attr["latency_ms"]); lat > 0 {
-			latencies = append(latencies, lat)
-		}
-		if code, ok := primaryRequestErrorCode(g, reqID, n); ok {
-			rollup.TopErrorByCode[code]++
-		}
-	}
-	if len(latencies) == 0 {
-		return rollup
-	}
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	rollup.P50 = percentile(latencies, 50)
-	rollup.P95 = percentile(latencies, 95)
-	rollup.P99 = percentile(latencies, 99)
-	return rollup
 }
 
 func percentile(sorted []int64, pct int) int64 {
@@ -1900,51 +1859,6 @@ func attrToInt(v any) int {
 		}
 	}
 	return 0
-}
-
-func primaryRequestErrorCode(g *core.Graph, reqID string, req core.Node) (string, bool) {
-	if req.Attr != nil {
-		// Prefer singular request-level code (typically first failure encountered).
-		if code, ok := req.Attr["error_code"].(string); ok && code != "" {
-			return code, true
-		}
-	}
-
-	codeSet := map[string]struct{}{}
-	if req.Attr != nil {
-		for _, c := range anyToStringSlice(req.Attr["error_codes"]) {
-			if c != "" {
-				codeSet[c] = struct{}{}
-			}
-		}
-	}
-
-	// Fallback: derive from request->error edges in case attrs are missing.
-	if len(codeSet) == 0 {
-		for _, e := range g.OutEdges[reqID] {
-			if e.Type != core.EdgeFailedWith {
-				continue
-			}
-			n, ok := g.Nodes[e.To]
-			if !ok || n.Type != core.NodeError || n.Attr == nil {
-				continue
-			}
-			if code, ok := n.Attr["code"].(string); ok && code != "" {
-				codeSet[code] = struct{}{}
-			}
-		}
-	}
-
-	if len(codeSet) == 0 {
-		return "", false
-	}
-
-	codes := make([]string, 0, len(codeSet))
-	for c := range codeSet {
-		codes = append(codes, c)
-	}
-	sort.Strings(codes)
-	return codes[0], true
 }
 
 func anyToStringSlice(v any) []string {

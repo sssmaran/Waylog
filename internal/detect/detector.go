@@ -63,17 +63,18 @@ func (d *Detector) Run(ctx context.Context) {
 
 func (d *Detector) tick(ctx context.Context) {
 	now := time.Now().UTC()
+	snap := d.store.Snapshot()
 
 	// Current window: [now - current, now)
 	currStart := now.Add(-d.cfg.CurrentWindow)
-	currSummary := d.store.SummarizeWindow(currStart, now)
+	currRollup := analysis.RollupWindow(snap, d.store, d.traces, currStart, now)
 
 	// Baseline window: [now - current - baseline, now - current)
 	baseEnd := currStart
 	baseStart := baseEnd.Add(-d.cfg.BaselineWindow)
-	baseSummary := d.store.SummarizeWindow(baseStart, baseEnd)
+	baseRollup := analysis.RollupWindow(snap, d.store, d.traces, baseStart, baseEnd)
 
-	diff := analysis.DiffSummaries(baseSummary, currSummary)
+	diff := analysis.DiffRollups(baseRollup, currRollup)
 
 	// Find the top spiking error code that meets thresholds.
 	topCode, topAfter, topBefore, topLift := d.findTopSpike(diff)

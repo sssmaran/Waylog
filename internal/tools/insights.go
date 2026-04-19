@@ -8,7 +8,6 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
-	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 )
 
 type explainRequestInput struct {
@@ -109,63 +108,21 @@ func handleInsights(ctx context.Context, store Store, params json.RawMessage) (a
 	}
 
 	g := store.Snapshot()
-
+	end := time.Now()
+	var start time.Time
 	if input.Window != "" {
 		d, err := time.ParseDuration(input.Window)
 		if err != nil {
 			return nil, &ToolError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid window: %v", err)}
 		}
-		end := time.Now()
-		start := end.Add(-d)
-		sum := store.SummarizeWindow(start, end)
-
-		errorCounts := map[string]int{}
-		total := 0
-		for errID, count := range sum.ErrorCount {
-			code := errorCodeForID(g, errID)
-			errorCounts[code] += count
-			total += count
-		}
-
-		serviceCounts := map[string]int{}
-		for svcID, errs := range sum.ServiceErrorCount {
-			name := serviceNameForID(g, svcID)
-			for _, count := range errs {
-				serviceCounts[name] += count
-			}
-		}
-
-		return insightsOutput{
-			SchemaVersion: "1.0",
-			TotalFailures: total,
-			TopErrors:     mapCountToTopErrors(errorCounts, input.TopErrors),
-			TopServices:   mapCountToTopServices(serviceCounts, input.TopServices),
-		}, nil
+		start = end.Add(-d)
 	}
 
-	errorCounts := map[string]int{}
-	serviceCounts := map[string]int{}
-	total := 0
-	store.ForEachRequestFact(time.Time{}, time.Now(), func(f graphstore.RequestFacts) {
-		if len(f.Errors) == 0 {
-			return
-		}
-		for _, code := range f.Errors {
-			if code == "" {
-				continue
-			}
-			errorCounts[code]++
-			total++
-			for _, svc := range f.Services {
-				serviceCounts[svc]++
-			}
-		}
-	})
-
+	sum := analysis.RollupWindow(g, store, traceStoreFrom(store), start, end)
 	return insightsOutput{
 		SchemaVersion: "1.0",
-		TotalFailures: total,
-		TopErrors:     mapCountToTopErrors(errorCounts, input.TopErrors),
-		TopServices:   mapCountToTopServices(serviceCounts, input.TopServices),
+		TotalFailures: sum.TotalFailures,
+		TopErrors:     mapCountToTopErrors(sum.PrimaryErrorCount, input.TopErrors),
+		TopServices:   mapCountToTopServices(sum.ServiceFailureCount, input.TopServices),
 	}, nil
 }

@@ -97,6 +97,21 @@ func DetectFailurePatterns(g *core.Graph) []FailurePattern {
 	return out
 }
 
+// FailurePatternsFromRollup builds failure patterns from a root-cause-counted
+// [RollupSummary]. This is the canonical path for failure_patterns in the
+// default rollup contract — use it instead of DetectFailurePatternsFromSummary,
+// which retains propagation-counted semantics for detail surfaces.
+func FailurePatternsFromRollup(r RollupSummary) []FailurePattern {
+	out := make([]FailurePattern, 0, len(r.PrimaryErrorCount))
+	for code, count := range r.PrimaryErrorCount {
+		out = append(out, FailurePattern{
+			ErrorCode: code,
+			Count:     count,
+		})
+	}
+	return out
+}
+
 // DetectFailurePatternsFromSummary builds failure patterns
 // using window summaries instead of graph traversal.
 func DetectFailurePatternsFromSummary(sum store.WindowSummary) []FailurePattern {

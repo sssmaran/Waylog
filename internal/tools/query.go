@@ -11,6 +11,22 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/query"
 )
 
+// mapRollupDiffEntries converts DiffEntry rows that already carry canonical
+// error codes (as produced by DiffRollups) into the tool-layer response shape.
+// No id→code translation is needed.
+func mapRollupDiffEntries(entries []analysis.DiffEntry) []diffEntry {
+	out := make([]diffEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, diffEntry{
+			ErrorCode: e.ErrorCode,
+			Before:    e.Before,
+			After:     e.After,
+			Delta:     e.Delta,
+		})
+	}
+	return out
+}
+
 type queryInput struct {
 	Expr   string `json:"expr"`
 	Window string `json:"window"`
@@ -136,17 +152,18 @@ func handleCompareWindows(ctx context.Context, store Store, params json.RawMessa
 		baseStart = baseEnd.Add(-baseDur)
 	}
 
-	curr := store.SummarizeWindow(currStart, currEnd)
-	base := store.SummarizeWindow(baseStart, baseEnd)
-	diff := analysis.DiffSummaries(base, curr)
 	g := store.Snapshot()
+	ts := traceStoreFrom(store)
+	curr := analysis.RollupWindow(g, store, ts, currStart, currEnd)
+	base := analysis.RollupWindow(g, store, ts, baseStart, baseEnd)
+	diff := analysis.DiffRollups(base, curr)
 
 	return diffOutput{
 		SchemaVersion:       "1.0",
-		New:                 mapDiffEntries(g, diff.New),
-		Removed:             mapDiffEntries(g, diff.Removed),
-		Increased:           mapDiffEntries(g, diff.Increased),
-		Decreased:           mapDiffEntries(g, diff.Decreased),
+		New:                 mapRollupDiffEntries(diff.New),
+		Removed:             mapRollupDiffEntries(diff.Removed),
+		Increased:           mapRollupDiffEntries(diff.Increased),
+		Decreased:           mapRollupDiffEntries(diff.Decreased),
 		TotalRequestsBefore: diff.TotalRequestsBefore,
 		TotalRequestsAfter:  diff.TotalRequestsAfter,
 		TotalFailuresBefore: diff.TotalFailuresBefore,
