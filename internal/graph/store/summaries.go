@@ -5,6 +5,22 @@ import (
 	"time"
 )
 
+// WindowSummary is the PROPAGATION-COUNTED window summary: every error code
+// on a failed request is tallied once per occurrence, so a payment→checkout
+// →api-gateway cascade with three distinct codes contributes three entries
+// (not one) to ErrorCount.
+//
+// This spread is correct for detail surfaces — trace stories, blast radius,
+// failure chains — that intentionally show how a failure propagated. It is
+// WRONG for default user-facing rollups (top errors, overview KPIs,
+// compare_windows, spike detection), which should count one root-cause
+// error per failed request. Those surfaces MUST consume
+// analysis.RollupWindow / analysis.RollupSummary instead.
+//
+// New callers introducing default rollups on WindowSummary will re-introduce
+// the PMT_502=9-not-3 cascade-amplification bug. Bind the result to a
+// variable named propagationSummary (or equivalent) so the review trail
+// reflects the propagation-counted semantics.
 type WindowSummary struct {
 	Start time.Time
 	End   time.Time
@@ -22,6 +38,8 @@ type WindowSummary struct {
 	FlagErrorCount    map[string]map[string]int
 }
 
+// SummarizeWindow returns the propagation-counted [WindowSummary]. See the
+// WindowSummary doc for when to use it vs analysis.RollupWindow.
 func (s *Store) SummarizeWindow(start, end time.Time) WindowSummary {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

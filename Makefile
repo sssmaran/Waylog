@@ -79,12 +79,16 @@ vet-sdk: ## Vet SDK modules
 	cd pkg && go vet ./...
 	cd pkg/transport/kafka && go vet ./...
 
-ci: fmt vet vet-sdk test-race test-sdk check-doc-links
+ci: fmt vet vet-sdk test-race test-sdk check-doc-links check-rollup-contract
 	@echo "CI checks passed"
 
 .PHONY: check-doc-links
 check-doc-links:
 	@bash scripts/check-doc-links.sh
+
+.PHONY: check-rollup-contract
+check-rollup-contract:
+	@bash scripts/check-rollup-contract.sh
 
 clean:
 	rm -f ingest checkout waylog bridge api-gateway checkout-demo db-demo payment-demo waylog-live
