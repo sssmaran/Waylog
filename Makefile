@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test
 
 help:
 	@echo "Targets:"
@@ -79,8 +79,17 @@ vet-sdk: ## Vet SDK modules
 	cd pkg && go vet ./...
 	cd pkg/transport/kafka && go vet ./...
 
-ci: fmt vet vet-sdk test-race test-sdk check-doc-links check-rollup-contract
+ci: fmt vet vet-sdk test-race test-sdk ts-test check-doc-links check-rollup-contract
 	@echo "CI checks passed"
+
+ts-install: ## Install TS SDK deps (skipped if node_modules is already present)
+	@cd packages/waylog-ts && ( test -d node_modules || npm install --silent )
+
+ts-build: ts-install ## Type-check + build TS SDK
+	cd packages/waylog-ts && npm run build
+
+ts-test: ts-install ## Run TS SDK vitest suite
+	cd packages/waylog-ts && npm test
 
 .PHONY: check-doc-links
 check-doc-links:
