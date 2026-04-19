@@ -27,6 +27,7 @@ type Model struct {
 	story         StoryModel
 	api           *APIClient
 	pollInterval  time.Duration
+	stream        <-chan tea.Msg // non-nil in dev mode
 }
 
 func NewModel(client *APIClient, interval time.Duration) Model {
@@ -39,7 +40,17 @@ func NewModel(client *APIClient, interval time.Duration) Model {
 	}
 }
 
+// WithStream enables dev mode: the model reads live overview events from ch
+// instead of polling /v1/overview on a fixed interval.
+func (m Model) WithStream(ch <-chan tea.Msg) Model {
+	m.stream = ch
+	return m
+}
+
 func (m Model) Init() tea.Cmd {
+	if m.stream != nil {
+		return tea.Batch(m.api.FetchOverview("5m", 20), WaitForStream(m.stream))
+	}
 	return tea.Batch(m.api.FetchOverview("5m", 20), m.tick())
 }
 
@@ -57,11 +68,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.api.FetchOverview("5m", 20), m.tick())
 	case overviewMsg:
 		m.dashboard.UpdateOverview(OverviewResponse(msg))
+		if m.stream != nil {
+			return m, WaitForStream(m.stream)
+		}
 	case storyMsg:
 		m.story.UpdateStory(StoryResponse(msg))
 		m.activeView = viewStory
 	case errMsg:
 		m.dashboard.SetError(msg.err)
+		if m.stream != nil {
+			// Stream died — fall back to polling so the TUI keeps working.
+			m.stream = nil
+			return m, m.tick()
+		}
 	}
 	return m, nil
 }
