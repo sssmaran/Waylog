@@ -38,6 +38,7 @@ profile.cov
 /bridge
 /waylog-live
 /api-gateway
+/bin/
 /checkout-demo
 /db-demo
 /payment-demo
