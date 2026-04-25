@@ -1,0 +1,19 @@
+{
+  "schema_version": "2.0",
+  "event_id": "00000000-0000-4000-8000-000000000004",
+  "ts_start": "2026-04-25T14:03:00.000Z",
+  "ts_end": "2026-04-25T14:03:00.030Z",
+  "duration_ms": 30,
+  "kind": "http",
+  "service": "checkout",
+  "env": "test",
+  "trace_id": "44444444444444444444444444444444",
+  "span_id": "5555555555555555",
+  "parent_span_id": "",
+  "status": "aborted",
+  "anchor": { "step": "request", "error_code": "WAYLOG_ABORTED" },
+  "steps": [],
+  "logs": [],
+  "fields": { "http": { "method": "POST", "route": "/checkout" } },
+  "errors": []
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": "2.0",
+  "event_id": "00000000-0000-4000-8000-000000000006",
+  "ts_start": "2026-04-25T14:05:00.000Z",
+  "ts_end": "2026-04-25T14:05:00.015Z",
+  "duration_ms": 15,
+  "kind": "http",
+  "service": "checkout",
+  "env": "test",
+  "trace_id": "66666666666666666666666666666666",
+  "span_id": "7777777777777777",
+  "parent_span_id": "",
+  "status": "error",
+  "anchor": { "step": "request", "error_code": "WAYLOG_PANIC" },
+  "steps": [],
+  "logs": [],
+  "fields": { "http": { "method": "POST", "route": "/checkout", "status": 500 } },
+  "errors": [{ "code": "WAYLOG_PANIC", "reason": "runtime panic recovered" }]
+}

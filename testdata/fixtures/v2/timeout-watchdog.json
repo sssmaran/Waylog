@@ -1,0 +1,22 @@
+{
+  "schema_version": "2.0",
+  "event_id": "00000000-0000-4000-8000-000000000003",
+  "ts_start": "2026-04-25T14:02:00.000Z",
+  "ts_end": "2026-04-25T14:02:05.000Z",
+  "duration_ms": 5000,
+  "kind": "http",
+  "service": "checkout",
+  "env": "test",
+  "trace_id": "33333333333333333333333333333333",
+  "span_id": "4444444444444444",
+  "parent_span_id": "",
+  "status": "timeout",
+  "anchor": { "step": "payment.charge", "error_code": "WAYLOG_TIMEOUT" },
+  "steps": [
+    { "name": "db.load_cart", "start_ms": 0, "duration_ms": 8, "status": "ok" },
+    { "name": "payment.charge", "start_ms": 10, "duration_ms": 4980, "status": "ok" }
+  ],
+  "logs": [],
+  "fields": { "http": { "method": "POST", "route": "/checkout" } },
+  "errors": []
+}
