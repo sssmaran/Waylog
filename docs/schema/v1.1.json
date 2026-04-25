@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waylog.dev/schema/v1.1.json",
+  "title": "Waylog Wide Event v1.1 (bridge)",
+  "type": "object",
+  "required": ["schema_version", "event_name", "timestamp", "request", "system", "outcome"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^1\\.[0-9]+$" },
+    "event_name": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "user": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "tier": { "type": "string" },
+        "region": { "type": "string" },
+        "vip": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "request": {
+      "type": "object",
+      "required": ["trace_id"],
+      "properties": {
+        "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "span_id": { "type": "string" },
+        "parent_span_id": { "type": "string" },
+        "http_method": { "type": "string" },
+        "route_template": { "type": "string" },
+        "flow": { "type": "string" },
+        "feature_flags": { "type": "array", "items": { "type": "string" } },
+        "correlation_id": { "type": "string" },
+        "attempt": { "type": "integer" },
+        "transport_kind": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "system": {
+      "type": "object",
+      "required": ["service", "env"],
+      "properties": {
+        "service": { "type": "string" },
+        "version": { "type": "string" },
+        "deployment_id": { "type": "string" },
+        "env": { "type": "string" },
+        "downstream_service": { "type": "string" },
+        "caller_service": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["success", "status_code", "kind"],
+      "properties": {
+        "success": { "type": "boolean" },
+        "status_code": { "type": "integer" },
+        "kind": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "path": { "type": "string" },
+        "message": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "latency_ms": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "parent_request_id": { "type": "string" },
+    "metadata": { "type": "object" },
+    "retry": {
+      "type": "object",
+      "properties": {
+        "of": { "type": "integer" },
+        "previous_attempt_id": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
