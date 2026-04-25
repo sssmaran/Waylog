@@ -1,0 +1,18 @@
+{
+  "schema_version": "2.0",
+  "event_id": "00000000-0000-4000-8000-000000000005",
+  "ts_start": "2026-04-25T14:04:00.000Z",
+  "ts_end": "2026-04-25T14:04:00.002Z",
+  "duration_ms": 2,
+  "kind": "http",
+  "service": "checkout",
+  "env": "test",
+  "trace_id": "55555555555555555555555555555555",
+  "span_id": "6666666666666666",
+  "parent_span_id": "",
+  "status": "suppressed",
+  "steps": [],
+  "logs": [],
+  "fields": { "http": { "method": "GET", "route": "/healthz", "status": 200 } },
+  "errors": []
+}
