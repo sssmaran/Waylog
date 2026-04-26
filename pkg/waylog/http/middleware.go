@@ -159,6 +159,9 @@ func (w *statusWriter) Header() http.Header {
 }
 
 func (w *statusWriter) WriteHeader(statusCode int) {
+	if w.wroteHeader {
+		return
+	}
 	w.status = statusCode
 	w.wroteHeader = true
 	waylogv2.SetHTTPStatus(w.ctx, statusCode)

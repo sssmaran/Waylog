@@ -778,6 +778,55 @@ func TestIngestURLRoutesFinalEventToTransport(t *testing.T) {
 	}
 }
 
+func TestInvalidIngestURLRejectsInit(t *testing.T) {
+	resetForTest()
+	if err := Init(Config{Service: "checkout", Env: "test", IngestURL: "localhost:8080"}); err == nil {
+		t.Fatal("expected invalid IngestURL error")
+	}
+	if getState() != nil {
+		t.Fatal("invalid Init must not install SDK state")
+	}
+}
+
+func TestMaxInFlightBytesDropsOversizedTransportEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("oversized event should be rejected before transport POST")
+	}))
+	defer srv.Close()
+
+	newHarness(t, Config{IngestURL: srv.URL, MaxInFlightBytes: 32})
+	ctx := Begin(context.Background(), BeginOptions{})
+	if _, err := Finalize(ctx); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	if got := Stats().EventsDropped; got != 1 {
+		t.Fatalf("EventsDropped=%d want 1", got)
+	}
+}
+
+func TestMaxEventsPerSecDropsOKBeforePriority(t *testing.T) {
+	h := newHarness(t, Config{MaxEventsPerSec: 1})
+
+	ok1 := Begin(context.Background(), BeginOptions{})
+	_, _ = Finalize(ok1)
+
+	ok2 := Begin(context.Background(), BeginOptions{})
+	_, _ = Finalize(ok2)
+
+	boom := Begin(context.Background(), BeginOptions{})
+	Fail(boom, NewError("BOOM"))
+	_, _ = Finalize(boom)
+
+	lines := bytes.Split(bytes.TrimSpace(h.buf.Bytes()), []byte{'\n'})
+	if len(lines) != 2 {
+		t.Fatalf("emitted lines=%d want 2; output=%s", len(lines), h.buf.String())
+	}
+	if got := Stats().EventsDropped; got != 1 {
+		t.Fatalf("EventsDropped=%d want 1", got)
+	}
+}
+
 func TestDevModeEmitsPrettyLogsAndFinalEvent(t *testing.T) {
 	h := newHarness(t, Config{DevMode: true})
 	h.captureDevOutput()

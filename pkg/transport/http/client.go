@@ -6,11 +6,19 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
+)
+
+const (
+	defaultMaxRetries = 5
+	defaultBackoffMin = 100 * time.Millisecond
+	defaultBackoffMax = 5 * time.Second
 )
 
 type Config struct {
@@ -24,6 +32,7 @@ type Config struct {
 	BatchAgeMs   int
 	OkBudgetPct  int
 	InFlightCap  int64
+	MaxRetries   int
 }
 
 type Client struct {
@@ -32,9 +41,12 @@ type Client struct {
 	http   *http.Client
 	queue  *queue
 	closed sync.Once
+
+	dropped  atomic.Int64
+	failures atomic.Int64
 }
 
-func New(cfg Config) *Client {
+func New(cfg Config) (*Client, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
@@ -53,32 +65,51 @@ func New(cfg Config) *Client {
 	if cfg.InFlightCap <= 0 {
 		cfg.InFlightCap = 10 << 20
 	}
+	if cfg.MaxRetries <= 0 {
+		cfg.MaxRetries = defaultMaxRetries
+	}
+
+	ingestURL, ok := NormalizeIngestURL(cfg.IngestURL)
+	if !ok {
+		return nil, &InvalidIngestURLError{URL: cfg.IngestURL}
+	}
 
 	c := &Client{
 		cfg:  cfg,
-		url:  normalizeIngestURL(cfg.IngestURL),
+		url:  ingestURL,
 		http: &http.Client{Timeout: cfg.Timeout},
 	}
 	if cfg.BatchMode {
-		c.queue = newQueue(cfg, c.flushBatch)
+		c.queue = newQueue(cfg, c.flushBatch, c.recordDrop)
 		go c.queue.run()
 	}
-	return c
+	return c, nil
 }
 
-func normalizeIngestURL(raw string) string {
+type InvalidIngestURLError struct {
+	URL string
+}
+
+func (e *InvalidIngestURLError) Error() string {
+	return "waylog transport: invalid ingest URL " + strconv.Quote(e.URL)
+}
+
+func NormalizeIngestURL(raw string) (string, bool) {
 	raw = strings.TrimRight(raw, "/")
 	if raw == "" {
-		return ""
+		return "", true
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
+		return "", false
 	}
-	if strings.HasSuffix(raw, "/v1/events") {
-		return raw
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", false
 	}
-	return raw + "/v1/events"
+	if strings.HasSuffix(u.Path, "/v1/events") {
+		return raw, true
+	}
+	return raw + "/v1/events", true
 }
 
 func (c *Client) Submit(ev *eventv2.Event) bool {
@@ -86,7 +117,11 @@ func (c *Client) Submit(ev *eventv2.Event) bool {
 		return false
 	}
 	if c.queue != nil {
-		return c.queue.enqueue(ev)
+		if c.queue.enqueue(ev) {
+			return true
+		}
+		c.recordDrop(1)
+		return false
 	}
 	return c.submitSingle(ev)
 }
@@ -105,10 +140,12 @@ func (c *Client) submitSingle(ev *eventv2.Event) bool {
 	}
 	raw, err := json.Marshal(ev)
 	if err != nil {
+		c.recordDrop(1)
 		return false
 	}
 	req, err := http.NewRequest(http.MethodPost, c.url, bytes.NewReader(raw))
 	if err != nil {
+		c.recordDrop(1)
 		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -117,9 +154,48 @@ func (c *Client) submitSingle(ev *eventv2.Event) bool {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.recordFailure(1)
 		return false
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true
+	}
+	if isRetryableStatus(resp.StatusCode) {
+		c.recordFailure(1)
+	} else {
+		c.recordDrop(1)
+	}
+	return false
+}
+
+func (c *Client) Dropped() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.dropped.Load()
+}
+
+func (c *Client) Failures() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.failures.Load()
+}
+
+func (c *Client) recordDrop(n int) {
+	if n > 0 {
+		c.dropped.Add(int64(n))
+	}
+}
+
+func (c *Client) recordFailure(n int) {
+	if n > 0 {
+		c.failures.Add(int64(n))
+	}
+}
+
+func isRetryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
 }

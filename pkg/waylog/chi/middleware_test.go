@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,13 +18,30 @@ import (
 
 const schemaPath = "../../../docs/schema/v2.0.json"
 
-func newHarness(t *testing.T, cfg waylogv2.Config) *bytes.Buffer {
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+func newHarness(t *testing.T, cfg waylogv2.Config) *lockedBuffer {
 	t.Helper()
 	deadline, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_ = waylogv2.Shutdown(deadline)
 
-	buf := &bytes.Buffer{}
+	buf := &lockedBuffer{}
 	if cfg.Service == "" {
 		cfg.Service = "checkout"
 	}
@@ -37,7 +55,7 @@ func newHarness(t *testing.T, cfg waylogv2.Config) *bytes.Buffer {
 	return buf
 }
 
-func lastEvent(t *testing.T, buf *bytes.Buffer) *eventv2.Event {
+func lastEvent(t *testing.T, buf *lockedBuffer) *eventv2.Event {
 	t.Helper()
 	var ev eventv2.Event
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &ev); err != nil {
@@ -89,5 +107,28 @@ func TestMiddlewareTimeoutUsesSharedLifecycle(t *testing.T) {
 	}
 	if ev.Anchor == nil || ev.Anchor.ErrorCode != eventv2.CodeTimeout {
 		t.Fatalf("timeout anchor wrong: %+v", ev.Anchor)
+	}
+}
+
+func TestMiddlewarePanicKeepsRouteTemplate(t *testing.T) {
+	buf := newHarness(t, waylogv2.Config{})
+
+	r := chi.NewRouter()
+	r.Use(Middleware)
+	r.Get("/panic/{id}", func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/panic/42", nil)
+	r.ServeHTTP(rr, req)
+
+	ev := lastEvent(t, buf)
+	if ev.Status != eventv2.StatusError {
+		t.Fatalf("status=%s want error", ev.Status)
+	}
+	httpFields, _ := ev.Fields["http"].(map[string]any)
+	if got := httpFields["route"]; got != "/panic/{id}" {
+		t.Fatalf("route=%v want /panic/{id}", got)
 	}
 }

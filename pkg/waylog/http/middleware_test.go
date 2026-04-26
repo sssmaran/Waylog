@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ const schemaPath = "../../../docs/schema/v2.0.json"
 
 type harness struct {
 	t   *testing.T
-	buf *bytes.Buffer
+	buf *lockedBuffer
 }
 
 func newHarness(t *testing.T, cfg waylogv2.Config) *harness {
@@ -30,7 +31,7 @@ func newHarness(t *testing.T, cfg waylogv2.Config) *harness {
 	defer cancel()
 	_ = waylogv2.Shutdown(deadline)
 
-	buf := &bytes.Buffer{}
+	buf := &lockedBuffer{}
 	if cfg.Service == "" {
 		cfg.Service = "checkout"
 	}
@@ -56,6 +57,23 @@ func (h *harness) lastEvent() *eventv2.Event {
 		h.t.Fatalf("unmarshal emitted event: %v", err)
 	}
 	return &ev
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
 }
 
 func (h *harness) validateLast() *eventv2.Event {
@@ -138,6 +156,27 @@ func TestHTTPMiddlewareWriteWithoutHeaderRecords200(t *testing.T) {
 	fields := httpFields(t, ev)
 	if got, _ := fields["status"].(float64); got != 200 {
 		t.Fatalf("status=%v want 200", fields["status"])
+	}
+}
+
+func TestHTTPMiddlewareKeepsFirstWriteHeaderStatus(t *testing.T) {
+	h := newHarness(t, waylogv2.Config{})
+	handler := HTTP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/double-header", nil)
+	handler.ServeHTTP(rr, req)
+
+	ev := h.validateLast()
+	fields := httpFields(t, ev)
+	if got, _ := fields["status"].(float64); got != 204 {
+		t.Fatalf("fields.http.status=%v want 204", fields["status"])
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code=%d want 204", rr.Code)
 	}
 }
 

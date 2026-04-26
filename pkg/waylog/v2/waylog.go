@@ -73,6 +73,8 @@ type StatsSnapshot struct {
 	ReservedCodeRejections  int64 // NewError/Fail/Step returns with WAYLOG_* codes
 	SuppressedThenFailed    int64
 	LateCompletionAfterEmit int64
+	EventsDropped           int64
+	DeliveryFailures        int64
 }
 
 // ErrAlreadyInitialized is returned by Init when a prior SDK is still alive
@@ -86,7 +88,11 @@ type sdk struct {
 
 	devEnabled bool
 	delivery   *transporthttp.Client
+	emitMu     sync.Mutex
 	devMu      sync.Mutex
+	rateMu     sync.Mutex
+	rateSecond int64
+	rateCount  int
 
 	mu     sync.Mutex
 	active map[*request]struct{}
@@ -100,6 +106,7 @@ type sdk struct {
 	reservedRejected atomic.Int64
 	suppressFailed   atomic.Int64
 	lateAfterEmit    atomic.Int64
+	eventsDropped    atomic.Int64
 }
 
 var (
@@ -141,12 +148,17 @@ func Init(cfg Config) error {
 		active:     make(map[*request]struct{}),
 	}
 	if cfg.IngestURL != "" {
-		s.delivery = transporthttp.New(transporthttp.Config{
-			IngestURL: cfg.IngestURL,
-			APIKey:    cfg.APIKey,
-			Timeout:   5 * time.Second,
-			BatchMode: true,
+		delivery, err := transporthttp.New(transporthttp.Config{
+			IngestURL:   cfg.IngestURL,
+			APIKey:      cfg.APIKey,
+			Timeout:     5 * time.Second,
+			BatchMode:   true,
+			InFlightCap: cfg.MaxInFlightBytes,
 		})
+		if err != nil {
+			return err
+		}
+		s.delivery = delivery
 	}
 
 	stateMu.Lock()
@@ -212,6 +224,8 @@ func Stats() StatsSnapshot {
 		ReservedCodeRejections:  s.reservedRejected.Load(),
 		SuppressedThenFailed:    s.suppressFailed.Load(),
 		LateCompletionAfterEmit: s.lateAfterEmit.Load(),
+		EventsDropped:           s.eventsDropped.Load() + deliveryDropped(s),
+		DeliveryFailures:        deliveryFailures(s),
 	}
 }
 
@@ -240,6 +254,20 @@ func remainingTimeout(ctx context.Context) time.Duration {
 		return d
 	}
 	return 0
+}
+
+func deliveryDropped(s *sdk) int64 {
+	if s == nil || s.delivery == nil {
+		return 0
+	}
+	return s.delivery.Dropped()
+}
+
+func deliveryFailures(s *sdk) int64 {
+	if s == nil || s.delivery == nil {
+		return 0
+	}
+	return s.delivery.Failures()
 }
 
 func resetForTest() {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -86,5 +87,31 @@ func TestMiddlewareKeepsSuppressedStatus(t *testing.T) {
 	ev := lastEvent(t, buf)
 	if ev.Status != eventv2.StatusSuppressed {
 		t.Fatalf("status=%s want suppressed", ev.Status)
+	}
+}
+
+func TestMiddlewareReturnedErrorBecomesWaylogFailure(t *testing.T) {
+	buf := newHarness(t, waylogv2.Config{})
+
+	e := echo.New()
+	e.Use(Middleware())
+	e.GET("/boom/:id", func(c echo.Context) error {
+		return errors.New("boom")
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/boom/42", nil)
+	e.ServeHTTP(rr, req)
+
+	ev := lastEvent(t, buf)
+	if ev.Status != eventv2.StatusError {
+		t.Fatalf("status=%s want error", ev.Status)
+	}
+	if ev.Anchor == nil || ev.Anchor.Step != "request" || ev.Anchor.ErrorCode != "ERR" {
+		t.Fatalf("anchor wrong: %+v", ev.Anchor)
+	}
+	httpFields, _ := ev.Fields["http"].(map[string]any)
+	if got, _ := httpFields["status"].(float64); got != 500 {
+		t.Fatalf("fields.http.status=%v want 500", httpFields["status"])
 	}
 }

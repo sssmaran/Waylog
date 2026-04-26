@@ -125,8 +125,6 @@ func (r *request) assembleLocked(tsEnd time.Time) *eventv2.Event {
 	}
 
 	if len(r.fields) > 0 {
-		// Copy only when a Redactor will mutate the result; otherwise hand
-		// the sealed request's map directly to the event.
 		if r.sdk.cfg.Redactor != nil {
 			ev.Fields = make(map[string]any, len(r.fields))
 			maps.Copy(ev.Fields, r.fields)
@@ -214,11 +212,36 @@ func emit(w io.Writer, ev *eventv2.Event) error {
 }
 
 func deliver(s *sdk, ev *eventv2.Event) (bool, error) {
+	if !s.allowEvent(ev) {
+		s.eventsDropped.Add(1)
+		return false, nil
+	}
 	if s.delivery != nil {
 		return s.delivery.Submit(ev), nil
 	}
+	s.emitMu.Lock()
+	defer s.emitMu.Unlock()
 	if err := emit(s.out, ev); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *sdk) allowEvent(ev *eventv2.Event) bool {
+	if s.cfg.MaxEventsPerSec <= 0 || ev == nil || ev.Status.IsPriority() {
+		return true
+	}
+
+	now := time.Now().Unix()
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	if s.rateSecond != now {
+		s.rateSecond = now
+		s.rateCount = 0
+	}
+	if s.rateCount >= s.cfg.MaxEventsPerSec {
+		return false
+	}
+	s.rateCount++
+	return true
 }

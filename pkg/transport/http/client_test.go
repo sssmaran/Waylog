@@ -50,7 +50,10 @@ func TestClientSinglePost(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cli := New(Config{IngestURL: srv.URL, APIKey: "k"})
+	cli, err := New(Config{IngestURL: srv.URL, APIKey: "k"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	cli.Submit(validEvent("e1", eventv2.StatusOK))
 	cli.Shutdown(2 * time.Second)
 	if got.EventID != "e1" {
@@ -81,7 +84,10 @@ func TestNDJSONBatchFlush(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cli := New(Config{IngestURL: srv.URL, BatchMode: true, BatchAgeMs: 20})
+	cli, err := New(Config{IngestURL: srv.URL, BatchMode: true, BatchAgeMs: 20})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	for i := 0; i < 300; i++ {
 		cli.Submit(validEvent(itoa(i), eventv2.StatusOK))
 	}
@@ -103,11 +109,12 @@ func TestQueueEvictsOKBeforePriority(t *testing.T) {
 		BatchAgeMs:   50,
 		OkBudgetPct:  70,
 		InFlightCap:  600,
-	}, func(batch []*eventv2.Event) {
+	}, func(batch []*eventv2.Event) deliveryResult {
 		for _, ev := range batch {
 			flushed = append(flushed, ev.EventID)
 		}
-	})
+		return deliveryResult{success: true}
+	}, nil)
 	go q.run()
 
 	for i := 0; i < 6; i++ {
@@ -128,6 +135,98 @@ func TestQueueEvictsOKBeforePriority(t *testing.T) {
 	}
 	if !foundPriority {
 		t.Fatalf("priority event was evicted before ok events: %+v", flushed)
+	}
+}
+
+func TestQueuePressureEvictionsIncrementDrops(t *testing.T) {
+	var drops atomic.Int64
+	q := newQueue(Config{
+		MaxBatch:     256,
+		MaxBatchSize: 1 << 20,
+		BatchAgeMs:   50,
+		OkBudgetPct:  70,
+		InFlightCap:  600,
+	}, func(batch []*eventv2.Event) deliveryResult {
+		return deliveryResult{success: true}
+	}, func(n int) {
+		drops.Add(int64(n))
+	})
+
+	for i := 0; i < 4; i++ {
+		q.enqueue(validEvent("ok-"+itoa(i), eventv2.StatusOK))
+	}
+
+	if drops.Load() == 0 {
+		t.Fatal("expected queue pressure evictions to increment drops")
+	}
+}
+
+func TestNewRejectsInvalidIngestURL(t *testing.T) {
+	if _, err := New(Config{IngestURL: "localhost:8080"}); err == nil {
+		t.Fatal("expected invalid ingest URL error")
+	}
+}
+
+func TestBatchRetriesTransientFailure(t *testing.T) {
+	var calls atomic.Int64
+	var totalEvents atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		sc := bufio.NewScanner(r.Body)
+		for sc.Scan() {
+			totalEvents.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cli, err := New(Config{
+		IngestURL:  srv.URL,
+		BatchMode:  true,
+		BatchAgeMs: 1,
+		MaxRetries: 2,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cli.Submit(validEvent("retry-me", eventv2.StatusError))
+	deadline := time.After(2 * time.Second)
+	for calls.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("expected retry after transient failure, got %d calls", calls.Load())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cli.Shutdown(2 * time.Second)
+
+	if totalEvents.Load() != 1 {
+		t.Fatalf("events delivered=%d want 1", totalEvents.Load())
+	}
+	if cli.Failures() == 0 {
+		t.Fatal("transient failure should increment failure counter")
+	}
+}
+
+func TestBatchDropsPermanentFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	cli, err := New(Config{IngestURL: srv.URL, BatchMode: true, BatchAgeMs: 1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cli.Submit(validEvent("bad", eventv2.StatusError))
+	cli.Shutdown(2 * time.Second)
+
+	if cli.Dropped() != 1 {
+		t.Fatalf("Dropped=%d want 1", cli.Dropped())
 	}
 }
 

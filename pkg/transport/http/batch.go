@@ -5,69 +5,80 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
-func (c *Client) flushBatch(batch []*eventv2.Event) {
+type deliveryResult struct {
+	success    bool
+	retryable  bool
+	retryAfter time.Duration
+}
+
+func (c *Client) flushBatch(batch []*eventv2.Event) deliveryResult {
 	if c.url == "" || len(batch) == 0 {
-		return
+		return deliveryResult{success: true}
 	}
 
-	for _, chunk := range splitBatches(batch, c.cfg.MaxBatch, c.cfg.MaxBatchSize) {
-		var body bytes.Buffer
-		enc := json.NewEncoder(&body)
-		for _, ev := range chunk {
-			if err := enc.Encode(ev); err != nil {
-				continue
-			}
+	var body bytes.Buffer
+	enc := json.NewEncoder(&body)
+	for _, ev := range batch {
+		if err := enc.Encode(ev); err != nil {
+			c.recordDrop(1)
 		}
-		req, err := http.NewRequest(http.MethodPost, c.url, bytes.NewReader(body.Bytes()))
-		if err != nil {
-			continue
+	}
+	if body.Len() == 0 {
+		return deliveryResult{success: true}
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.url, bytes.NewReader(body.Bytes()))
+	if err != nil {
+		c.recordDrop(len(batch))
+		return deliveryResult{}
+	}
+	req.Header.Set("Content-Type", "application/x-ndjson")
+	if c.cfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.recordFailure(len(batch))
+		return deliveryResult{retryable: true}
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return deliveryResult{success: true}
+	case isRetryableStatus(resp.StatusCode):
+		c.recordFailure(len(batch))
+		return deliveryResult{
+			retryable:  true,
+			retryAfter: retryAfter(resp.Header.Get("Retry-After")),
 		}
-		req.Header.Set("Content-Type", "application/x-ndjson")
-		if c.cfg.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-		}
-		resp, err := c.http.Do(req)
-		if err != nil {
-			continue
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
+	default:
+		c.recordDrop(len(batch))
+		return deliveryResult{}
 	}
 }
 
-func splitBatches(batch []*eventv2.Event, maxCount, maxBytes int) [][]*eventv2.Event {
-	if len(batch) == 0 {
-		return nil
+func retryAfter(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
 	}
-	if maxCount <= 0 {
-		maxCount = len(batch)
+	if seconds, err := strconv.Atoi(raw); err == nil {
+		return time.Duration(seconds) * time.Second
 	}
-	if maxBytes <= 0 {
-		maxBytes = 1 << 20
-	}
-
-	var out [][]*eventv2.Event
-	start := 0
-	for start < len(batch) {
-		end := start
-		size := 0
-		for end < len(batch) && end-start < maxCount {
-			next := int(estimateEventSize(batch[end]))
-			if end > start && size+next > maxBytes {
-				break
-			}
-			size += next
-			end++
+	if t, err := http.ParseTime(raw); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
 		}
-		if end == start {
-			end++
-		}
-		out = append(out, batch[start:end])
-		start = end
 	}
-	return out
+	return 0
 }

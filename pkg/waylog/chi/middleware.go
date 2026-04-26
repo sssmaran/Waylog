@@ -18,10 +18,12 @@ func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		route := ""
 		wayloghttp.ServeHTTP(w, r, route, func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rc := chi.RouteContext(r.Context()); rc != nil {
+					waylogv2.SetHTTPRoute(r.Context(), rc.RoutePattern())
+				}
+			}()
 			next.ServeHTTP(w, r)
-			if rc := chi.RouteContext(r.Context()); rc != nil {
-				waylogv2.SetHTTPRoute(r.Context(), rc.RoutePattern())
-			}
 		})
 	})
 }
