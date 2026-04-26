@@ -67,7 +67,7 @@ func Fail(ctx context.Context, err *Error) {
 	r.recordErrorLocked(err.Code, err.Reason)
 	if r.anchorStep == "" {
 		if n := len(r.stepStack); n > 0 {
-			r.anchorStep = r.stepStack[n-1]
+			r.anchorStep = r.stepStack[n-1].name
 		} else {
 			r.anchorStep = "request"
 		}
@@ -101,7 +101,7 @@ func Suppress(ctx context.Context) {
 
 func (r *request) pushStep(name string) {
 	r.mu.Lock()
-	r.stepStack = append(r.stepStack, name)
+	r.stepStack = append(r.stepStack, activeStep{name: name})
 	r.mu.Unlock()
 }
 
@@ -123,28 +123,33 @@ func (r *request) closeStep(name string, startMS, durationMS int64, fnErr error)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.popStackLocked(name)
+	active := r.popStackLocked(name)
 	if r.suppressed || r.sealed {
 		return
 	}
 	r.addStepLocked(stepBuf{
 		name:       name,
+		spanID:     active.spanID,
 		startMS:    startMS,
 		durationMS: durationMS,
 		status:     status,
+		downstream: active.downstream,
 		err:        werr,
 	})
 }
 
-func (r *request) popStackLocked(name string) {
-	if n := len(r.stepStack); n > 0 && r.stepStack[n-1] == name {
+func (r *request) popStackLocked(name string) activeStep {
+	if n := len(r.stepStack); n > 0 && r.stepStack[n-1].name == name {
+		top := r.stepStack[n-1]
 		r.stepStack = r.stepStack[:n-1]
-		return
+		return top
 	}
 	for i := len(r.stepStack) - 1; i >= 0; i-- {
-		if r.stepStack[i] == name {
+		if r.stepStack[i].name == name {
+			top := r.stepStack[i]
 			r.stepStack = append(r.stepStack[:i], r.stepStack[i+1:]...)
-			return
+			return top
 		}
 	}
+	return activeStep{name: name}
 }

@@ -3,7 +3,7 @@
 // Public surface: Init, Shutdown, Stats, Logger, From, Step, StepVoid, Fail,
 // NewError, Suppress, Explain. Internal-but-exported helpers for middleware
 // and adapter authors: Begin, Finalize, FinalizePanic, FinalizeAborted,
-// FinalizeTimeout, SetField, SetHTTPStatus.
+// FinalizeTimeout, SetField, SetHTTPStatus, TraceID, SpanID, RecordOutgoingSpan.
 package waylogv2
 
 import (

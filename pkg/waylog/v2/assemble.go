@@ -151,6 +151,7 @@ func (r *request) assembleLocked(tsEnd time.Time) *eventv2.Event {
 				StartMS:    s.startMS,
 				DurationMS: s.durationMS,
 				Status:     s.status,
+				Downstream: s.downstream,
 			}
 			if s.err != nil {
 				step.Error = s.err.toStepError()

@@ -603,6 +603,31 @@ func TestExplainSnapshotMidRequest(t *testing.T) {
 	_, _ = Finalize(ctx)
 }
 
+func TestExplainIncludesDownstreamEdges(t *testing.T) {
+	newHarness(t, Config{})
+	ctx := Begin(context.Background(), BeginOptions{})
+
+	_ = StepVoid(ctx, "payment.charge", func(ctx context.Context) error {
+		RecordOutgoingSpan(ctx, "9d7a1b3e2c4d5e6f", "payment", "POST /charge")
+		return nil
+	})
+
+	res, err := Explain(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Downstream) != 1 {
+		t.Fatalf("want 1 downstream edge, got %+v", res.Downstream)
+	}
+	edge := res.Downstream[0]
+	if edge.Step != "payment.charge" || edge.Service != "payment" || edge.Endpoint != "POST /charge" {
+		t.Fatalf("downstream edge wrong: %+v", edge)
+	}
+	if !strings.Contains(res.String(), "payment.charge -> payment (POST /charge)") {
+		t.Fatalf("String() should include downstream edge: %s", res.String())
+	}
+}
+
 func TestConcurrentLoggingDoesNotRace(t *testing.T) {
 	newHarness(t, Config{MaxLogs: 100})
 	ctx := Begin(context.Background(), BeginOptions{})

@@ -64,7 +64,7 @@ func (r *request) appendLog(level, msg string, err *Error, more []F) {
 
 	stepName := ""
 	if n := len(r.stepStack); n > 0 {
-		stepName = r.stepStack[n-1]
+		stepName = r.stepStack[n-1].name
 	}
 
 	if err != nil {

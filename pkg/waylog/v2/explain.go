@@ -85,6 +85,13 @@ func Explain(ctx context.Context) (*ExplainResult, error) {
 			si.ErrorMsg = s.err.Reason
 		}
 		out.Path = append(out.Path, si)
+		if s.downstream != nil {
+			out.Downstream = append(out.Downstream, DownstreamEdge{
+				Step:     s.name,
+				Service:  s.downstream.Service,
+				Endpoint: s.downstream.Endpoint,
+			})
+		}
 	}
 	for _, l := range r.logs {
 		out.Logs = append(out.Logs, LogInfo{
@@ -119,6 +126,12 @@ func (r *ExplainResult) String() string {
 			continue
 		}
 		fmt.Fprintf(&b, "[%s] [%dms] %s\n", l.Level, l.TsOffsetMS, l.Msg)
+	}
+	if len(r.Downstream) > 0 {
+		b.WriteString("downstream:\n")
+		for _, d := range r.Downstream {
+			fmt.Fprintf(&b, "  %s -> %s (%s)\n", d.Step, d.Service, d.Endpoint)
+		}
 	}
 	return b.String()
 }

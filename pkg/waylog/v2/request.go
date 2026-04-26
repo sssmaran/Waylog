@@ -112,6 +112,49 @@ func SetHTTPStatus(ctx context.Context, status int) {
 	r.setHTTPStatusLocked(status)
 }
 
+// TraceID returns the request trace id bound to ctx, or empty when absent.
+func TraceID(ctx context.Context) string {
+	r := requestFromContext(ctx)
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.traceID
+}
+
+// SpanID returns the local server span id bound to ctx, or empty when absent.
+func SpanID(ctx context.Context) string {
+	r := requestFromContext(ctx)
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.spanID
+}
+
+// RecordOutgoingSpan attaches a client span id and downstream edge to the
+// innermost active step so the emitted event can be linked to child events.
+func RecordOutgoingSpan(ctx context.Context, clientSpan, downstreamService, endpoint string) {
+	r := requestFromContext(ctx)
+	if r == nil || clientSpan == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.suppressed || r.sealed || len(r.stepStack) == 0 {
+		return
+	}
+	top := &r.stepStack[len(r.stepStack)-1]
+	top.spanID = clientSpan
+	top.downstream = &eventv2.Downstream{
+		Service:  downstreamService,
+		Endpoint: endpoint,
+		Kind:     "rpc",
+	}
+}
+
 func cloneDeep(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -145,7 +188,7 @@ type request struct {
 
 	mu sync.Mutex
 
-	stepStack []string
+	stepStack []activeStep
 	steps     []stepBuf
 	logs      []logBuf
 	fields    F
@@ -164,12 +207,19 @@ type request struct {
 	anchorCode string
 }
 
+type activeStep struct {
+	name       string
+	spanID     string
+	downstream *eventv2.Downstream
+}
+
 type stepBuf struct {
 	name       string
 	spanID     string
 	startMS    int64
 	durationMS int64
 	status     string
+	downstream *eventv2.Downstream
 	err        *Error
 }
 
@@ -275,7 +325,7 @@ func (r *request) addLogLocked(l logBuf) {
 
 func (r *request) activeStepLocked() string {
 	if n := len(r.stepStack); n > 0 {
-		return r.stepStack[n-1]
+		return r.stepStack[n-1].name
 	}
 	return "request"
 }
@@ -435,6 +485,9 @@ func seedFromTime(b []byte) {
 // A stable upper bound is enough for the buffer-pressure cascade.
 func stepBytes(s stepBuf) int {
 	n := 32 + len(s.name) + len(s.spanID)
+	if s.downstream != nil {
+		n += len(s.downstream.Service) + len(s.downstream.Endpoint) + len(s.downstream.Kind) + 24
+	}
 	if s.err != nil {
 		n += 16 + len(s.err.Code) + len(s.err.Reason) + len(s.err.Cause)
 	}
