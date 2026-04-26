@@ -91,16 +91,54 @@ func (r *request) applyLifecycleLocked(lifecycle lifecycleKind) {
 		return
 	}
 
+	now := time.Now()
 	switch lifecycle {
 	case lifecyclePanic:
-		r.markLifecycleLocked(eventv2.StatusError, eventv2.CodePanic, "panic recovered")
+		// Panic is an app-observable failure, so it synthesizes both an
+		// anchor and an entry in errors[] (§3.4: errors[] is the deduped
+		// list of errors seen across the request).
+		r.markLifecycleLocked(eventv2.StatusError, eventv2.CodePanic)
+		r.recordErrorLocked(eventv2.CodePanic, "runtime panic recovered")
+		r.flushActiveStepsLocked(now)
 	case lifecycleTimeout:
-		r.markLifecycleLocked(eventv2.StatusTimeout, eventv2.CodeTimeout, "")
+		// Watchdog expiry is a runtime decision, not an app error; the
+		// lifecycle code lives only in anchor, not errors[].
+		r.markLifecycleLocked(eventv2.StatusTimeout, eventv2.CodeTimeout)
+		r.flushActiveStepsLocked(now)
 	case lifecycleAborted:
+		// Cooperative cancel from the client; same errors[] rule as timeout.
+		// Preserve any explicit Fail anchor that was recorded before cancel.
 		if r.anchorStep == "" {
-			r.markLifecycleLocked(eventv2.StatusAborted, eventv2.CodeAborted, "")
+			r.markLifecycleLocked(eventv2.StatusAborted, eventv2.CodeAborted)
 		}
+		r.flushActiveStepsLocked(now)
 	}
+}
+
+// flushActiveStepsLocked snapshots any steps still on the active stack as
+// closed steps (status=ok) so a watchdog/panic/cancel that fires while a
+// step is in flight still records that the step ran. Spec §3.5: when
+// lifecycle precedence wins the seal, the active step at fire time is
+// captured both as the anchor and as a step entry.
+func (r *request) flushActiveStepsLocked(now time.Time) {
+	if len(r.stepStack) == 0 {
+		return
+	}
+	for _, active := range r.stepStack {
+		durMS := int64(now.Sub(active.startedAt) / 1e6)
+		if durMS < 0 {
+			durMS = 0
+		}
+		r.addStepLocked(stepBuf{
+			name:       active.name,
+			spanID:     active.spanID,
+			startMS:    active.startMS,
+			durationMS: durMS,
+			status:     stepStatusOK,
+			downstream: active.downstream,
+		})
+	}
+	r.stepStack = nil
 }
 
 func (r *request) assembleLocked(tsEnd time.Time) *eventv2.Event {
@@ -120,10 +158,6 @@ func (r *request) assembleLocked(tsEnd time.Time) *eventv2.Event {
 		Status:        r.snapshotStatusLocked(),
 	}
 
-	if ev.Status == eventv2.StatusSuppressed {
-		return ev
-	}
-
 	if len(r.fields) > 0 {
 		if r.sdk.cfg.Redactor != nil {
 			ev.Fields = make(map[string]any, len(r.fields))
@@ -132,6 +166,12 @@ func (r *request) assembleLocked(tsEnd time.Time) *eventv2.Event {
 			ev.Fields = r.fields
 			r.fields = nil
 		}
+	}
+
+	// Suppressed events keep top-level identity, timing, and fields (§4.2.2)
+	// but drop anchor/steps/logs/errors so they remain header-only triage.
+	if ev.Status == eventv2.StatusSuppressed {
+		return ev
 	}
 
 	if r.anchorStep != "" && r.anchorCode != "" {

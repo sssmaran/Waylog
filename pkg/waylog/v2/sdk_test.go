@@ -248,7 +248,8 @@ func TestFinalizePanicSynthesizesReservedLifecycleCode(t *testing.T) {
 	h := newHarness(t, Config{})
 	ctx := Begin(context.Background(), BeginOptions{})
 	r := requestFromContext(ctx)
-	r.pushStep("payment.charge")
+	now := time.Now()
+	r.pushStep("payment.charge", now, int64(now.Sub(r.tsStart)/1e6))
 
 	_, _ = FinalizePanic(ctx)
 

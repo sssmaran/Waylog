@@ -18,10 +18,9 @@ func Step[T any](ctx context.Context, name string, fn func(ctx context.Context) 
 	if r == nil || name == "" {
 		return fn(ctx)
 	}
-	r.pushStep(name)
-
 	startedAt := time.Now()
 	startMS := int64(startedAt.Sub(r.tsStart) / 1e6)
+	r.pushStep(name, startedAt, startMS)
 	v, err := fn(ctx)
 	dur := int64(time.Since(startedAt) / 1e6)
 
@@ -99,9 +98,13 @@ func Suppress(ctx context.Context) {
 	r.anchorCode = ""
 }
 
-func (r *request) pushStep(name string) {
+func (r *request) pushStep(name string, startedAt time.Time, startMS int64) {
 	r.mu.Lock()
-	r.stepStack = append(r.stepStack, activeStep{name: name})
+	r.stepStack = append(r.stepStack, activeStep{
+		name:      name,
+		startedAt: startedAt,
+		startMS:   startMS,
+	})
 	r.mu.Unlock()
 }
 

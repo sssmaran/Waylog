@@ -231,6 +231,8 @@ type activeStep struct {
 	name       string
 	spanID     string
 	downstream *eventv2.Downstream
+	startedAt  time.Time
+	startMS    int64
 }
 
 type stepBuf struct {
@@ -359,14 +361,13 @@ func (r *request) setHTTPStatusLocked(status int) {
 	httpMap["status"] = status
 }
 
-func (r *request) markLifecycleLocked(status eventv2.Status, code, reason string) {
+func (r *request) markLifecycleLocked(status eventv2.Status, code string) {
 	if r.suppressed {
 		return
 	}
 	r.finalStatus = status
 	r.anchorStep = r.activeStepLocked()
 	r.anchorCode = code
-	r.recordErrorLocked(code, reason)
 }
 
 // degradeToHeaderOnlyLocked discards buffered detail and switches the request
