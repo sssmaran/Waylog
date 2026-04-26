@@ -3,7 +3,8 @@
 // Public surface: Init, Shutdown, Stats, Logger, From, Step, StepVoid, Fail,
 // NewError, Suppress, Explain. Internal-but-exported helpers for middleware
 // and adapter authors: Begin, Finalize, FinalizePanic, FinalizeAborted,
-// FinalizeTimeout, SetField, SetHTTPStatus, TraceID, SpanID, RecordOutgoingSpan.
+// FinalizeTimeout, SetField, SetHTTPStatus, SetHTTPRoute, TraceID, SpanID,
+// RecordOutgoingSpan.
 package waylogv2
 
 import (
@@ -12,9 +13,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	transporthttp "github.com/sssmaran/WaylogCLI/pkg/transport/http"
 )
 
 // F is the field bag used by Logger calls and request fields.
@@ -26,12 +30,13 @@ type Config struct {
 	Env     string
 	Version string
 
-	// Output is the writer for final wide events. Defaults to os.Stderr if
-	// nil and IngestURL is empty. One JSON event per line.
+	// Output is the local writer for final wide events when IngestURL is empty.
+	// Defaults to os.Stderr. One JSON event per line.
 	Output io.Writer
 
-	// IngestURL / APIKey are accepted for API stability with future slices
-	// but ignored in local mode.
+	// IngestURL / APIKey enable HTTP delivery transport. When IngestURL is
+	// set, final events are submitted to /v1/events instead of being written
+	// to Output. Dev dual-emit remains local-only.
 	IngestURL string
 	APIKey    string
 
@@ -75,8 +80,13 @@ type StatsSnapshot struct {
 var ErrAlreadyInitialized = errors.New("waylog: SDK already initialized with active requests")
 
 type sdk struct {
-	cfg Config
-	out io.Writer
+	cfg    Config
+	out    io.Writer
+	devOut io.Writer
+
+	devEnabled bool
+	delivery   *transporthttp.Client
+	devMu      sync.Mutex
 
 	mu     sync.Mutex
 	active map[*request]struct{}
@@ -117,15 +127,26 @@ func Init(cfg Config) error {
 		cfg.MaxBufferBytes = defaultMaxBufferBytes
 	}
 
-	out := cfg.Output
-	if out == nil {
-		out = os.Stderr
+	localOut := cfg.Output
+	if localOut == nil {
+		localOut = os.Stderr
 	}
+	devEnabled := cfg.DevMode || strings.EqualFold(cfg.Env, "dev")
 
 	s := &sdk{
-		cfg:    cfg,
-		out:    out,
-		active: make(map[*request]struct{}),
+		cfg:        cfg,
+		out:        localOut,
+		devOut:     os.Stderr,
+		devEnabled: devEnabled,
+		active:     make(map[*request]struct{}),
+	}
+	if cfg.IngestURL != "" {
+		s.delivery = transporthttp.New(transporthttp.Config{
+			IngestURL: cfg.IngestURL,
+			APIKey:    cfg.APIKey,
+			Timeout:   5 * time.Second,
+			BatchMode: true,
+		})
 	}
 
 	stateMu.Lock()
@@ -158,6 +179,9 @@ func Shutdown(ctx context.Context) error {
 		n := len(s.active)
 		s.mu.Unlock()
 		if n == 0 {
+			if s.delivery != nil {
+				s.delivery.Shutdown(remainingTimeout(ctx))
+			}
 			return nil
 		}
 		select {
@@ -205,6 +229,17 @@ func getState() *sdk {
 	stateMu.RLock()
 	defer stateMu.RUnlock()
 	return state
+}
+
+func remainingTimeout(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		d := time.Until(deadline)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return 0
 }
 
 func resetForTest() {

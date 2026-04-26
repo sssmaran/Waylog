@@ -72,13 +72,17 @@ func finalize(ctx context.Context, lifecycle lifecycleKind) (*eventv2.Event, err
 		ev.Fields = r.sdk.cfg.Redactor(ev.Fields)
 	}
 
-	if err := emit(r.sdk.out, ev); err != nil {
+	accepted, err := deliver(r.sdk, ev)
+	if err != nil {
 		return ev, err
 	}
-	r.sdk.emitted.Add(1)
-	if ev.Status == eventv2.StatusSuppressed {
+	if accepted {
+		r.sdk.emitted.Add(1)
+	}
+	if accepted && ev.Status == eventv2.StatusSuppressed {
 		r.sdk.suppressed.Add(1)
 	}
+	r.sdk.emitDevFinal(ev)
 	return ev, nil
 }
 
@@ -207,4 +211,14 @@ func emit(w io.Writer, ev *eventv2.Event) error {
 		return fmt.Errorf("waylog: write event: %w", err)
 	}
 	return nil
+}
+
+func deliver(s *sdk, ev *eventv2.Event) (bool, error) {
+	if s.delivery != nil {
+		return s.delivery.Submit(ev), nil
+	}
+	if err := emit(s.out, ev); err != nil {
+		return false, err
+	}
+	return true, nil
 }

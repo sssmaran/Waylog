@@ -2,7 +2,6 @@ package waylogv2
 
 import (
 	"fmt"
-	"os"
 
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
@@ -59,8 +58,10 @@ func recordReservedRejection(code, where string) {
 		return
 	}
 	s.reservedRejected.Add(1)
-	if s.cfg.DevMode {
-		fmt.Fprintf(os.Stderr, "waylog: %s rejected reserved error code %q\n", where, code)
+	if s.devEnabled && s.devOut != nil {
+		s.devMu.Lock()
+		defer s.devMu.Unlock()
+		fmt.Fprintf(s.devOut, "waylog: %s rejected reserved error code %q\n", where, code)
 	}
 }
 

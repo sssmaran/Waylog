@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -16,8 +18,9 @@ import (
 const schemaPath = "../../../docs/schema/v2.0.json"
 
 type harness struct {
-	t   *testing.T
-	buf *bytes.Buffer
+	t      *testing.T
+	buf    *bytes.Buffer
+	devBuf *bytes.Buffer
 }
 
 func newHarness(t *testing.T, cfg Config) *harness {
@@ -34,7 +37,7 @@ func newHarness(t *testing.T, cfg Config) *harness {
 	if err := Init(cfg); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	return &harness{t: t, buf: buf}
+	return &harness{t: t, buf: buf, devBuf: &bytes.Buffer{}}
 }
 
 func (h *harness) lastEvent() *eventv2.Event {
@@ -62,6 +65,15 @@ func (h *harness) validateLast() {
 		raw, _ := json.MarshalIndent(ev, "", "  ")
 		h.t.Fatalf("emitted event fails v2.0 schema: %v\n%s", err, raw)
 	}
+}
+
+func (h *harness) captureDevOutput() {
+	h.t.Helper()
+	s := getState()
+	if s == nil {
+		h.t.Fatal("sdk not initialized")
+	}
+	s.devOut = h.devBuf
 }
 
 func TestInitRequiresServiceAndEnv(t *testing.T) {
@@ -723,5 +735,103 @@ func TestShutdownTimesOutWithStuckRequest(t *testing.T) {
 	defer cancel()
 	if err := Shutdown(deadline); err == nil {
 		t.Fatal("expected timeout error")
+	}
+}
+
+func TestIngestURLRoutesFinalEventToTransport(t *testing.T) {
+	var (
+		mu  sync.Mutex
+		got *eventv2.Event
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ev eventv2.Event
+		if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+			t.Fatalf("decode ingest payload: %v", err)
+		}
+		mu.Lock()
+		got = &ev
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	h := newHarness(t, Config{IngestURL: srv.URL})
+	ctx := Begin(context.Background(), BeginOptions{})
+	SetField(ctx, "http", map[string]any{"method": "GET", "route": "/health", "status": 200})
+	if _, err := Finalize(ctx); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := Shutdown(deadline); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	if h.buf.Len() != 0 {
+		t.Fatalf("local writer should stay empty when IngestURL is set, got %q", h.buf.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got == nil || got.TraceID == "" {
+		t.Fatalf("transport did not receive emitted event: %+v", got)
+	}
+}
+
+func TestDevModeEmitsPrettyLogsAndFinalEvent(t *testing.T) {
+	h := newHarness(t, Config{DevMode: true})
+	h.captureDevOutput()
+	ctx := Begin(context.Background(), BeginOptions{})
+
+	From(ctx).Info("served", F{"route": "/x"})
+	if _, err := Finalize(ctx); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	out := h.devBuf.String()
+	if !strings.Contains(out, "[INFO] checkout") || !strings.Contains(out, "served route=/x") {
+		t.Fatalf("pretty log line missing: %q", out)
+	}
+	if !strings.Contains(out, "\"status\": \"ok\"") || !strings.Contains(out, "\"service\": \"checkout\"") {
+		t.Fatalf("pretty final JSON missing: %q", out)
+	}
+}
+
+func TestNonDevModeSuppressesPrettyOutput(t *testing.T) {
+	h := newHarness(t, Config{})
+	h.captureDevOutput()
+	ctx := Begin(context.Background(), BeginOptions{})
+
+	From(ctx).Info("served")
+	if _, err := Finalize(ctx); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if h.devBuf.Len() != 0 {
+		t.Fatalf("non-dev mode must not emit pretty output: %q", h.devBuf.String())
+	}
+}
+
+func TestDevModeConcurrentLoggingRemainsRaceSafe(t *testing.T) {
+	h := newHarness(t, Config{DevMode: true, MaxLogs: 100})
+	h.captureDevOutput()
+	ctx := Begin(context.Background(), BeginOptions{})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				From(ctx).Info("hello", F{"n": n, "j": j})
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if _, err := Finalize(ctx); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if !strings.Contains(h.devBuf.String(), "\"status\": \"ok\"") {
+		t.Fatalf("expected final pretty JSON in dev output: %q", h.devBuf.String())
 	}
 }

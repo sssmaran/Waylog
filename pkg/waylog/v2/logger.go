@@ -57,8 +57,8 @@ func (r *request) appendLog(level, msg string, err *Error, more []F) {
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.suppressed || r.sealed {
+		r.mu.Unlock()
 		return
 	}
 
@@ -78,6 +78,17 @@ func (r *request) appendLog(level, msg string, err *Error, more []F) {
 		fields:     merged,
 		stepName:   stepName,
 	})
+
+	dev := devLogRecord{
+		service: r.sdk.cfg.Service,
+		traceID: r.traceID,
+		level:   level,
+		msg:     msg,
+		step:    stepName,
+		fields:  merged,
+	}
+	r.mu.Unlock()
+	r.sdk.emitDevLog(dev)
 }
 
 // mergeFields returns a freshly-allocated shallow copy of the merged maps.

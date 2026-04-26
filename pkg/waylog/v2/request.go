@@ -112,6 +112,26 @@ func SetHTTPStatus(ctx context.Context, status int) {
 	r.setHTTPStatusLocked(status)
 }
 
+// SetHTTPRoute updates fields.http.route on the active request. Intended for
+// HTTP middleware and adapter authors that resolve route templates late.
+func SetHTTPRoute(ctx context.Context, route string) {
+	r := requestFromContext(ctx)
+	if r == nil || route == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.suppressed || r.sealed {
+		return
+	}
+	httpFields, _ := r.fields["http"].(map[string]any)
+	if httpFields == nil {
+		httpFields = map[string]any{}
+		r.fields["http"] = httpFields
+	}
+	httpFields["route"] = route
+}
+
 // TraceID returns the request trace id bound to ctx, or empty when absent.
 func TraceID(ctx context.Context) string {
 	r := requestFromContext(ctx)
