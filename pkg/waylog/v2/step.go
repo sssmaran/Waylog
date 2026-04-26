@@ -94,6 +94,7 @@ func Suppress(ctx context.Context) {
 	r.errs = nil
 	r.bufBytes = 0
 	r.headerOnly = false
+	r.finalStatus = ""
 	r.anchorStep = ""
 	r.anchorCode = ""
 }

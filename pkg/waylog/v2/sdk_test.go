@@ -232,6 +232,57 @@ func TestSuppressThenFailKeepsSuppressedAndCounts(t *testing.T) {
 	}
 }
 
+func TestFinalizePanicSynthesizesReservedLifecycleCode(t *testing.T) {
+	h := newHarness(t, Config{})
+	ctx := Begin(context.Background(), BeginOptions{})
+	r := requestFromContext(ctx)
+	r.pushStep("payment.charge")
+
+	_, _ = FinalizePanic(ctx)
+
+	h.validateLast()
+	ev := h.lastEvent()
+	if ev.Status != eventv2.StatusError {
+		t.Fatalf("status=%s want error", ev.Status)
+	}
+	if ev.Anchor == nil || ev.Anchor.Step != "payment.charge" || ev.Anchor.ErrorCode != eventv2.CodePanic {
+		t.Fatalf("panic anchor wrong: %+v", ev.Anchor)
+	}
+}
+
+func TestFinalizeAbortedPreservesExistingExplicitFail(t *testing.T) {
+	h := newHarness(t, Config{})
+	ctx := Begin(context.Background(), BeginOptions{})
+	Fail(ctx, NewError("AUTH_DENIED"))
+
+	_, _ = FinalizeAborted(ctx)
+
+	h.validateLast()
+	ev := h.lastEvent()
+	if ev.Status != eventv2.StatusError {
+		t.Fatalf("status=%s want error", ev.Status)
+	}
+	if ev.Anchor == nil || ev.Anchor.Step != "request" || ev.Anchor.ErrorCode != "AUTH_DENIED" {
+		t.Fatalf("explicit failure must survive aborted finalize: %+v", ev.Anchor)
+	}
+}
+
+func TestSetHTTPStatusUpdatesFieldsMap(t *testing.T) {
+	h := newHarness(t, Config{})
+	ctx := Begin(context.Background(), BeginOptions{})
+	SetField(ctx, "http", map[string]any{"method": "GET", "route": "/health", "status": 200})
+	SetHTTPStatus(ctx, 502)
+
+	_, _ = Finalize(ctx)
+
+	h.validateLast()
+	ev := h.lastEvent()
+	httpMap, _ := ev.Fields["http"].(map[string]any)
+	if got, _ := httpMap["status"].(float64); got != 502 {
+		t.Fatalf("fields.http.status=%v want 502", httpMap["status"])
+	}
+}
+
 func TestNewErrorRejectsReservedCodes(t *testing.T) {
 	newHarness(t, Config{})
 	for _, code := range []string{eventv2.CodeTimeout, eventv2.CodeAborted, eventv2.CodePanic, eventv2.CodePartial} {

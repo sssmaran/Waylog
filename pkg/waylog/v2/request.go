@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"sync"
 	"time"
+
+	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
 const (
@@ -95,6 +97,21 @@ func SetField(ctx context.Context, key string, value any) {
 	r.fields[key] = cloneDeep(value)
 }
 
+// SetHTTPStatus updates fields.http.status on the active request. Intended for
+// HTTP middleware and adapter authors.
+func SetHTTPStatus(ctx context.Context, status int) {
+	r := requestFromContext(ctx)
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.suppressed || r.sealed {
+		return
+	}
+	r.setHTTPStatusLocked(status)
+}
+
 func cloneDeep(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -136,9 +153,10 @@ type request struct {
 
 	bufBytes int
 
-	suppressed bool
-	sealed     bool
-	headerOnly bool // degraded by MaxBufferBytes pressure (§4.4)
+	suppressed  bool
+	sealed      bool
+	headerOnly  bool // degraded by MaxBufferBytes pressure (§4.4)
+	finalStatus eventv2.Status
 
 	// First observable failing step, or "request" sentinel for a Fail() with
 	// no active step. Set once and never overwritten.
@@ -253,6 +271,32 @@ func (r *request) addLogLocked(l logBuf) {
 
 	r.logs = append(r.logs, l)
 	r.bufBytes += bytes
+}
+
+func (r *request) activeStepLocked() string {
+	if n := len(r.stepStack); n > 0 {
+		return r.stepStack[n-1]
+	}
+	return "request"
+}
+
+func (r *request) setHTTPStatusLocked(status int) {
+	httpMap, _ := r.fields["http"].(map[string]any)
+	if httpMap == nil {
+		httpMap = map[string]any{}
+		r.fields["http"] = httpMap
+	}
+	httpMap["status"] = status
+}
+
+func (r *request) markLifecycleLocked(status eventv2.Status, code, reason string) {
+	if r.suppressed {
+		return
+	}
+	r.finalStatus = status
+	r.anchorStep = r.activeStepLocked()
+	r.anchorCode = code
+	r.recordErrorLocked(code, reason)
 }
 
 // degradeToHeaderOnlyLocked discards buffered detail and switches the request

@@ -11,6 +11,15 @@ import (
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
+type lifecycleKind uint8
+
+const (
+	lifecycleNormal lifecycleKind = iota
+	lifecyclePanic
+	lifecycleAborted
+	lifecycleTimeout
+)
+
 // Finalize seals the request, assembles the v2.0 wide event, runs the
 // optional Redactor, writes the JSON line to Output, and removes the request
 // from the active set. Subsequent calls on the same context return (nil, nil)
@@ -18,6 +27,26 @@ import (
 //
 // Intended for middleware and adapter authors.
 func Finalize(ctx context.Context) (*eventv2.Event, error) {
+	return finalize(ctx, lifecycleNormal)
+}
+
+// FinalizePanic seals the request as a panic-owned lifecycle emit.
+func FinalizePanic(ctx context.Context) (*eventv2.Event, error) {
+	return finalize(ctx, lifecyclePanic)
+}
+
+// FinalizeAborted seals the request as an aborted lifecycle emit unless the
+// request had already failed explicitly, in which case the existing error wins.
+func FinalizeAborted(ctx context.Context) (*eventv2.Event, error) {
+	return finalize(ctx, lifecycleAborted)
+}
+
+// FinalizeTimeout seals the request as a timeout-owned lifecycle emit.
+func FinalizeTimeout(ctx context.Context) (*eventv2.Event, error) {
+	return finalize(ctx, lifecycleTimeout)
+}
+
+func finalize(ctx context.Context, lifecycle lifecycleKind) (*eventv2.Event, error) {
 	r := requestFromContext(ctx)
 	if r == nil {
 		return nil, ErrNoActiveRequest
@@ -29,6 +58,7 @@ func Finalize(ctx context.Context) (*eventv2.Event, error) {
 		r.sdk.lateAfterEmit.Add(1)
 		return nil, nil
 	}
+	r.applyLifecycleLocked(lifecycle)
 	r.sealed = true
 	now := time.Now().UTC()
 	ev := r.assembleLocked(now)
@@ -50,6 +80,23 @@ func Finalize(ctx context.Context) (*eventv2.Event, error) {
 		r.sdk.suppressed.Add(1)
 	}
 	return ev, nil
+}
+
+func (r *request) applyLifecycleLocked(lifecycle lifecycleKind) {
+	if r.suppressed {
+		return
+	}
+
+	switch lifecycle {
+	case lifecyclePanic:
+		r.markLifecycleLocked(eventv2.StatusError, eventv2.CodePanic, "panic recovered")
+	case lifecycleTimeout:
+		r.markLifecycleLocked(eventv2.StatusTimeout, eventv2.CodeTimeout, "")
+	case lifecycleAborted:
+		if r.anchorStep == "" {
+			r.markLifecycleLocked(eventv2.StatusAborted, eventv2.CodeAborted, "")
+		}
+	}
 }
 
 func (r *request) assembleLocked(tsEnd time.Time) *eventv2.Event {
@@ -139,6 +186,9 @@ func (r *request) assembleLocked(tsEnd time.Time) *eventv2.Event {
 func (r *request) snapshotStatusLocked() eventv2.Status {
 	if r.suppressed {
 		return eventv2.StatusSuppressed
+	}
+	if r.finalStatus != "" {
+		return r.finalStatus
 	}
 	if r.anchorStep != "" {
 		return eventv2.StatusError

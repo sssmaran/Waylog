@@ -2,7 +2,8 @@
 //
 // Public surface: Init, Shutdown, Stats, Logger, From, Step, StepVoid, Fail,
 // NewError, Suppress, Explain. Internal-but-exported helpers for middleware
-// and adapter authors: Begin, Finalize, SetField.
+// and adapter authors: Begin, Finalize, FinalizePanic, FinalizeAborted,
+// FinalizeTimeout, SetField, SetHTTPStatus.
 package waylogv2
 
 import (
@@ -188,6 +189,16 @@ func Stats() StatsSnapshot {
 		SuppressedThenFailed:    s.suppressFailed.Load(),
 		LateCompletionAfterEmit: s.lateAfterEmit.Load(),
 	}
+}
+
+// MaxRequestAge returns the configured watchdog duration. Zero disables the
+// HTTP middleware watchdog path.
+func MaxRequestAge() time.Duration {
+	s := getState()
+	if s == nil {
+		return 0
+	}
+	return s.cfg.MaxRequestAge
 }
 
 func getState() *sdk {
