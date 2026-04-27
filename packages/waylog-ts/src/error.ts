@@ -1,26 +1,17 @@
-import type { ErrorContext } from "./types.js";
+import { WaylogError, type ErrorOpts } from "./types.js";
 
-// createError builds a structured ErrorContext with the four schema 1.1 fields.
-// Callers pass what they know; `code` and `message` are required.
-export function createError(input: {
-  code: string;
-  message: string;
-  path?: string;
-  reason?: string;
-}): ErrorContext {
-  if (!input.code) throw new Error("createError: code is required");
-  if (!input.message) throw new Error("createError: message is required");
-  const out: ErrorContext = { code: input.code, message: input.message };
-  if (input.path) out.path = input.path;
-  if (input.reason) out.reason = input.reason;
-  return out;
+const reservedCodes = new Set(["WAYLOG_TIMEOUT", "WAYLOG_ABORTED", "WAYLOG_PANIC", "WAYLOG_PARTIAL"]);
+
+export function newError(code: string, opts: ErrorOpts = {}): WaylogError | undefined {
+  if (!code) throw new Error("waylog: error code is required");
+  if (reservedCodes.has(code)) return undefined;
+  return new WaylogError(code, opts);
 }
 
-export function isErrorContext(x: unknown): x is ErrorContext {
-  return (
-    typeof x === "object" &&
-    x !== null &&
-    typeof (x as ErrorContext).code === "string" &&
-    typeof (x as ErrorContext).message === "string"
-  );
+export function isWaylogError(err: unknown): err is WaylogError {
+  return err instanceof WaylogError || (typeof err === "object" && err !== null && typeof (err as WaylogError).code === "string");
+}
+
+export function isReservedCode(code: string): boolean {
+  return reservedCodes.has(code);
 }

@@ -1,7 +1,23 @@
-import { createLogger, startRequest, type Logger } from "./logger.js";
-import type { RequestLogger, WaylogConfig } from "./types.js";
+import {
+  begin,
+  fail,
+  finalize,
+  finalizeAborted,
+  finalizeTimeout,
+  formatTraceparent,
+  from,
+  init,
+  newError,
+  parseTraceparent,
+  runWithContext,
+  setField,
+  setHTTPStatus,
+  spanId,
+  traceId,
+  type Context,
+} from "./index.js";
+import type { Logger, WaylogConfig } from "./types.js";
 
-// Express-shaped types without taking a runtime dependency on express.
 type Req = {
   method?: string;
   route?: { path?: string };
@@ -16,43 +32,63 @@ type Res = {
 };
 type Next = (err?: unknown) => void;
 
-const LOGGER_KEY = Symbol.for("waylog.request.logger");
+const CTX_KEY = Symbol.for("waylog.v2.express.context");
 
-export interface ExpressMiddlewareOptions {
-  logger?: Logger;
-}
+export function middleware(config: WaylogConfig) {
+  init(config);
+  return function waylogExpress(req: Req, res: Res, next: Next): void {
+    const inbound = parseTraceparent(pickHeader(req.headers.traceparent));
+    const ctx = begin(req as Context, { traceId: inbound?.traceId, parentSpanId: inbound?.spanId });
+    setField(ctx, "http", { method: req.method ?? "", route: req.route?.path ?? req.url ?? "", status: 200 });
+    (req as Record<symbol, Context>)[CTX_KEY] = ctx;
+    res.setHeader?.("traceparent", formatTraceparent(traceId(ctx), spanId(ctx)));
 
-// waylog() creates (or reuses) a Logger, attaches a per-request RequestLogger
-// to req[Symbol.for("waylog.request.logger")], and emits on response finish.
-export function waylog(config: WaylogConfig & ExpressMiddlewareOptions) {
-  const logger = config.logger ?? createLogger(config);
-
-  return function middleware(req: Req, res: Res, next: Next): void {
-    const { log, traceparent } = startRequest(logger, {
-      method: req.method,
-      route: req.route?.path ?? req.url,
-      traceparentHeader: pickHeader(req.headers["traceparent"]),
-    });
-    (req as any)[LOGGER_KEY] = log;
-    res.setHeader?.("traceparent", traceparent);
-
-    const finalize = (): void => {
-      if (log.emitted()) return;
-      log.emit({ success: res.statusCode < 500, status_code: res.statusCode });
+    let finalized = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const markFinalized = (): boolean => {
+      if (finalized) return false;
+      finalized = true;
+      if (timer) clearTimeout(timer);
+      return true;
     };
-    res.on("finish", finalize);
-    res.on("close", finalize);
-    next();
+    const finish = (): void => {
+      if (!markFinalized()) return;
+      setHTTPStatus(ctx, res.statusCode || 200);
+      if (res.statusCode >= 500) fail(ctx, newError(`HTTP_${res.statusCode}`, { reason: `HTTP ${res.statusCode}` }));
+      void finalize(ctx);
+    };
+    const close = (): void => {
+      if (!markFinalized()) return;
+      void finalizeAborted(ctx);
+    };
+    res.on("finish", finish);
+    res.on("close", close);
+    if (config.maxRequestAgeMs && config.maxRequestAgeMs > 0) {
+      timer = setTimeout(() => {
+        if (!markFinalized()) return;
+        void finalizeTimeout(ctx);
+      }, config.maxRequestAgeMs);
+    }
+    try {
+      runWithContext(ctx, () => next());
+    } catch (err) {
+      markFinalized();
+      setHTTPStatus(ctx, 500);
+      fail(ctx, newError("ERR", { reason: err instanceof Error ? err.message : String(err) }));
+      void finalize(ctx);
+      throw err;
+    }
   };
 }
 
-export function useLogger(req: Req): RequestLogger {
-  const l = (req as any)[LOGGER_KEY] as RequestLogger | undefined;
-  if (!l) throw new Error("waylog: useLogger() called before waylog() middleware was registered");
-  return l;
+export const waylog = middleware;
+
+export function useLogger(req: Req): Logger {
+  const ctx = (req as Record<symbol, Context | undefined>)[CTX_KEY];
+  if (!ctx) throw new Error("waylog: useLogger() called before middleware was registered");
+  return from(ctx);
 }
 
 function pickHeader(v: string | string[] | undefined): string | undefined {
-  if (Array.isArray(v)) return v[0];
-  return v;
+  return Array.isArray(v) ? v[0] : v;
 }

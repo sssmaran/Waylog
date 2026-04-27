@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
@@ -98,6 +98,9 @@ check-doc-links:
 .PHONY: check-rollup-contract
 check-rollup-contract:
 	@bash scripts/check-rollup-contract.sh
+
+bench-gate: ## Enforce v2 SDK §4.4.1 perf budgets (optional; not in `ci` yet)
+	@bash scripts/bench-gate.sh
 
 clean:
 	rm -f ingest checkout waylog bridge api-gateway checkout-demo db-demo payment-demo waylog-live

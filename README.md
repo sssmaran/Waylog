@@ -57,24 +57,27 @@ import { waylog, useLogger } from "@waylog/sdk/express";
 app.use(waylog({
   service: "checkout",
   env: "prod",
-  endpoint: "http://localhost:8080",
+  ingestUrl: "http://localhost:8080",
   apiKey: process.env.WAYLOG_WRITE_KEY,
 }));
 
 app.post("/buy", (req, res) => {
-  useLogger(req).set({ user: { id: req.user.id, tier: "vip" } });
+  useLogger(req).info("cart loaded", { user_id: req.user.id, tier: "vip" });
   res.sendStatus(200);
 });
 ```
 
-`@waylog/sdk` is ESM-only, Node 18+, and ships Express and Hono middleware (`@waylog/sdk/express`, `@waylog/sdk/hono`). `createLogger().withRequest().set().emit()` is also exposed for non-middleware use.
+`@waylog/sdk` is ESM-only, Node 18+, and ships standalone core APIs plus Express, Hono, Next.js, and NestJS entrypoints (`@waylog/sdk/express`, `@waylog/sdk/hono`, `@waylog/sdk/next`, `@waylog/sdk/nest`).
 
 ### Go SDK
 
 ```go
 import (
-    waylog "github.com/sssmaran/WaylogCLI/pkg"
-    wayloghttp "github.com/sssmaran/WaylogCLI/pkg/http"
+    "context"
+    "net/http"
+
+    waylog "github.com/sssmaran/WaylogCLI/pkg/waylog/v2"
+    wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
 )
 
 func main() {
@@ -86,11 +89,11 @@ func main() {
     })
     defer waylog.Shutdown(context.Background())
 
-    http.Handle("/", wayloghttp.Middleware(yourHandler))
+    http.Handle("/", wayloghttp.HTTP(yourHandler))
 }
 ```
 
-Schema 1.1 helpers (`WithErrorReason`, `WithErrorPath`, `WithParentRequestID`, `WithMetadataKey`, `WithAttempt`, `WithRetry`) are additive.
+The recommended SDK path is framework middleware plus `waylog.From(ctx)` / `useLogger(...)` inside handlers. Low-level request APIs such as `Begin`, `Finalize`, and `setField` are for adapter authors, tests, and unusual custom integrations. Full copy-paste examples for `net/http`, chi, gin, echo, standalone TypeScript, Express, Hono, Next.js, and NestJS are in [`docs/sdk-examples.md`](docs/sdk-examples.md).
 
 ### OTLP/HTTP traces
 
@@ -267,7 +270,7 @@ Public alpha. APIs may break before 1.0.
 
 **Shipped:**
 
-- Go SDK (schema 1.1 accessors) and TypeScript SDK (`@waylog/sdk`, ESM, Node 18+, Express + Hono middleware)
+- Go SDK v2 (`net/http`, chi, gin, echo) and TypeScript SDK v2 (`@waylog/sdk`, ESM, Node 18+, standalone core, Express, Hono, Next.js, NestJS)
 - OTLP/HTTP traces at `/v1/otlp/v1/traces` (Phase A — traces only)
 - durable ingest with WAL + replay
 - hot graph with flattened 3-node model + dedicated trace store

@@ -17,6 +17,14 @@
     "./hono": {
       "types": "./dist/hono.d.ts",
       "import": "./dist/hono.js"
+    },
+    "./next": {
+      "types": "./dist/next.d.ts",
+      "import": "./dist/next.js"
+    },
+    "./nest": {
+      "types": "./dist/nest.d.ts",
+      "import": "./dist/nest.js"
     }
   },
   "files": [

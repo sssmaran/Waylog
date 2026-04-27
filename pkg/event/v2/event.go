@@ -25,6 +25,15 @@ const (
 	StatusSuppressed Status = "suppressed"
 )
 
+func (s Status) IsPriority() bool {
+	switch s {
+	case StatusError, StatusTimeout, StatusPartial, StatusAborted:
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	CodeTimeout = "WAYLOG_TIMEOUT"
 	CodeAborted = "WAYLOG_ABORTED"
