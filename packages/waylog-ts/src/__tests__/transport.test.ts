@@ -1,96 +1,107 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Transport } from "../transport.js";
-import { SCHEMA_VERSION, type WideEvent } from "../types.js";
+import { describe, expect, it, vi } from "vitest";
+import { Transport, normalizeIngestUrl } from "../transport.js";
+import type { WideEvent } from "../types.js";
 
-function sampleEvent(n = 0): WideEvent {
+function event(id: string, status: WideEvent["status"] = "ok"): WideEvent {
   return {
-    schema_version: SCHEMA_VERSION,
-    event_name: "svc.request",
-    timestamp: new Date(0).toISOString(),
-    user: { id: "u", tier: "free", region: "us", vip: false },
-    request: { trace_id: "a".repeat(32), span_id: "b".repeat(16), flow: "f", feature_flags: [] },
-    system: { service: "svc", version: "1", deployment_id: "", env: "test" },
-    outcome: { success: true, status_code: 200 + n, kind: "http" },
-    metrics: { latency_ms: n },
+    schema_version: "2.0",
+    event_id: id,
+    ts_start: new Date(0).toISOString(),
+    ts_end: new Date(1).toISOString(),
+    duration_ms: 1,
+    kind: "http",
+    service: "checkout",
+    env: "test",
+    trace_id: "a".repeat(32),
+    span_id: "b".repeat(16),
+    parent_span_id: "",
+    status,
   };
 }
 
-describe("Transport", () => {
-  beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
-
-  it("flushes once batchSize is reached", async () => {
-    const fakeFetch = vi.fn(async () => new Response("ok", { status: 200 }));
-    const t = new Transport({
-      endpoint: "http://x",
-      service: "svc",
-      batchSize: 2,
-      flushIntervalMs: 10_000,
-      fetch: fakeFetch as unknown as typeof fetch,
-    });
-    t.enqueue(sampleEvent(1));
-    expect(fakeFetch).not.toHaveBeenCalled();
-    t.enqueue(sampleEvent(2));
-    // The second enqueue triggers flush synchronously as a microtask.
-    await vi.waitFor(() => expect(fakeFetch).toHaveBeenCalledTimes(1));
-    const call = fakeFetch.mock.calls[0]!;
-    const body = JSON.parse(call[1]!.body as string) as WideEvent[];
-    expect(body).toHaveLength(2);
+describe("v2 transport", () => {
+  it("normalizes ingest URLs", () => {
+    expect(normalizeIngestUrl("http://x")).toBe("http://x/v1/events");
+    expect(normalizeIngestUrl("http://x/v1/events")).toBe("http://x/v1/events");
+    expect(normalizeIngestUrl("http://x?token=abc")).toBe("http://x/v1/events?token=abc");
   });
 
-  it("drops events once queueMax is hit and reports count", () => {
+  it("supports single-event JSON mode", async () => {
+    const calls: RequestInit[] = [];
     const t = new Transport({
-      endpoint: "http://x",
-      service: "svc",
-      queueMax: 1,
-      batchSize: 100,
-      flushIntervalMs: 10_000,
-      fetch: vi.fn() as unknown as typeof fetch,
+      service: "checkout",
+      env: "test",
+      ingestUrl: "http://x",
+      batchMode: false,
+      fetch: vi.fn(async (_url, init) => {
+        calls.push(init!);
+        return new Response("ok", { status: 200 });
+      }) as unknown as typeof fetch,
     });
-    expect(t.enqueue(sampleEvent())).toBe(true);
-    expect(t.enqueue(sampleEvent())).toBe(false);
+    t.submit(event("json-1"));
+    await t.shutdown();
+    expect(calls[0]?.headers).toMatchObject({ "Content-Type": "application/json" });
+    expect(JSON.parse(String(calls[0]?.body))).toMatchObject({ event_id: "json-1" });
+  });
+
+  it("posts NDJSON with auth", async () => {
+    const calls: RequestInit[] = [];
+    const t = new Transport({
+      service: "checkout",
+      env: "test",
+      ingestUrl: "http://x",
+      apiKey: "k",
+      fetch: vi.fn(async (_url, init) => {
+        calls.push(init!);
+        return new Response("ok", { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    t.submit(event("e1"));
+    await t.shutdown();
+    expect(calls[0]?.headers).toMatchObject({ "Content-Type": "application/x-ndjson", Authorization: "Bearer k" });
+    expect(String(calls[0]?.body)).toContain("\"event_id\":\"e1\"");
+  });
+
+  it("retries transient failures", async () => {
+    let calls = 0;
+    const t = new Transport({
+      service: "checkout",
+      env: "test",
+      ingestUrl: "http://x",
+      fetch: vi.fn(async () => {
+        calls++;
+        return new Response("x", { status: calls === 1 ? 500 : 200 });
+      }) as unknown as typeof fetch,
+    });
+    t.submit(event("e1", "error"));
+    await t.shutdown(1000);
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(t.failureCount()).toBe(1);
+  });
+
+  it("counts permanent drops", async () => {
+    const t = new Transport({
+      service: "checkout",
+      env: "test",
+      ingestUrl: "http://x",
+      fetch: vi.fn(async () => new Response("bad", { status: 400 })) as unknown as typeof fetch,
+    });
+    t.submit(event("bad", "error"));
+    await t.shutdown();
     expect(t.droppedCount()).toBe(1);
   });
 
-  it("counts network failures as drops", async () => {
+  it("drops ok queue under pressure before priority", () => {
     const t = new Transport({
-      endpoint: "http://x",
-      service: "svc",
-      batchSize: 1,
-      fetch: vi.fn(async () => {
-        throw new Error("econnrefused");
-      }) as unknown as typeof fetch,
+      service: "checkout",
+      env: "test",
+      ingestUrl: "http://x",
+      maxInFlightBytes: 500,
+      fetch: vi.fn() as unknown as typeof fetch,
     });
-    t.enqueue(sampleEvent());
-    await vi.waitFor(() => expect(t.droppedCount()).toBe(1));
-  });
-
-  it("sends a single object (not an array) when batch size is 1", async () => {
-    const fakeFetch = vi.fn(async () => new Response("ok"));
-    const t = new Transport({
-      endpoint: "http://x",
-      service: "svc",
-      batchSize: 1,
-      fetch: fakeFetch as unknown as typeof fetch,
-    });
-    t.enqueue(sampleEvent());
-    await vi.waitFor(() => expect(fakeFetch).toHaveBeenCalled());
-    const body = JSON.parse(fakeFetch.mock.calls[0]![1]!.body as string);
-    expect(Array.isArray(body)).toBe(false);
-    expect(body.event_name).toBe("svc.request");
-  });
-
-  it("flushes remaining queue on close", async () => {
-    const fakeFetch = vi.fn(async () => new Response("ok"));
-    const t = new Transport({
-      endpoint: "http://x",
-      service: "svc",
-      batchSize: 100,
-      flushIntervalMs: 10_000,
-      fetch: fakeFetch as unknown as typeof fetch,
-    });
-    t.enqueue(sampleEvent());
-    await t.close();
-    expect(fakeFetch).toHaveBeenCalledTimes(1);
+    expect(t.submit(event("ok-1"))).toBe(true);
+    expect(t.submit(event("ok-2"))).toBe(true);
+    expect(t.submit(event("prio", "error"))).toBe(true);
+    expect(t.droppedCount()).toBeGreaterThan(0);
   });
 });

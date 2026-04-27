@@ -1,54 +1,64 @@
-import { createLogger, startRequest, type Logger } from "./logger.js";
-import type { RequestLogger, WaylogConfig } from "./types.js";
+import {
+  begin,
+  fail,
+  finalize,
+  finalizeTimeout,
+  formatTraceparent,
+  from,
+  init,
+  newError,
+  parseTraceparent,
+  runWithContext,
+  setField,
+  setHTTPStatus,
+  spanId,
+  traceId,
+  type Context,
+} from "./index.js";
+import type { Logger, WaylogConfig } from "./types.js";
 
-// Hono-shaped context without runtime dependency on hono.
 type Ctx = {
   req: { method: string; routePath?: string; path?: string; header: (n: string) => string | undefined };
-  res: { headers: { set: (n: string, v: string) => void } };
+  res: { headers: { set: (n: string, v: string) => void }; status?: number };
   set: (key: string, value: unknown) => void;
   get: (key: string) => unknown;
 };
 
-const LOGGER_KEY = "__waylog_request_logger__";
+const CTX_KEY = "__waylog_v2_context__";
 
-export interface HonoMiddlewareOptions {
-  logger?: Logger;
-}
+export function middleware(config: WaylogConfig) {
+  init(config);
+  return async function waylogHono(c: Ctx, next: () => Promise<void>): Promise<void> {
+    const inbound = parseTraceparent(c.req.header("traceparent"));
+    const ctx = begin({}, { traceId: inbound?.traceId, parentSpanId: inbound?.spanId });
+    setField(ctx, "http", { method: c.req.method, route: c.req.routePath ?? c.req.path ?? "", status: 200 });
+    c.set(CTX_KEY, ctx);
+    c.res.headers.set("traceparent", formatTraceparent(traceId(ctx), spanId(ctx)));
 
-// Hono-style middleware: returns an `async (c, next) => { ... }` function.
-export function waylog(config: WaylogConfig & HonoMiddlewareOptions) {
-  const logger = config.logger ?? createLogger(config);
-
-  return async function middleware(c: Ctx, next: () => Promise<void>): Promise<void> {
-    const { log, traceparent } = startRequest(logger, {
-      method: c.req.method,
-      route: c.req.routePath ?? c.req.path,
-      traceparentHeader: c.req.header("traceparent"),
-    });
-    c.set(LOGGER_KEY, log);
-    c.res.headers.set("traceparent", traceparent);
-
-    let statusCode = 200;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (config.maxRequestAgeMs && config.maxRequestAgeMs > 0) {
+      timer = setTimeout(() => void finalizeTimeout(ctx), config.maxRequestAgeMs);
+    }
     try {
-      await next();
-      // Hono surfaces final status through c.res, which middleware can read
-      // only after next() resolves. We peek defensively via any.
-      const anyRes = c.res as unknown as { status?: number };
-      if (typeof anyRes.status === "number") statusCode = anyRes.status;
+      await runWithContext(ctx, () => next());
+      setHTTPStatus(ctx, c.res.status ?? 200);
+      if ((c.res.status ?? 200) >= 500) fail(ctx, newError(`HTTP_${c.res.status ?? 500}`, { reason: `HTTP ${c.res.status ?? 500}` }));
+      await finalize(ctx);
     } catch (err) {
-      statusCode = 500;
-      log.error(err instanceof Error ? err : String(err));
+      setHTTPStatus(ctx, 500);
+      fail(ctx, newError("ERR", { reason: err instanceof Error ? err.message : String(err) }));
+      await finalize(ctx);
       throw err;
     } finally {
-      if (!log.emitted()) {
-        log.emit({ success: statusCode < 500, status_code: statusCode });
-      }
+      if (timer) clearTimeout(timer);
     }
   };
 }
 
-export function useLogger(c: Ctx): RequestLogger {
-  const l = c.get(LOGGER_KEY) as RequestLogger | undefined;
-  if (!l) throw new Error("waylog: useLogger() called before waylog() middleware was registered");
-  return l;
+export const waylog = middleware;
+
+export function useLogger(c: Ctx): Logger {
+  const ctx = c.get(CTX_KEY) as Context | undefined;
+  if (!ctx) throw new Error("waylog: useLogger() called before middleware was registered");
+  return from(ctx);
 }

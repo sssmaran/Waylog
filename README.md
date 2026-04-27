@@ -57,17 +57,17 @@ import { waylog, useLogger } from "@waylog/sdk/express";
 app.use(waylog({
   service: "checkout",
   env: "prod",
-  endpoint: "http://localhost:8080",
+  ingestUrl: "http://localhost:8080",
   apiKey: process.env.WAYLOG_WRITE_KEY,
 }));
 
 app.post("/buy", (req, res) => {
-  useLogger(req).set({ user: { id: req.user.id, tier: "vip" } });
+  useLogger(req).info("cart loaded", { user_id: req.user.id, tier: "vip" });
   res.sendStatus(200);
 });
 ```
 
-`@waylog/sdk` is ESM-only, Node 18+, and ships Express and Hono middleware (`@waylog/sdk/express`, `@waylog/sdk/hono`). `createLogger().withRequest().set().emit()` is also exposed for non-middleware use.
+`@waylog/sdk` is ESM-only, Node 18+, and ships standalone core APIs plus Express, Hono, Next.js, and NestJS entrypoints (`@waylog/sdk/express`, `@waylog/sdk/hono`, `@waylog/sdk/next`, `@waylog/sdk/nest`).
 
 ### Go SDK
 
