@@ -3,6 +3,7 @@ package waylogv2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -13,7 +14,7 @@ import (
 // If ctx has no active Waylog request, fn runs and Step is a thin pass-through.
 // If name is empty, fn runs without opening a step (the empty name would
 // collide with the "no anchor yet" sentinel).
-func Step[T any](ctx context.Context, name string, fn func(ctx context.Context) (T, error)) (T, error) {
+func Step[T any](ctx context.Context, name string, fn func(ctx context.Context) (T, error)) (v T, err error) {
 	r := requestFromContext(ctx)
 	if r == nil || name == "" {
 		return fn(ctx)
@@ -21,10 +22,16 @@ func Step[T any](ctx context.Context, name string, fn func(ctx context.Context) 
 	startedAt := time.Now()
 	startMS := int64(startedAt.Sub(r.tsStart) / 1e6)
 	r.pushStep(name, startedAt, startMS)
-	v, err := fn(ctx)
-	dur := int64(time.Since(startedAt) / 1e6)
-
-	r.closeStep(name, startMS, dur, err)
+	defer func() {
+		dur := int64(time.Since(startedAt) / 1e6)
+		if rec := recover(); rec != nil {
+			r.rememberPanicStep(name)
+			r.closeStep(name, startMS, dur, fmt.Errorf("panic: %v", rec))
+			panic(rec)
+		}
+		r.closeStep(name, startMS, dur, err)
+	}()
+	v, err = fn(ctx)
 	return v, err
 }
 
@@ -71,6 +78,7 @@ func Fail(ctx context.Context, err *Error) {
 			r.anchorStep = "request"
 		}
 		r.anchorCode = err.Code
+		r.anchorFromStepPanic = false
 	}
 }
 
@@ -96,6 +104,16 @@ func Suppress(ctx context.Context) {
 	r.finalStatus = ""
 	r.anchorStep = ""
 	r.anchorCode = ""
+	r.anchorFromStepPanic = false
+	r.panicStepHint = ""
+}
+
+func (r *request) rememberPanicStep(name string) {
+	r.mu.Lock()
+	if r.panicStepHint == "" {
+		r.panicStepHint = name
+	}
+	r.mu.Unlock()
 }
 
 func (r *request) pushStep(name string, startedAt time.Time, startMS int64) {

@@ -223,8 +223,10 @@ type request struct {
 
 	// First observable failing step, or "request" sentinel for a Fail() with
 	// no active step. Set once and never overwritten.
-	anchorStep string
-	anchorCode string
+	anchorStep          string
+	anchorCode          string
+	anchorFromStepPanic bool
+	panicStepHint       string
 }
 
 type activeStep struct {
@@ -266,6 +268,7 @@ func (r *request) addStepLocked(s stepBuf) {
 		if r.anchorStep == "" {
 			r.anchorStep = s.name
 			r.anchorCode = s.err.Code
+			r.anchorFromStepPanic = r.panicStepHint == s.name && s.err.Code == "ERR"
 		}
 	}
 
@@ -367,7 +370,12 @@ func (r *request) markLifecycleLocked(status eventv2.Status, code string) {
 	}
 	r.finalStatus = status
 	r.anchorStep = r.activeStepLocked()
+	if code == eventv2.CodePanic && r.anchorStep == "request" && r.panicStepHint != "" {
+		r.anchorStep = r.panicStepHint
+		r.panicStepHint = ""
+	}
 	r.anchorCode = code
+	r.anchorFromStepPanic = false
 }
 
 // degradeToHeaderOnlyLocked discards buffered detail and switches the request

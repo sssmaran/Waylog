@@ -55,6 +55,8 @@ type RequestState = {
   headerOnly: boolean;
   finalStatus?: Status;
   anchor?: Anchor;
+  anchorFromStepPanic: boolean;
+  panicStepHint?: string;
   bufBytes: number;
 };
 
@@ -78,6 +80,7 @@ class SDK {
     lateCompletionAfterEmit: 0,
     eventsDropped: 0,
     deliveryFailures: 0,
+    eventsRejected: 0,
   };
 
   constructor(cfg: RequiredConfig) {
@@ -124,6 +127,7 @@ export function stats(): Stats {
     activeRequests: sdk.active.size,
     eventsDropped: sdk.stats.eventsDropped + (sdk.transport?.droppedCount() ?? 0),
     deliveryFailures: sdk.stats.deliveryFailures + (sdk.transport?.failureCount() ?? 0),
+    eventsRejected: sdk.stats.eventsRejected + (sdk.transport?.rejectedCount() ?? 0),
   };
 }
 
@@ -145,6 +149,7 @@ export function begin(ctx: Context = {}, opts: BeginOptions = {}): Context {
     sealed: false,
     suppressed: false,
     headerOnly: false,
+    anchorFromStepPanic: false,
     bufBytes: 0,
   };
   s.active.add(r);
@@ -178,6 +183,7 @@ export async function step<T>(ctx: Context, name: string, fn: (ctx: Context) => 
     closeStep(r, name);
     return v;
   } catch (err) {
+    rememberPanicStep(r, name);
     closeStep(r, name, err);
     throw err;
   }
@@ -192,22 +198,20 @@ export function stepSync<T>(ctx: Context, name: string, fn: (ctx: Context) => T)
     closeStep(r, name);
     return v;
   } catch (err) {
+    rememberPanicStep(r, name);
     closeStep(r, name, err);
     throw err;
   }
 }
 
-export function fail(ctx: Context, err: WaylogError): void {
+export function fail(ctx: Context, err: WaylogError | undefined): void {
   failState(requestFrom(ctx), err);
 }
 
-export function newError(code: string, opts: ErrorOpts = {}): WaylogError {
-  try {
-    return buildError(code, opts);
-  } catch (err) {
-    if (isReservedCode(code) && sdk) sdk.stats.reservedCodeRejections++;
-    throw err;
-  }
+export function newError(code: string, opts: ErrorOpts = {}): WaylogError | undefined {
+  const err = buildError(code, opts);
+  if (!err && isReservedCode(code) && sdk) sdk.stats.reservedCodeRejections++;
+  return err;
 }
 
 export function suppress(ctx: Context): void {
@@ -219,6 +223,8 @@ export function suppress(ctx: Context): void {
   r.errors = [];
   r.activeSteps = [];
   r.anchor = undefined;
+  r.anchorFromStepPanic = false;
+  r.panicStepHint = undefined;
   r.finalStatus = undefined;
   r.headerOnly = false;
   r.bufBytes = 0;
@@ -343,11 +349,13 @@ function applyLifecycle(r: RequestState, lifecycle: "normal" | "panic" | "aborte
   if (r.suppressed) return;
   const now = Date.now();
   if (lifecycle === "panic") {
-    markLifecycle(r, "error", "WAYLOG_PANIC");
+    if (!r.anchor || r.anchorFromStepPanic) markLifecycle(r, "error", "WAYLOG_PANIC");
+    else r.finalStatus = "error";
     recordError(r, "WAYLOG_PANIC", "runtime panic recovered");
     flushActiveSteps(r, now, "error", { code: "WAYLOG_PANIC", reason: "runtime panic recovered" });
   } else if (lifecycle === "timeout") {
-    markLifecycle(r, "timeout", "WAYLOG_TIMEOUT");
+    if (!r.anchor) markLifecycle(r, "timeout", "WAYLOG_TIMEOUT");
+    else r.finalStatus = "timeout";
     flushActiveSteps(r, now, "ok");
   } else if (lifecycle === "aborted") {
     if (!r.anchor) markLifecycle(r, "aborted", "WAYLOG_ABORTED");
@@ -447,7 +455,10 @@ function closeStep(r: RequestState, name: string, err?: unknown): void {
   };
   if (stepErr) {
     recordError(r, stepErr.code || "ERR", stepErr.reason);
-    if (!r.anchor) r.anchor = { step: name, error_code: stepErr.code || "ERR" };
+    if (!r.anchor) {
+      r.anchor = { step: name, error_code: stepErr.code || "ERR" };
+      r.anchorFromStepPanic = r.panicStepHint === name && (stepErr.code || "ERR") === "ERR";
+    }
   }
   addStep(r, step);
 }
@@ -482,7 +493,7 @@ function flushActiveSteps(r: RequestState, now: number, status: "ok" | "error", 
   r.activeSteps = [];
 }
 
-function failState(r: RequestState | undefined, err: WaylogError): void {
+function failState(r: RequestState | undefined, err: WaylogError | undefined): void {
   if (!r || !err || r.sealed) return;
   if (r.suppressed) {
     r.sdk.stats.suppressedThenFailed++;
@@ -493,12 +504,21 @@ function failState(r: RequestState | undefined, err: WaylogError): void {
     return;
   }
   recordError(r, err.code, err.reason);
-  if (!r.anchor) r.anchor = { step: r.activeSteps.at(-1)?.name ?? "request", error_code: err.code };
+  if (!r.anchor) {
+    r.anchor = { step: r.activeSteps.at(-1)?.name ?? "request", error_code: err.code };
+    r.anchorFromStepPanic = false;
+  }
 }
 
 function markLifecycle(r: RequestState, status: Status, code: string): void {
   r.finalStatus = status;
-  r.anchor = { step: r.activeSteps.at(-1)?.name ?? "request", error_code: code };
+  const step = r.activeSteps.at(-1)?.name ?? (code === "WAYLOG_PANIC" && r.panicStepHint ? r.panicStepHint : "request");
+  r.anchor = { step, error_code: code };
+  r.anchorFromStepPanic = false;
+}
+
+function rememberPanicStep(r: RequestState, name: string): void {
+  r.panicStepHint ??= name;
 }
 
 function statusOf(r: RequestState): Status {
@@ -612,5 +632,6 @@ function emptyStats(): Stats {
     lateCompletionAfterEmit: 0,
     eventsDropped: 0,
     deliveryFailures: 0,
+    eventsRejected: 0,
   };
 }

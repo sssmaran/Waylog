@@ -62,6 +62,21 @@ describe("v2 transport", () => {
     expect(String(calls[0]?.body)).toContain("\"event_id\":\"e1\"");
   });
 
+  it("counts envelope rejections under 200 responses", async () => {
+    const t = new Transport({
+      service: "checkout",
+      env: "test",
+      ingestUrl: "http://x",
+      fetch: vi.fn(async () => new Response(
+        JSON.stringify({ accepted: 0, duplicate: 0, rejected: [{ index: 0, event_id: "e1", reason: "validation_failed" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof fetch,
+    });
+    t.submit(event("e1", "error"));
+    await t.shutdown();
+    expect(t.rejectedCount()).toBe(1);
+  });
+
   it("retries transient failures", async () => {
     let calls = 0;
     const t = new Transport({

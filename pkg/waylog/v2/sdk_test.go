@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,6 +108,29 @@ func TestInitAllowedAfterDrain(t *testing.T) {
 	// Active count back to zero — re-init must succeed.
 	if err := Init(Config{Service: "y", Env: "test", Output: &bytes.Buffer{}}); err != nil {
 		t.Fatalf("re-init after drain: %v", err)
+	}
+}
+
+func TestInitAfterDrainShutsDownPreviousDelivery(t *testing.T) {
+	var delivered atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		delivered.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"accepted":1,"duplicate":0,"rejected":[]}`)
+	}))
+	defer srv.Close()
+
+	newHarness(t, Config{IngestURL: srv.URL})
+	ctx := Begin(context.Background(), BeginOptions{})
+	if _, err := Finalize(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Init(Config{Service: "next", Env: "test", Output: &bytes.Buffer{}}); err != nil {
+		t.Fatalf("re-init after drain: %v", err)
+	}
+	if got := delivered.Load(); got != 1 {
+		t.Fatalf("previous delivery flushes during re-init: got %d want 1", got)
 	}
 }
 
@@ -277,6 +302,61 @@ func TestFinalizeAbortedPreservesExistingExplicitFail(t *testing.T) {
 	}
 	if ev.Anchor == nil || ev.Anchor.Step != "request" || ev.Anchor.ErrorCode != "AUTH_DENIED" {
 		t.Fatalf("explicit failure must survive aborted finalize: %+v", ev.Anchor)
+	}
+}
+
+func TestLifecyclePanicAndTimeoutPreserveExistingExplicitFailAnchor(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		finalize  func(context.Context) (*eventv2.Event, error)
+		wantState eventv2.Status
+	}{
+		{name: "panic", finalize: FinalizePanic, wantState: eventv2.StatusError},
+		{name: "timeout", finalize: FinalizeTimeout, wantState: eventv2.StatusTimeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, Config{})
+			ctx := Begin(context.Background(), BeginOptions{})
+			Fail(ctx, NewError("PMT_502", WithReason("payment failed first")))
+
+			if _, err := tc.finalize(ctx); err != nil {
+				t.Fatalf("finalize: %v", err)
+			}
+
+			h.validateLast()
+			ev := h.lastEvent()
+			if ev.Status != tc.wantState {
+				t.Fatalf("status=%s want %s", ev.Status, tc.wantState)
+			}
+			if ev.Anchor == nil || ev.Anchor.ErrorCode != "PMT_502" {
+				t.Fatalf("explicit failure anchor must survive lifecycle finalize: %+v", ev.Anchor)
+			}
+		})
+	}
+}
+
+func TestStepPanicClosesActiveStepBeforeRepanic(t *testing.T) {
+	h := newHarness(t, Config{})
+	ctx := Begin(context.Background(), BeginOptions{})
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected panic")
+			}
+		}()
+		_ = StepVoid(ctx, "payment.charge", func(ctx context.Context) error {
+			panic("boom")
+		})
+	}()
+	if _, err := FinalizePanic(ctx); err != nil {
+		t.Fatalf("FinalizePanic: %v", err)
+	}
+
+	h.validateLast()
+	ev := h.lastEvent()
+	if len(ev.Steps) != 1 || ev.Steps[0].Name != "payment.charge" {
+		t.Fatalf("panic step was not closed into steps[]: %+v", ev.Steps)
 	}
 }
 
@@ -803,6 +883,29 @@ func TestMaxInFlightBytesDropsOversizedTransportEvent(t *testing.T) {
 
 	if got := Stats().EventsDropped; got != 1 {
 		t.Fatalf("EventsDropped=%d want 1", got)
+	}
+}
+
+func TestIngestEnvelopeRejectionsSurfaceInStats(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"accepted":0,"duplicate":0,"rejected":[{"index":0,"event_id":"e1","reason":"validation_failed","detail":"bad"}]}`)
+	}))
+	defer srv.Close()
+
+	newHarness(t, Config{IngestURL: srv.URL})
+	ctx := Begin(context.Background(), BeginOptions{})
+	if _, err := Finalize(ctx); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := Shutdown(deadline); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if got := Stats().EventsRejected; got != 1 {
+		t.Fatalf("EventsRejected=%d want 1", got)
 	}
 }
 

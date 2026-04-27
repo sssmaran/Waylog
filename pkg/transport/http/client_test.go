@@ -61,6 +61,26 @@ func TestClientSinglePost(t *testing.T) {
 	}
 }
 
+func TestSinglePostCountsEnvelopeRejections(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"accepted":0,"duplicate":0,"rejected":[{"index":0,"event_id":"e1","reason":"validation_failed"}]}`)
+	}))
+	defer srv.Close()
+
+	cli, err := New(Config{IngestURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if cli.Submit(validEvent("e1", eventv2.StatusError)) {
+		t.Fatal("single submit should report false when envelope rejects the event")
+	}
+	if got := cli.Rejected(); got != 1 {
+		t.Fatalf("Rejected=%d want 1", got)
+	}
+}
+
 func TestNDJSONBatchFlush(t *testing.T) {
 	var batches atomic.Int64
 	var totalEvents atomic.Int64
@@ -98,6 +118,25 @@ func TestNDJSONBatchFlush(t *testing.T) {
 	}
 	if batches.Load() < 2 {
 		t.Fatalf("expected at least 2 batches, got %d", batches.Load())
+	}
+}
+
+func TestNDJSONBatchCountsEnvelopeRejections(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"accepted":0,"duplicate":0,"rejected":[{"index":0,"event_id":"e1","reason":"validation_failed"}]}`)
+	}))
+	defer srv.Close()
+
+	cli, err := New(Config{IngestURL: srv.URL, BatchMode: true, BatchAgeMs: 1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cli.Submit(validEvent("e1", eventv2.StatusError))
+	cli.Shutdown(2 * time.Second)
+	if got := cli.Rejected(); got != 1 {
+		t.Fatalf("Rejected=%d want 1", got)
 	}
 }
 

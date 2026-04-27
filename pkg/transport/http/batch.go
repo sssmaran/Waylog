@@ -18,6 +18,19 @@ type deliveryResult struct {
 	retryAfter time.Duration
 }
 
+type ingestEnvelope struct {
+	Accepted  int              `json:"accepted"`
+	Duplicate int              `json:"duplicate"`
+	Rejected  []ingestRejected `json:"rejected"`
+}
+
+type ingestRejected struct {
+	Index   int    `json:"index"`
+	EventID string `json:"event_id"`
+	Reason  string `json:"reason"`
+	Detail  string `json:"detail"`
+}
+
 func (c *Client) flushBatch(batch []*eventv2.Event) deliveryResult {
 	if c.url == "" || len(batch) == 0 {
 		return deliveryResult{success: true}
@@ -49,11 +62,12 @@ func (c *Client) flushBatch(batch []*eventv2.Event) deliveryResult {
 		c.recordFailure(len(batch))
 		return deliveryResult{retryable: true}
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		c.recordEnvelope(respBody)
 		return deliveryResult{success: true}
 	case isRetryableStatus(resp.StatusCode):
 		c.recordFailure(len(batch))
@@ -65,6 +79,18 @@ func (c *Client) flushBatch(batch []*eventv2.Event) deliveryResult {
 		c.recordDrop(len(batch))
 		return deliveryResult{}
 	}
+}
+
+func (c *Client) recordEnvelope(body []byte) {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return
+	}
+	var env ingestEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return
+	}
+	c.recordRejected(len(env.Rejected))
 }
 
 func retryAfter(raw string) time.Duration {

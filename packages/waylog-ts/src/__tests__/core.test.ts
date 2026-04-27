@@ -52,7 +52,7 @@ describe("v2 core lifecycle", () => {
   it("records explicit failures and local explain output", async () => {
     harness();
     const ctx = begin({}, { traceId: "2".repeat(32), spanId: "2".repeat(16) });
-    const err = newError("PMT_502", { reason: "upstream gateway 5xx" });
+    const err = newError("PMT_502", { reason: "upstream gateway 5xx" })!;
     expect(() => stepSync(ctx, "payment.charge", () => {
       fail(ctx, err);
       throw err;
@@ -110,6 +110,38 @@ describe("v2 core lifecycle", () => {
     expect(ev.anchor?.step).toBe("payment.charge");
     expect(ev.steps?.[0]?.name).toBe("payment.charge");
     expect(ev.steps?.[0]?.downstream?.service).toBe("payment");
+  });
+
+  it("panic and timeout preserve explicit failure anchors", async () => {
+    const panicH = harness();
+    const panicCtx = begin({});
+    fail(panicCtx, newError("PMT_502", { reason: "payment failed first" }));
+    await finalizePanic(panicCtx);
+    expect(panicH.event().anchor?.error_code).toBe("PMT_502");
+    expect(panicH.event().status).toBe("error");
+
+    const timeoutH = harness();
+    const timeoutCtx = begin({});
+    fail(timeoutCtx, newError("PMT_502", { reason: "payment failed first" }));
+    await finalizeTimeout(timeoutCtx);
+    expect(timeoutH.event().anchor?.error_code).toBe("PMT_502");
+    expect(timeoutH.event().status).toBe("timeout");
+  });
+
+  it("panic finalization replaces synthetic step panic anchors with WAYLOG_PANIC", async () => {
+    const h = harness();
+    const ctx = begin({});
+    expect(() => stepSync(ctx, "payment.charge", () => {
+      throw new Error("boom");
+    })).toThrow("boom");
+    await finalizePanic(ctx);
+    expect(h.event().anchor).toEqual({ step: "payment.charge", error_code: "WAYLOG_PANIC" });
+  });
+
+  it("reserved error codes are rejected without throwing", () => {
+    harness();
+    expect(newError("WAYLOG_TIMEOUT")).toBeUndefined();
+    expect(stats().reservedCodeRejections).toBe(1);
   });
 
   it("rate limiting drops ok before priority", async () => {

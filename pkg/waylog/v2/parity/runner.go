@@ -203,9 +203,10 @@ func walkLogs(v any) any {
 	return out
 }
 
-// normalize collapses semantically-empty values (nil, "", [], {}) so that
+// normalize collapses semantically-empty values (nil, [], {}) so that
 // an omitempty struct field marshalling away matches a fixture that
-// explicitly included an empty array or empty object.
+// explicitly included an empty array or empty object. Empty strings are kept
+// because identity fields such as parent_span_id use "" as meaningful data.
 func normalize(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -239,8 +240,6 @@ func isSemanticEmpty(v any) bool {
 	switch x := v.(type) {
 	case nil:
 		return true
-	case string:
-		return x == ""
 	case map[string]any:
 		return len(x) == 0
 	case []any:

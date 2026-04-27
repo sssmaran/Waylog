@@ -37,6 +37,7 @@ export interface Stats {
   lateCompletionAfterEmit: number;
   eventsDropped: number;
   deliveryFailures: number;
+  eventsRejected: number;
 }
 
 export interface Anchor {
@@ -122,7 +123,7 @@ export class WaylogError extends Error {
 export interface Logger {
   info(msg: string, fields?: Fields): void;
   warn(msg: string, fields?: Fields): void;
-  error(msg: string, err: WaylogError, fields?: Fields): void;
+  error(msg: string, err: WaylogError | undefined, fields?: Fields): void;
 }
 
 export interface Context {

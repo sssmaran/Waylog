@@ -43,7 +43,7 @@ function normalize(v: unknown): unknown {
     const out: Record<string, unknown> = {};
     for (const [k, val] of Object.entries(v)) {
       const n = normalize(val);
-      if (n !== undefined && n !== "") out[k] = n;
+      if (n !== undefined) out[k] = n;
     }
     return Object.keys(out).length === 0 ? undefined : out;
   }
@@ -70,7 +70,7 @@ describe("TS fixture parity", () => {
     setField(ctx, "http", { method: "POST", route: "/checkout", status: 200 });
     setField(ctx, "user", { id: "u_123" });
     stepSync(ctx, "db.load_cart", () => undefined);
-    const err = newError("PMT_502", { reason: "upstream gateway 5xx" });
+    const err = newError("PMT_502", { reason: "upstream gateway 5xx" })!;
     try {
       stepSync(ctx, "payment.charge", () => {
         from(ctx).warn("retrying payment");

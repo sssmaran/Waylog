@@ -75,6 +75,7 @@ type StatsSnapshot struct {
 	LateCompletionAfterEmit int64
 	EventsDropped           int64
 	DeliveryFailures        int64
+	EventsRejected          int64
 }
 
 // ErrAlreadyInitialized is returned by Init when a prior SDK is still alive
@@ -147,6 +148,19 @@ func Init(cfg Config) error {
 		devEnabled: devEnabled,
 		active:     make(map[*request]struct{}),
 	}
+
+	stateMu.Lock()
+	var previous *sdk
+	if state != nil {
+		state.mu.Lock()
+		n := len(state.active)
+		state.mu.Unlock()
+		if n > 0 {
+			stateMu.Unlock()
+			return fmt.Errorf("%w: %d in flight", ErrAlreadyInitialized, n)
+		}
+		previous = state
+	}
 	if cfg.IngestURL != "" {
 		delivery, err := transporthttp.New(transporthttp.Config{
 			IngestURL:   cfg.IngestURL,
@@ -156,22 +170,16 @@ func Init(cfg Config) error {
 			InFlightCap: cfg.MaxInFlightBytes,
 		})
 		if err != nil {
+			stateMu.Unlock()
 			return err
 		}
 		s.delivery = delivery
 	}
-
-	stateMu.Lock()
-	defer stateMu.Unlock()
-	if state != nil {
-		state.mu.Lock()
-		n := len(state.active)
-		state.mu.Unlock()
-		if n > 0 {
-			return fmt.Errorf("%w: %d in flight", ErrAlreadyInitialized, n)
-		}
-	}
 	state = s
+	stateMu.Unlock()
+	if previous != nil && previous.delivery != nil {
+		previous.delivery.Shutdown(0)
+	}
 	return nil
 }
 
@@ -226,6 +234,7 @@ func Stats() StatsSnapshot {
 		LateCompletionAfterEmit: s.lateAfterEmit.Load(),
 		EventsDropped:           s.eventsDropped.Load() + deliveryDropped(s),
 		DeliveryFailures:        deliveryFailures(s),
+		EventsRejected:          deliveryRejected(s),
 	}
 }
 
@@ -270,8 +279,19 @@ func deliveryFailures(s *sdk) int64 {
 	return s.delivery.Failures()
 }
 
+func deliveryRejected(s *sdk) int64 {
+	if s == nil || s.delivery == nil {
+		return 0
+	}
+	return s.delivery.Rejected()
+}
+
 func resetForTest() {
 	stateMu.Lock()
+	previous := state
 	state = nil
 	stateMu.Unlock()
+	if previous != nil && previous.delivery != nil {
+		previous.delivery.Shutdown(0)
+	}
 }

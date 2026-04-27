@@ -19,6 +19,12 @@ type DeliveryResult = {
   retryAfterMs: number;
 };
 
+type IngestEnvelope = {
+  accepted?: number;
+  duplicate?: number;
+  rejected?: Array<{ index?: number; event_id?: string; reason?: string; detail?: string }>;
+};
+
 export class Transport {
   private readonly url: string;
   private readonly apiKey?: string;
@@ -40,6 +46,7 @@ export class Transport {
   private closed = false;
   private dropped = 0;
   private failures = 0;
+  private rejected = 0;
   private jsonPosts = new Set<Promise<void>>();
 
   constructor(config: WaylogConfig) {
@@ -84,6 +91,10 @@ export class Transport {
 
   failureCount(): number {
     return this.failures;
+  }
+
+  rejectedCount(): number {
+    return this.rejected;
   }
 
   async shutdown(timeoutMs = 0): Promise<void> {
@@ -189,7 +200,10 @@ export class Transport {
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
     try {
       const resp = await this.fetchImpl(this.url, { method: "POST", headers, body });
-      if (resp.status >= 200 && resp.status < 300) return { success: true, retryable: false, retryAfterMs: 0 };
+      if (resp.status >= 200 && resp.status < 300) {
+        await this.recordEnvelope(resp);
+        return { success: true, retryable: false, retryAfterMs: 0 };
+      }
       if (resp.status === 429 || resp.status >= 500) {
         this.failures += events.length;
         return { success: false, retryable: true, retryAfterMs: retryAfterMs(resp.headers.get("Retry-After")) };
@@ -242,7 +256,10 @@ export class Transport {
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
     try {
       const resp = await this.fetchImpl(this.url, { method: "POST", headers, body: JSON.stringify(ev) });
-      if (resp.status >= 200 && resp.status < 300) return;
+      if (resp.status >= 200 && resp.status < 300) {
+        await this.recordEnvelope(resp);
+        return;
+      }
       if (resp.status === 429 || resp.status >= 500) this.failures++;
       else this.dropped++;
     } catch {
@@ -273,6 +290,18 @@ export class Transport {
     if (!item) return;
     this.priorityBytes -= item.bytes;
     this.dropped++;
+  }
+
+  private async recordEnvelope(resp: Response): Promise<void> {
+    const body = (await resp.text()).trim();
+    if (!body) return;
+    let env: IngestEnvelope;
+    try {
+      env = JSON.parse(body) as IngestEnvelope;
+    } catch {
+      return;
+    }
+    this.rejected += env.rejected?.length ?? 0;
   }
 }
 

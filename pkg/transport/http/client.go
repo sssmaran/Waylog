@@ -44,6 +44,7 @@ type Client struct {
 
 	dropped  atomic.Int64
 	failures atomic.Int64
+	rejected atomic.Int64
 }
 
 func New(cfg Config) (*Client, error) {
@@ -157,10 +158,12 @@ func (c *Client) submitSingle(ev *eventv2.Event) bool {
 		c.recordFailure(1)
 		return false
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return true
+		before := c.Rejected()
+		c.recordEnvelope(respBody)
+		return c.Rejected() == before
 	}
 	if isRetryableStatus(resp.StatusCode) {
 		c.recordFailure(1)
@@ -184,6 +187,13 @@ func (c *Client) Failures() int64 {
 	return c.failures.Load()
 }
 
+func (c *Client) Rejected() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.rejected.Load()
+}
+
 func (c *Client) recordDrop(n int) {
 	if n > 0 {
 		c.dropped.Add(int64(n))
@@ -193,6 +203,12 @@ func (c *Client) recordDrop(n int) {
 func (c *Client) recordFailure(n int) {
 	if n > 0 {
 		c.failures.Add(int64(n))
+	}
+}
+
+func (c *Client) recordRejected(n int) {
+	if n > 0 {
+		c.rejected.Add(int64(n))
 	}
 }
 

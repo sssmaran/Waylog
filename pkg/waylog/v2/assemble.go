@@ -97,17 +97,25 @@ func (r *request) applyLifecycleLocked(lifecycle lifecycleKind) {
 		// Panic is an app-observable failure, so it synthesizes both an
 		// anchor and an entry in errors[] (§3.4: errors[] is the deduped
 		// list of errors seen across the request).
-		r.markLifecycleLocked(eventv2.StatusError, eventv2.CodePanic)
+		if r.anchorStep == "" || r.anchorFromStepPanic {
+			r.markLifecycleLocked(eventv2.StatusError, eventv2.CodePanic)
+		} else {
+			r.finalStatus = eventv2.StatusError
+		}
 		r.recordErrorLocked(eventv2.CodePanic, "runtime panic recovered")
 		r.flushActiveStepsLocked(now)
 	case lifecycleTimeout:
 		// Watchdog expiry is a runtime decision, not an app error; the
 		// lifecycle code lives only in anchor, not errors[].
-		r.markLifecycleLocked(eventv2.StatusTimeout, eventv2.CodeTimeout)
+		if r.anchorStep == "" {
+			r.markLifecycleLocked(eventv2.StatusTimeout, eventv2.CodeTimeout)
+		} else {
+			r.finalStatus = eventv2.StatusTimeout
+		}
 		r.flushActiveStepsLocked(now)
 	case lifecycleAborted:
 		// Cooperative cancel from the client; same errors[] rule as timeout.
-		// Preserve any explicit Fail anchor that was recorded before cancel.
+		// Preserve any failure anchor that was recorded before cancel.
 		if r.anchorStep == "" {
 			r.markLifecycleLocked(eventv2.StatusAborted, eventv2.CodeAborted)
 		}
