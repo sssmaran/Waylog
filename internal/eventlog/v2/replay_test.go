@@ -7,71 +7,43 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
 )
 
-func TestWarmDedupLoadsOldestFirstAndKeepsNewestAtCapacity(t *testing.T) {
+func TestReplayWalksOldestFirst(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
 	writeReplayFile(t, dir, "events-20260428-010000.jsonl", now.Add(-3*time.Hour), "a", "b")
 	writeReplayFile(t, dir, "events-20260428-020000.jsonl", now.Add(-2*time.Hour), "c", "d")
 	writeReplayFile(t, dir, "events-20260428-030000.jsonl", now.Add(-1*time.Hour), "e", "f")
 
-	d := ingestv2.NewDedup(4, nil)
-	loaded, err := WarmDedup(dir, d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded != 6 {
-		t.Fatalf("loaded=%d want 6", loaded)
-	}
-	for _, id := range []string{"a", "b"} {
-		if d.Seen(id) {
-			t.Fatalf("%s should have been evicted", id)
+	var ids []string
+	count, err := Replay(dir, time.Time{}, func(raw []byte) error {
+		var v map[string]string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Fatal(err)
 		}
-	}
-	for _, id := range []string{"c", "d", "e", "f"} {
-		if !d.Seen(id) {
-			t.Fatalf("%s should be present", id)
-		}
-	}
-}
-
-func TestWarmDedupSkipsMalformedLines(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "events-20260428-010000.jsonl")
-	body := strings.Join([]string{
-		replayEventJSON(t, "a"),
-		"{bad",
-		`{"schema_version":"2.0"}`,
-		replayEventJSON(t, "b"),
-	}, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	d := ingestv2.NewDedup(10, nil)
-	loaded, err := WarmDedup(dir, d)
+		ids = append(ids, v["event_id"])
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded != 2 || !d.Seen("a") || !d.Seen("b") {
-		t.Fatalf("loaded=%d seen(a)=%v seen(b)=%v", loaded, d.Seen("a"), d.Seen("b"))
+	if count != 6 || strings.Join(ids, ",") != "a,b,c,d,e,f" {
+		t.Fatalf("count=%d ids=%v", count, ids)
 	}
 }
 
-func TestWarmDedupEmptyDir(t *testing.T) {
-	loaded, err := WarmDedup(t.TempDir(), ingestv2.NewDedup(10, nil))
+func TestReplayEmptyDir(t *testing.T) {
+	count, err := Replay(t.TempDir(), time.Time{}, func([]byte) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded != 0 {
-		t.Fatalf("loaded=%d want 0", loaded)
+	if count != 0 {
+		t.Fatalf("count=%d want 0", count)
 	}
 }
 
-func TestWarmDedupAcceptsOneMBLine(t *testing.T) {
+func TestReplayAcceptsOneMBLine(t *testing.T) {
 	dir := t.TempDir()
 	raw := replayEventJSON(t, "a")
 	paddingLen := (1 << 20) - len(raw) - len(`,"padding":""`)
@@ -86,30 +58,61 @@ func TestWarmDedupAcceptsOneMBLine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := ingestv2.NewDedup(10, nil)
-	loaded, err := WarmDedup(dir, d)
+	count, err := Replay(dir, time.Time{}, func(raw []byte) error {
+		if len(raw) != len(withPadding) {
+			t.Fatalf("line=%d want %d", len(raw), len(withPadding))
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded != 1 || !d.Seen("a") {
-		t.Fatalf("loaded=%d seen=%v", loaded, d.Seen("a"))
+	if count != 1 {
+		t.Fatalf("count=%d want 1", count)
 	}
 }
 
-func TestWarmDedupSkipsOversizedLineAndContinues(t *testing.T) {
+func TestReplaySkipsOversizedLineAndContinues(t *testing.T) {
 	dir := t.TempDir()
 	body := strings.Repeat("x", maxReplayLineBytes+1) + "\n" + replayEventJSON(t, "a") + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "events-20260428-010000.jsonl"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	d := ingestv2.NewDedup(10, nil)
-	loaded, err := WarmDedup(dir, d)
+	count, err := Replay(dir, time.Time{}, func(raw []byte) error {
+		if !strings.Contains(string(raw), `"event_id":"a"`) {
+			t.Fatalf("raw=%s", raw)
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded != 1 || !d.Seen("a") {
-		t.Fatalf("loaded=%d seen=%v", loaded, d.Seen("a"))
+	if count != 1 {
+		t.Fatalf("count=%d want 1", count)
+	}
+}
+
+func TestReplaySkipsOldFilesBySince(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	writeReplayFile(t, dir, "events-20260428-010000.jsonl", now.Add(-2*time.Hour), "old")
+	writeReplayFile(t, dir, "events-20260428-020000.jsonl", now, "new")
+
+	var ids []string
+	count, err := Replay(dir, now.Add(-time.Hour), func(raw []byte) error {
+		var v map[string]string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, v["event_id"])
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || len(ids) != 1 || ids[0] != "new" {
+		t.Fatalf("count=%d ids=%v", count, ids)
 	}
 }
 

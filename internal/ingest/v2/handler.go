@@ -2,10 +2,12 @@ package ingestv2
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
@@ -17,6 +19,7 @@ type Handler struct {
 	metrics *metrics.Metrics
 	dedup   *Dedup
 	wal     WAL
+	project EventProjector
 }
 
 type WAL interface {
@@ -27,6 +30,8 @@ type Config struct {
 	Metrics *metrics.Metrics
 	Dedup   *Dedup
 	WAL     WAL
+	Index   *RecentIndex
+	Project EventProjector
 }
 
 // New compiles the embedded v2.0 schema once for request-time reuse and
@@ -51,7 +56,19 @@ func New(cfg Config) (*Handler, error) {
 		}
 		dedup = NewDedup(DefaultDedupCapacity, sizeGauge)
 	}
-	return &Handler{schema: sch, metrics: m, dedup: dedup, wal: cfg.WAL}, nil
+	projector := cfg.Project
+	if projector == nil {
+		index := cfg.Index
+		if index == nil {
+			var sizeGauge *prometheus.GaugeVec
+			if m != nil {
+				sizeGauge = m.V2IndexSize
+			}
+			index = NewRecentIndex(sizeGauge)
+		}
+		projector = NewProjector(index)
+	}
+	return &Handler{schema: sch, metrics: m, dedup: dedup, wal: cfg.WAL, project: projector}, nil
 }
 
 var rejectionReasons = []string{
@@ -103,7 +120,11 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, durable bool) {
 
 	env := newEnvelope()
 	for i, eventBody := range parsed.events {
+		validateStart := time.Now()
 		result := h.validateEvent(i, eventBody)
+		if h.metrics != nil {
+			h.metrics.V2ValidateLatency.Observe(time.Since(validateStart).Seconds())
+		}
 		if !result.ok {
 			env.Rejected = append(env.Rejected, result.rejected)
 			h.recordRejected(result.rejected.Reason)
@@ -121,10 +142,10 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, durable bool) {
 		var duplicate bool
 		var err error
 		if h.dedup == nil {
-			err = h.wal.WriteRaw(eventBody)
+			err = h.writeWAL(eventBody)
 		} else {
 			duplicate, err = h.dedup.AddIfNew(result.eventID, func() error {
-				return h.wal.WriteRaw(eventBody)
+				return h.writeWAL(eventBody)
 			})
 		}
 		if err != nil {
@@ -139,6 +160,9 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, durable bool) {
 			}
 			continue
 		}
+		if !h.projectEvent(w, result.eventID, result.event) {
+			return
+		}
 		if h.metrics != nil {
 			h.metrics.EventsAccepted.Inc()
 		}
@@ -150,6 +174,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, durable bool) {
 type validationResult struct {
 	ok       bool
 	eventID  string
+	event    *eventv2.Event
 	rejected RejectedEvent
 }
 
@@ -166,7 +191,14 @@ func (h *Handler) validateEvent(index int, eventBody []byte) validationResult {
 	if err := eventv2.ValidateAny(h.schema, raw); err != nil {
 		return validationResult{eventID: eventID, rejected: RejectedEvent{Index: index, EventID: eventID, Reason: ReasonSchemaValidationFailed, Detail: err.Error()}}
 	}
-	return validationResult{ok: true, eventID: eventID}
+	var ev eventv2.Event
+	if err := json.Unmarshal(eventBody, &ev); err != nil {
+		if h.metrics != nil {
+			h.metrics.V2TypedDecodeFailed.Inc()
+		}
+		return validationResult{eventID: eventID, rejected: RejectedEvent{Index: index, EventID: eventID, Reason: ReasonSchemaValidationFailed, Detail: "decode_typed: " + err.Error()}}
+	}
+	return validationResult{ok: true, eventID: eventID, event: &ev}
 }
 
 func rawIdentifiers(raw any) (eventID, schemaVersion string) {
@@ -193,6 +225,43 @@ func (h *Handler) recordRejected(reason string) {
 	if h.metrics != nil {
 		h.metrics.EventsRejected.WithLabelValues(reason).Inc()
 	}
+}
+
+func (h *Handler) writeWAL(eventBody []byte) error {
+	start := time.Now()
+	err := h.wal.WriteRaw(eventBody)
+	if h.metrics != nil {
+		h.metrics.V2WALWriteLatency.Observe(time.Since(start).Seconds())
+	}
+	return err
+}
+
+func (h *Handler) projectEvent(w http.ResponseWriter, eventID string, ev *eventv2.Event) (ok bool) {
+	ok = false
+	start := time.Now()
+	defer func() {
+		if h.metrics != nil {
+			h.metrics.V2ProjectLatency.Observe(time.Since(start).Seconds())
+		}
+		if recovered := recover(); recovered != nil {
+			if h.metrics != nil {
+				h.metrics.V2ProjectPanic.Inc()
+			}
+			if h.dedup != nil {
+				h.dedup.Remove(eventID)
+			}
+			slog.Error("ingestv2: projection panic", "event_id", eventID, "panic", recovered)
+			http.Error(w, "projection unavailable", http.StatusServiceUnavailable)
+			ok = false
+		}
+	}()
+	if h.project != nil {
+		h.project.Project(ev)
+	}
+	if h.metrics != nil {
+		h.metrics.V2EventsProjected.Inc()
+	}
+	return true
 }
 
 func writeEnvelope(w http.ResponseWriter, status int, env IngestEnvelope) {

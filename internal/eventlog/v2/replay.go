@@ -3,7 +3,6 @@ package eventlogv2
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
@@ -11,13 +10,11 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
 )
 
 const maxReplayLineBytes = (1 << 20) + 1
 
-func WarmDedup(dir string, d *ingestv2.Dedup) (int, error) {
+func Replay(dir string, since time.Time, fn func(rawLine []byte) error) (int, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return 0, nil
@@ -35,6 +32,9 @@ func WarmDedup(dir string, d *ingestv2.Dedup) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		if !since.IsZero() && info.ModTime().Before(since) {
+			continue
+		}
 		files = append(files, replayFile{
 			path:    filepath.Join(dir, entry.Name()),
 			name:    entry.Name(),
@@ -50,7 +50,7 @@ func WarmDedup(dir string, d *ingestv2.Dedup) (int, error) {
 
 	loaded := 0
 	for _, file := range files {
-		n, err := warmFile(file.path, d)
+		n, err := replayFileLines(file.path, fn)
 		loaded += n
 		if err != nil {
 			return loaded, err
@@ -65,7 +65,7 @@ type replayFile struct {
 	modTime time.Time
 }
 
-func warmFile(path string, d *ingestv2.Dedup) (int, error) {
+func replayFileLines(path string, fn func(rawLine []byte) error) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
@@ -92,24 +92,12 @@ func warmFile(path string, d *ingestv2.Dedup) (int, error) {
 		if readErr != nil && readErr != io.EOF {
 			return loaded, readErr
 		}
-		var raw map[string]any
-		if err := json.Unmarshal(line, &raw); err != nil {
-			slog.Warn("eventlogv2: skipping malformed line", "file", path, "line", lineNum, "err", err)
-			if readErr == io.EOF {
-				break
+		if len(line) > 0 && fn != nil {
+			if err := fn(line); err != nil {
+				return loaded, err
 			}
-			continue
+			loaded++
 		}
-		eventID, ok := raw["event_id"].(string)
-		if !ok || eventID == "" {
-			slog.Warn("eventlogv2: skipping line without event_id", "file", path, "line", lineNum)
-			if readErr == io.EOF {
-				break
-			}
-			continue
-		}
-		d.Add(eventID)
-		loaded++
 		if readErr == io.EOF {
 			break
 		}
@@ -122,6 +110,8 @@ func readReplayLine(r *bufio.Reader) ([]byte, bool, error) {
 	tooLong := false
 	for {
 		frag, err := r.ReadSlice('\n')
+		// ReadSlice can return fragments before a newline; keep consuming them
+		// even after marking the line too long so the next read starts aligned.
 		if !tooLong {
 			if len(line)+len(frag) > maxReplayLineBytes {
 				tooLong = true

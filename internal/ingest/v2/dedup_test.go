@@ -78,3 +78,18 @@ func TestDedupGaugeTracksSize(t *testing.T) {
 		t.Fatalf("gauge=%v want 2", got)
 	}
 }
+
+func TestDedupRemove(t *testing.T) {
+	d := NewDedup(10, nil)
+	d.Add("a")
+	if !d.Seen("a") {
+		t.Fatal("a should be present")
+	}
+	d.Remove("a")
+	if d.Seen("a") {
+		t.Fatal("a should be removed")
+	}
+	if got := d.Size(); got != 0 {
+		t.Fatalf("Size=%d want 0", got)
+	}
+}

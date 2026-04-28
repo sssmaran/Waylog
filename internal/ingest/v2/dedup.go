@@ -77,6 +77,23 @@ func (d *Dedup) AddIfNew(eventID string, commit func() error) (bool, error) {
 	return false, nil
 }
 
+// Remove forgets eventID. It is used only to roll back a same-process dedupe
+// mark when post-WAL projection fails before the event can be accepted.
+func (d *Dedup) Remove(eventID string) {
+	if d == nil || eventID == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	elem, ok := d.items[eventID]
+	if !ok {
+		return
+	}
+	delete(d.items, eventID)
+	d.order.Remove(elem)
+	d.observeSizeLocked()
+}
+
 func (d *Dedup) addLocked(eventID string) {
 	if elem, ok := d.items[eventID]; ok {
 		d.order.MoveToFront(elem)

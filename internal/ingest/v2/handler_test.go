@@ -17,6 +17,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/sssmaran/WaylogCLI/internal/auth"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
+	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
 func TestEventsSingleJSONValid(t *testing.T) {
@@ -265,7 +266,8 @@ func TestEventsMetrics(t *testing.T) {
 func TestEventsDedupeWritesOnlyOnce(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
-	h, wal := newTestHandler(t, m)
+	index := NewRecentIndex(nil)
+	h, wal := newTestHandlerWithIndex(t, m, index)
 	body := validEventJSON("00000000-0000-4000-8000-000000000001")
 
 	env := expectEnvelopeStatus(t, post(t, h, "application/json", "", body), http.StatusOK)
@@ -279,9 +281,26 @@ func TestEventsDedupeWritesOnlyOnce(t *testing.T) {
 	if got := wal.Count(); got != 1 {
 		t.Fatalf("wal writes=%d want 1", got)
 	}
+	if got := index.Sizes().Events; got != 1 {
+		t.Fatalf("indexed events=%d want 1", got)
+	}
 	fm := gatherMap(t, reg)
 	if got := counterValue(fm["waylog_events_duplicate_total"]); got != 1 {
 		t.Fatalf("events_duplicate=%v want 1", got)
+	}
+}
+
+func TestEventsAcceptedEventIsIndexed(t *testing.T) {
+	index := NewRecentIndex(nil)
+	h, _ := newTestHandlerWithIndex(t, nil, index)
+	eventID := "00000000-0000-4000-8000-000000000001"
+
+	env := expectEnvelopeStatus(t, post(t, h, "application/json", "", validEventJSON(eventID)), http.StatusOK)
+	if env.Accepted != 1 {
+		t.Fatalf("env=%+v", env)
+	}
+	if _, ok := index.GetByID(eventID); !ok {
+		t.Fatal("accepted event not indexed")
 	}
 }
 
@@ -361,7 +380,8 @@ func TestEventsWALFailureReturnsPlain503(t *testing.T) {
 func TestEventsWALFailureMidBatchLeavesPriorEventDurableAndDeduped(t *testing.T) {
 	wal := &fakeWAL{failAt: 2}
 	dedup := NewDedup(10, nil)
-	h := newTestHandlerWithConfig(t, Config{Dedup: dedup, WAL: wal})
+	index := NewRecentIndex(nil)
+	h := newTestHandlerWithConfig(t, Config{Dedup: dedup, WAL: wal, Index: index})
 	body := strings.Join([]string{
 		validEventJSON("00000000-0000-4000-8000-000000000001"),
 		validEventJSON("00000000-0000-4000-8000-000000000002"),
@@ -378,12 +398,16 @@ func TestEventsWALFailureMidBatchLeavesPriorEventDurableAndDeduped(t *testing.T)
 	if !dedup.Seen("00000000-0000-4000-8000-000000000001") {
 		t.Fatal("first event should be deduped after successful WAL write")
 	}
+	if _, ok := index.GetByID("00000000-0000-4000-8000-000000000001"); !ok {
+		t.Fatal("first event should be indexed after successful WAL write")
+	}
 }
 
 func TestValidateDoesNotMutateWALOrDedup(t *testing.T) {
 	dedup := NewDedup(10, nil)
 	wal := &fakeWAL{}
-	h := newTestHandlerWithConfig(t, Config{Dedup: dedup, WAL: wal})
+	index := NewRecentIndex(nil)
+	h := newTestHandlerWithConfig(t, Config{Dedup: dedup, WAL: wal, Index: index})
 	raw := validEventMap("00000000-0000-4000-8000-000000000002")
 	delete(raw, "service")
 	body := validEventJSON("00000000-0000-4000-8000-000000000001") + "\n" + mustJSON(t, raw)
@@ -399,12 +423,57 @@ func TestValidateDoesNotMutateWALOrDedup(t *testing.T) {
 	if dedup.Size() != 0 {
 		t.Fatalf("dedup size=%d want 0", dedup.Size())
 	}
+	if index.Sizes().Events != 0 {
+		t.Fatalf("indexed events=%d want 0", index.Sizes().Events)
+	}
+}
+
+func TestEventsProjectionPanicReturns503AndRollsBackDedup(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	dedup := NewDedup(10, nil)
+	wal := &fakeWAL{}
+	h := newTestHandlerWithConfig(t, Config{
+		Metrics: m,
+		Dedup:   dedup,
+		WAL:     wal,
+		Project: panicProjector{},
+	})
+	eventID := "00000000-0000-4000-8000-000000000001"
+
+	rec := post(t, h, "application/json", "", validEventJSON(eventID))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "projection unavailable") {
+		t.Fatalf("body=%q", rec.Body.String())
+	}
+	if wal.Count() != 1 {
+		t.Fatalf("wal writes=%d want 1", wal.Count())
+	}
+	if dedup.Seen(eventID) {
+		t.Fatal("dedup entry should be rolled back")
+	}
+	fm := gatherMap(t, reg)
+	if got := counterValue(fm["waylog_events_accepted_total"]); got != 0 {
+		t.Fatalf("events_accepted=%v want 0", got)
+	}
+	if got := counterValue(fm["waylog_v2_project_panic_total"]); got != 1 {
+		t.Fatalf("project_panic=%v want 1", got)
+	}
 }
 
 func newTestHandler(t *testing.T, m *metrics.Metrics) (*Handler, *fakeWAL) {
 	t.Helper()
 	wal := &fakeWAL{}
 	h := newTestHandlerWithConfig(t, Config{Metrics: m, Dedup: NewDedup(DefaultDedupCapacity, nil), WAL: wal})
+	return h, wal
+}
+
+func newTestHandlerWithIndex(t *testing.T, m *metrics.Metrics, index *RecentIndex) (*Handler, *fakeWAL) {
+	t.Helper()
+	wal := &fakeWAL{}
+	h := newTestHandlerWithConfig(t, Config{Metrics: m, Dedup: NewDedup(DefaultDedupCapacity, nil), WAL: wal, Index: index})
 	return h, wal
 }
 
@@ -614,3 +683,7 @@ var errFakeWAL = &fakeWALError{}
 type fakeWALError struct{}
 
 func (e *fakeWALError) Error() string { return "fake WAL failure" }
+
+type panicProjector struct{}
+
+func (panicProjector) Project(*eventv2.Event) { panic("boom") }

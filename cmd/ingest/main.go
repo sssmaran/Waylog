@@ -162,19 +162,26 @@ func main() {
 
 	dedupCapacity := config.GetenvInt("WAYLOG_V2_DEDUP_CAPACITY", ingestv2.DefaultDedupCapacity)
 	v2Dedup := ingestv2.NewDedup(dedupCapacity, m.EventDedupCacheSize)
-	loaded, err := eventlogv2.WarmDedup(eventLogV2Dir, v2Dedup)
+	v2Index := ingestv2.NewRecentIndex(m.V2IndexSize)
+	v2Projector := ingestv2.NewProjector(v2Index)
+	v2ReplaySince := time.Now().Add(-graphHotWindow)
+	v2Replay, err := ingestv2.ReplayWAL(eventLogV2Dir, v2Dedup, v2Projector, v2ReplaySince, m)
 	if err != nil {
-		slog.Error("eventlog v2 dedup replay failed", "err", err)
+		slog.Error("eventlog v2 replay failed", "err", err)
 		os.Exit(1)
 	}
-	m.EventDedupReplayLoaded.Add(float64(loaded))
+	m.EventDedupReplayLoaded.Add(float64(v2Replay.DedupLoaded))
+	m.V2ReplayProjected.Add(float64(v2Replay.Projected))
 	slog.Info("eventlog v2 enabled",
 		"dir", eventLogV2Dir,
 		"sync_per_write", eventLogSync,
 		"max_file_mb", eventLogMaxMB,
 		"retention", eventLogRetention,
 		"dedup_capacity", dedupCapacity,
-		"dedup_replay_loaded", loaded,
+		"replay_since", v2ReplaySince,
+		"dedup_replay_loaded", v2Replay.DedupLoaded,
+		"replay_projected", v2Replay.Projected,
+		"replay_decode_fails", v2Replay.DecodeFails,
 	)
 
 	// Optional SQLite cold store
@@ -337,6 +344,8 @@ func main() {
 		Metrics: m,
 		Dedup:   v2Dedup,
 		WAL:     v2Wal,
+		Index:   v2Index,
+		Project: v2Projector,
 	})
 	if err != nil {
 		slog.Error("initialize v2 ingest handler", "err", err)
@@ -492,6 +501,10 @@ func main() {
 				// Enforce retention: prune nodes older than the retention window.
 				cutoff := time.Now().Add(-graphHotWindow)
 				graphStore.PruneOlderThan(cutoff)
+				v2Pruned := v2Index.PruneOlderThan(cutoff)
+				if v2Pruned.Events > 0 {
+					m.V2IndexPruned.Add(float64(v2Pruned.Events))
+				}
 				deletedTraces, _ := traceStore.PruneOlderThan(cutoff)
 				m.GraphPrunedTotal.Inc()
 				if deletedTraces > 0 {
