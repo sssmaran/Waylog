@@ -35,6 +35,7 @@ const (
 	ReasonUnsupportedContentType = "unsupported_content_type"
 	ReasonUnsupportedEncoding    = "unsupported_content_encoding"
 	ReasonInvalidBody            = "invalid_body"
+	ReasonDurabilityUnavailable  = "durability_unavailable"
 )
 
 // newEnvelope returns a fresh response envelope with Rejected and

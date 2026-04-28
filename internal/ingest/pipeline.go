@@ -162,6 +162,9 @@ func (p *Pipeline) IngestBatch(ctx context.Context, events []*event.WideEvent) (
 		}
 
 		result.Accepted++
+		if p.metrics != nil && p.eventLog != nil {
+			p.metrics.EventsAccepted.Inc()
+		}
 
 		// Windowed counters — post-WAL so WAL failures are never counted.
 		if p.counters != nil {
@@ -220,7 +223,6 @@ func (p *Pipeline) IngestBatch(ctx context.Context, events []*event.WideEvent) (
 			}
 			if p.metrics != nil {
 				p.metrics.MergeLatency.Observe(time.Since(mergeStart).Seconds())
-				p.metrics.EventsAccepted.Inc()
 			}
 		}
 

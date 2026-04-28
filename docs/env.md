@@ -42,9 +42,11 @@ Scoped keys. See the Auth section of the [README](../README.md).
 | `SNAPSHOT_PATH` | `./data/graph_snapshot.json` | Graph snapshot location |
 | `SQLITE_PATH` | — | SQLite cold store path (optional; disabled if empty) |
 | `EVENT_LOG_DIR` | — | Append-only event log directory (disabled if empty) |
+| `EVENT_LOG_V2_DIR` | `${EVENT_LOG_DIR}/v2` or `./data/eventlog-v2` | Raw schema-2.0 WAL directory for `/v1/events` |
 | `EVENT_LOG_SYNC` | `true` | Per-write fsync. Set `false` for dev/load testing |
 | `EVENT_LOG_MAX_FILE_MB` | `50` | Rotation size. `0` disables rotation |
 | `EVENT_LOG_RETENTION` | `72h` | Event log retention. Must be positive |
+| `WAYLOG_V2_DEDUP_CAPACITY` | `65536` | Recent schema-2.0 `event_id` dedupe cache capacity |
 | `GRAPH_RETENTION` | `24h` | Hot graph retention. Nodes older than this are pruned every snapshot tick |
 
 See [Internals](internals.md) for the full durability model.

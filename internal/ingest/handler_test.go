@@ -566,38 +566,6 @@ func TestReadEndpoints_NoStore(t *testing.T) {
 	})
 }
 
-func TestValidate_ValidEvent(t *testing.T) {
-	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
-	body := `{"schema_version":"1.0","event_name":"test.request","timestamp":"2026-02-17T10:00:00Z","user":{"id":"u1"},"request":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"},"system":{"service":"test","env":"prod"},"outcome":{"success":true,"status_code":200,"kind":"http"},"metrics":{"latency_ms":10}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/events/validate", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	srv.Validate(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["valid"] != true {
-		t.Errorf("expected valid=true, got %v", resp["valid"])
-	}
-}
-
-func TestValidate_InvalidEvent(t *testing.T) {
-	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
-	body := `{"schema_version":"1.0","event_name":"test.request","timestamp":"2026-02-17T10:00:00Z","user":{"id":""},"request":{"trace_id":"aaa"},"system":{"service":"test","env":"prod"},"outcome":{"success":true,"status_code":200,"kind":"http"},"metrics":{"latency_ms":10}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/events/validate", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	srv.Validate(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["valid"] != false {
-		t.Errorf("expected valid=false, got %v", resp["valid"])
-	}
-}
-
 func TestEventSearch_NoFilter(t *testing.T) {
 	srv := NewServer(ServerConfig{Store: graphstore.NewStore(), EventLogDir: t.TempDir()})
 
@@ -667,26 +635,6 @@ func TestEventSearch_WithResults(t *testing.T) {
 
 func newTestEventLog(dir string) (*eventlog.Writer, error) {
 	return eventlog.New(dir)
-}
-
-func TestValidate_BadJSON(t *testing.T) {
-	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
-	req := httptest.NewRequest(http.MethodPost, "/v1/events/validate", strings.NewReader("{bad"))
-	w := httptest.NewRecorder()
-	srv.Validate(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestValidate_MethodNotAllowed(t *testing.T) {
-	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
-	req := httptest.NewRequest(http.MethodGet, "/v1/events/validate", nil)
-	w := httptest.NewRecorder()
-	srv.Validate(w, req)
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", w.Code)
-	}
 }
 
 func TestEventSearch_BadStartReturns400(t *testing.T) {

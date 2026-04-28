@@ -5,8 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	"github.com/sssmaran/WaylogCLI/internal/graph/build"
 	"github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/sampler"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
@@ -173,6 +176,66 @@ func TestIngestBatch_SamplingAccounting(t *testing.T) {
 	if sampledOut == 0 {
 		t.Error("expected at least one sampled-out event across 20 distinct trace ids")
 	}
+}
+
+func TestIngestBatch_AcceptedMetricCountsDurableSampledOutEvents(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	el, err := eventlog.NewWithConfig(t.TempDir(), eventlog.WriterConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer el.Close()
+
+	p := NewPipeline(PipelineConfig{
+		Store:    store.NewStore(),
+		Builder:  build.NewBuilder(),
+		Sampler:  sampler.New(sampler.Config{HappySampleRatePct: 1, SlowMs: 10000, Salt: "deterministic"}),
+		EventLog: el,
+		Metrics:  m,
+		Validator: func(ev *event.WideEvent) error {
+			return ev.Validate()
+		},
+	})
+
+	accepted, sampledOut := 0, 0
+	for i := 0; i < 20; i++ {
+		ev := validSDKEvent()
+		ev.Request.TraceID = traceIDForIndex(i)
+		res, err := p.ValidateAndIngestBatch(context.Background(), []*event.WideEvent{ev})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		accepted += res.Accepted
+		sampledOut += res.SampledOut
+	}
+	if sampledOut == 0 {
+		t.Fatal("test did not exercise sampled-out durable events")
+	}
+	if got := counterMetric(t, reg, "waylog_events_accepted_total"); got != float64(accepted) {
+		t.Fatalf("events_accepted=%v want %d", got, accepted)
+	}
+}
+
+func counterMetric(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		var total float64
+		for _, metric := range mf.GetMetric() {
+			if counter := metric.GetCounter(); counter != nil {
+				total += counter.GetValue()
+			}
+		}
+		return total
+	}
+	return 0
 }
 
 // traceIDForIndex generates a distinct 32-hex trace id for each index.

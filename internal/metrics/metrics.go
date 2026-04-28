@@ -13,12 +13,15 @@ var defaultBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 
 type Metrics struct {
 	reg *prometheus.Registry
 
-	IngestLatency   prometheus.Histogram
-	IngestBatchSize prometheus.Histogram
-	MergeLatency    prometheus.Histogram
-	EventsAccepted  prometheus.Counter
-	EventsRejected  *prometheus.CounterVec
-	EventlogFails   prometheus.Counter
+	IngestLatency          prometheus.Histogram
+	IngestBatchSize        prometheus.Histogram
+	MergeLatency           prometheus.Histogram
+	EventsAccepted         prometheus.Counter
+	EventsDuplicate        prometheus.Counter
+	EventsRejected         *prometheus.CounterVec
+	EventlogFails          prometheus.Counter
+	EventDedupCacheSize    prometheus.Gauge
+	EventDedupReplayLoaded prometheus.Counter
 
 	ReplayLagSeconds    prometheus.Gauge
 	ReplayInProgress    prometheus.Gauge
@@ -89,7 +92,11 @@ func New(reg *prometheus.Registry) *Metrics {
 	})
 	m.EventsAccepted = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_events_accepted_total",
-		Help: "Events merged into graph.",
+		Help: "Events durably written to WAL.",
+	})
+	m.EventsDuplicate = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_events_duplicate_total",
+		Help: "Schema-2.0 ingest events skipped because event_id was already recently durably written.",
 	})
 	m.EventsRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "waylog_events_rejected_total",
@@ -101,6 +108,14 @@ func New(reg *prometheus.Registry) *Metrics {
 	m.EventlogFails = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_eventlog_write_failures_total",
 		Help: "Failed eventlog writes.",
+	})
+	m.EventDedupCacheSize = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "waylog_event_dedup_cache_size",
+		Help: "Current schema-2.0 event_id dedup cache size.",
+	})
+	m.EventDedupReplayLoaded = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_event_dedup_replay_loaded_total",
+		Help: "Schema-2.0 event IDs loaded into dedup cache during WAL replay.",
 	})
 
 	m.ReplayLagSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -280,7 +295,8 @@ func New(reg *prometheus.Registry) *Metrics {
 
 	reg.MustRegister(
 		m.IngestLatency, m.IngestBatchSize, m.MergeLatency,
-		m.EventsAccepted, m.EventsRejected, m.EventlogFails,
+		m.EventsAccepted, m.EventsDuplicate, m.EventsRejected, m.EventlogFails,
+		m.EventDedupCacheSize, m.EventDedupReplayLoaded,
 		m.ReplayLagSeconds, m.ReplayInProgress, m.ReplayFailuresTotal, m.Ready,
 		m.InFlightRequests,
 		m.SnapshotLastSuccess, m.SnapshotLastError,

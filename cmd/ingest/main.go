@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/dashboard"
 	"github.com/sssmaran/WaylogCLI/internal/detect"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
+	eventlogv2 "github.com/sssmaran/WaylogCLI/internal/eventlog/v2"
 	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
@@ -140,6 +142,41 @@ func main() {
 	promReg := prometheus.NewRegistry()
 	m := metrics.New(promReg)
 
+	eventLogSync := config.GetenvBool("EVENT_LOG_SYNC", true)
+	eventLogMaxMB := int64(config.GetenvInt("EVENT_LOG_MAX_FILE_MB", 50))
+	eventLogRetention := config.GetenvDuration("EVENT_LOG_RETENTION", 72*time.Hour)
+	if eventLogRetention <= 0 {
+		slog.Error("EVENT_LOG_RETENTION must be positive", "value", eventLogRetention)
+		os.Exit(1)
+	}
+	eventLogV2Dir := config.Getenv("EVENT_LOG_V2_DIR", defaultEventLogV2Dir(eventLogDir))
+	v2Wal, err := eventlogv2.New(eventLogV2Dir,
+		eventlogv2.WithSync(eventLogSync),
+		eventlogv2.WithMaxBytes(eventLogMaxMB*1024*1024),
+	)
+	if err != nil {
+		slog.Error("eventlog v2 init failed", "err", err)
+		os.Exit(1)
+	}
+	defer v2Wal.Close()
+
+	dedupCapacity := config.GetenvInt("WAYLOG_V2_DEDUP_CAPACITY", ingestv2.DefaultDedupCapacity)
+	v2Dedup := ingestv2.NewDedup(dedupCapacity, m.EventDedupCacheSize)
+	loaded, err := eventlogv2.WarmDedup(eventLogV2Dir, v2Dedup)
+	if err != nil {
+		slog.Error("eventlog v2 dedup replay failed", "err", err)
+		os.Exit(1)
+	}
+	m.EventDedupReplayLoaded.Add(float64(loaded))
+	slog.Info("eventlog v2 enabled",
+		"dir", eventLogV2Dir,
+		"sync_per_write", eventLogSync,
+		"max_file_mb", eventLogMaxMB,
+		"retention", eventLogRetention,
+		"dedup_capacity", dedupCapacity,
+		"dedup_replay_loaded", loaded,
+	)
+
 	// Optional SQLite cold store
 	var coldDB coldstore.ManagedStore
 	var coldWriter *coldstore.BatchWriter
@@ -195,14 +232,7 @@ func main() {
 	sseHub := ingest.NewSSEHub(config.GetenvInt("SSE_MAX_CLIENTS", 100))
 	ingestServer.SetSSEHub(sseHub)
 
-	// Optional append-only event log
-	eventLogSync := config.GetenvBool("EVENT_LOG_SYNC", true)
-	eventLogMaxMB := int64(config.GetenvInt("EVENT_LOG_MAX_FILE_MB", 50))
-	eventLogRetention := config.GetenvDuration("EVENT_LOG_RETENTION", 72*time.Hour)
-	if eventLogRetention <= 0 {
-		slog.Error("EVENT_LOG_RETENTION must be positive", "value", eventLogRetention)
-		os.Exit(1)
-	}
+	// Optional append-only v1 event log
 	var el *eventlog.Writer
 	if eventLogDir != "" {
 		var err error
@@ -303,13 +333,17 @@ func main() {
 	mux.Handle("/metrics", m.Handler())
 
 	// Write endpoints.
-	eventsV2, err := ingestv2.New(m)
+	eventsV2, err := ingestv2.New(ingestv2.Config{
+		Metrics: m,
+		Dedup:   v2Dedup,
+		WAL:     v2Wal,
+	})
 	if err != nil {
 		slog.Error("initialize v2 ingest handler", "err", err)
 		os.Exit(1)
 	}
 	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(eventsV2.Events)))
-	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(ingestServer.Validate)))
+	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(eventsV2.Validate)))
 
 	// OTLP/HTTP traces — routed through a dedicated pipeline that reuses the
 	// same store, builder, sampler, WAL, cold store, and SSE hub as the SDK
@@ -522,7 +556,7 @@ func main() {
 
 	// ---------------- Event log retention ----------------
 
-	if el != nil {
+	if el != nil || v2Wal != nil {
 		go func() {
 			retTicker := time.NewTicker(5 * time.Minute)
 			defer retTicker.Stop()
@@ -531,11 +565,21 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-retTicker.C:
-					n, err := eventlog.PruneOlderThan(eventLogDir, eventLogRetention, el.ActivePath())
-					if err != nil {
-						slog.Warn("eventlog retention cleanup error", "err", err)
-					} else if n > 0 {
-						slog.Info("eventlog retention cleanup", "deleted", n)
+					if el != nil {
+						n, err := eventlog.PruneOlderThan(eventLogDir, eventLogRetention, el.ActivePath())
+						if err != nil {
+							slog.Warn("eventlog retention cleanup error", "err", err)
+						} else if n > 0 {
+							slog.Info("eventlog retention cleanup", "dir", eventLogDir, "deleted", n)
+						}
+					}
+					if v2Wal != nil {
+						n, err := eventlog.PruneOlderThan(eventLogV2Dir, eventLogRetention, v2Wal.ActivePath())
+						if err != nil {
+							slog.Warn("eventlog v2 retention cleanup error", "err", err)
+						} else if n > 0 {
+							slog.Info("eventlog v2 retention cleanup", "dir", eventLogV2Dir, "deleted", n)
+						}
 					}
 				}
 			}
@@ -709,6 +753,13 @@ func replLoop() {
 		args := strings.Fields(line)
 		cli.Run(args)
 	}
+}
+
+func defaultEventLogV2Dir(eventLogDir string) string {
+	if eventLogDir != "" {
+		return filepath.Join(eventLogDir, "v2")
+	}
+	return "./data/eventlog-v2"
 }
 
 func printHelp() {
