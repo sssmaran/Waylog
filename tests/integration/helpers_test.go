@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,14 +11,23 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
+	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/testutil"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
+	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
-func newIntegrationServer(t *testing.T) (*ingest.Server, *coldstore.SQLiteStore, *coldstore.BatchWriter) {
+type integrationServer struct {
+	*ingest.Server
+	traceStore *tracestore.Store
+	coldStore  *coldstore.SQLiteStore
+	coldWriter *coldstore.BatchWriter
+}
+
+func newIntegrationServer(t *testing.T) (*integrationServer, *coldstore.SQLiteStore, *coldstore.BatchWriter) {
 	t.Helper()
 
 	managed, err := coldstore.Open(":memory:")
@@ -41,8 +51,10 @@ func newIntegrationServer(t *testing.T) (*ingest.Server, *coldstore.SQLiteStore,
 
 	dedup := ingest.NewDedupCache()
 
+	ts := tracestore.NewStore()
 	srv := ingest.NewServer(ingest.ServerConfig{
 		Store:         graphstore.NewStore(),
+		TraceStore:    ts,
 		AskRegistry:   reg,
 		DedupCache:    dedup,
 		ColdWriter:    bw,
@@ -51,23 +63,35 @@ func newIntegrationServer(t *testing.T) (*ingest.Server, *coldstore.SQLiteStore,
 		PlanStore:     ingest.NewPlanStore(),
 	})
 
-	return srv, cs, bw
+	return &integrationServer{Server: srv, traceStore: ts, coldStore: cs, coldWriter: bw}, cs, bw
 }
 
-func ingestEvent(t *testing.T, srv *ingest.Server, ev event.WideEvent) int {
+func ingestEvent(t *testing.T, srv *integrationServer, ev event.WideEvent) int {
 	t.Helper()
-	body, err := json.Marshal(ev)
-	if err != nil {
-		t.Fatal(err)
+	result := srv.Builder().BuildResult(ev)
+	srv.Store().Merge(result.Graph)
+	if result.Span != nil {
+		srv.traceStore.Upsert(ev.Request.TraceID, core.ID("request", ev.Request.TraceID), result.Span)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.Events(w, req)
-	return w.Code
+	srv.Counters().Inc(!ev.Outcome.Success)
+	srv.AcceptedPtr().Add(1)
+	if srv.coldWriter != nil {
+		srv.coldWriter.Enqueue(ev)
+	}
+	if ev.System.DeploymentID != "" && srv.coldStore != nil {
+		_ = srv.coldStore.UpsertDeployment(context.Background(), coldstore.Deployment{
+			ID:        ev.System.DeploymentID,
+			Service:   ev.System.Service,
+			Version:   ev.System.Version,
+			Env:       ev.System.Env,
+			FirstSeen: ev.Timestamp,
+			LastSeen:  ev.Timestamp,
+		})
+	}
+	return http.StatusAccepted
 }
 
-func ingestEvents(t *testing.T, srv *ingest.Server, events []event.WideEvent) {
+func ingestEvents(t *testing.T, srv *integrationServer, events []event.WideEvent) {
 	t.Helper()
 	for i, ev := range events {
 		code := ingestEvent(t, srv, ev)

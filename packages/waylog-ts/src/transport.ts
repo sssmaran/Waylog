@@ -47,6 +47,7 @@ export class Transport {
   private dropped = 0;
   private failures = 0;
   private rejected = 0;
+  private deprecated = 0;
   private jsonPosts = new Set<Promise<void>>();
 
   constructor(config: WaylogConfig) {
@@ -95,6 +96,10 @@ export class Transport {
 
   rejectedCount(): number {
     return this.rejected;
+  }
+
+  deprecatedCount(): number {
+    return this.deprecated;
   }
 
   async shutdown(timeoutMs = 0): Promise<void> {
@@ -201,6 +206,7 @@ export class Transport {
     try {
       const resp = await this.fetchImpl(this.url, { method: "POST", headers, body });
       if (resp.status >= 200 && resp.status < 300) {
+        this.recordResponseHeaders(resp);
         await this.recordEnvelope(resp);
         return { success: true, retryable: false, retryAfterMs: 0 };
       }
@@ -257,6 +263,7 @@ export class Transport {
     try {
       const resp = await this.fetchImpl(this.url, { method: "POST", headers, body: JSON.stringify(ev) });
       if (resp.status >= 200 && resp.status < 300) {
+        this.recordResponseHeaders(resp);
         await this.recordEnvelope(resp);
         return;
       }
@@ -302,6 +309,10 @@ export class Transport {
       return;
     }
     this.rejected += env.rejected?.length ?? 0;
+  }
+
+  private recordResponseHeaders(resp: Response): void {
+    if (resp.headers.get("Deprecation") || resp.headers.get("Sunset")) this.deprecated++;
   }
 }
 

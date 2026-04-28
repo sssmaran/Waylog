@@ -63,19 +63,20 @@ const (
 // Go disallows a type and a free function sharing a name at package scope, so
 // the spec's `func Stats() Stats` is rendered here as `func Stats() StatsSnapshot`.
 type StatsSnapshot struct {
-	ActiveRequests          int64
-	EventsEmitted           int64 // total final events successfully written (includes suppressed)
-	EventsSuppressed        int64 // subset of EventsEmitted with status=suppressed
-	StepsDropped            int64
-	LogsDropped             int64
-	BytesDroppedFromBuffer  int64
-	BufferOverflows         int64 // requests degraded to header-only by MaxBufferBytes pressure
-	ReservedCodeRejections  int64 // NewError/Fail/Step returns with WAYLOG_* codes
-	SuppressedThenFailed    int64
-	LateCompletionAfterEmit int64
-	EventsDropped           int64
-	DeliveryFailures        int64
-	EventsRejected          int64
+	ActiveRequests            int64
+	EventsEmitted             int64 // total final events successfully written (includes suppressed)
+	EventsSuppressed          int64 // subset of EventsEmitted with status=suppressed
+	StepsDropped              int64
+	LogsDropped               int64
+	BytesDroppedFromBuffer    int64
+	BufferOverflows           int64 // requests degraded to header-only by MaxBufferBytes pressure
+	ReservedCodeRejections    int64 // NewError/Fail/Step returns with WAYLOG_* codes
+	SuppressedThenFailed      int64
+	LateCompletionAfterEmit   int64
+	EventsDropped             int64
+	DeliveryFailures          int64
+	EventsRejected            int64
+	DeprecatedSchemaResponses int64
 }
 
 // ErrAlreadyInitialized is returned by Init when a prior SDK is still alive
@@ -222,19 +223,20 @@ func Stats() StatsSnapshot {
 	active := int64(len(s.active))
 	s.mu.Unlock()
 	return StatsSnapshot{
-		ActiveRequests:          active,
-		EventsEmitted:           s.emitted.Load(),
-		EventsSuppressed:        s.suppressed.Load(),
-		StepsDropped:            s.stepsDropped.Load(),
-		LogsDropped:             s.logsDropped.Load(),
-		BytesDroppedFromBuffer:  s.bytesDropped.Load(),
-		BufferOverflows:         s.bufferOverflows.Load(),
-		ReservedCodeRejections:  s.reservedRejected.Load(),
-		SuppressedThenFailed:    s.suppressFailed.Load(),
-		LateCompletionAfterEmit: s.lateAfterEmit.Load(),
-		EventsDropped:           s.eventsDropped.Load() + deliveryDropped(s),
-		DeliveryFailures:        deliveryFailures(s),
-		EventsRejected:          deliveryRejected(s),
+		ActiveRequests:            active,
+		EventsEmitted:             s.emitted.Load(),
+		EventsSuppressed:          s.suppressed.Load(),
+		StepsDropped:              s.stepsDropped.Load(),
+		LogsDropped:               s.logsDropped.Load(),
+		BytesDroppedFromBuffer:    s.bytesDropped.Load(),
+		BufferOverflows:           s.bufferOverflows.Load(),
+		ReservedCodeRejections:    s.reservedRejected.Load(),
+		SuppressedThenFailed:      s.suppressFailed.Load(),
+		LateCompletionAfterEmit:   s.lateAfterEmit.Load(),
+		EventsDropped:             s.eventsDropped.Load() + deliveryDropped(s),
+		DeliveryFailures:          deliveryFailures(s),
+		EventsRejected:            deliveryRejected(s),
+		DeprecatedSchemaResponses: deliveryDeprecated(s),
 	}
 }
 
@@ -284,6 +286,13 @@ func deliveryRejected(s *sdk) int64 {
 		return 0
 	}
 	return s.delivery.Rejected()
+}
+
+func deliveryDeprecated(s *sdk) int64 {
+	if s == nil || s.delivery == nil {
+		return 0
+	}
+	return s.delivery.Deprecated()
 }
 
 func resetForTest() {

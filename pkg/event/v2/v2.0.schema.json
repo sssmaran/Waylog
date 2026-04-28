@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waylog.dev/schema/v2.0.json",
+  "title": "Waylog Wide Event v2.0",
+  "type": "object",
+  "required": ["schema_version", "event_id", "ts_start", "ts_end", "kind", "service", "env", "trace_id", "status"],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "event_id": { "type": "string", "format": "uuid" },
+    "ts_start": { "type": "string", "format": "date-time" },
+    "ts_end": { "type": "string", "format": "date-time" },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "kind": { "const": "http" },
+    "service": { "type": "string", "minLength": 1 },
+    "env": { "type": "string", "minLength": 1 },
+    "version": { "type": "string" },
+    "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "span_id": { "type": "string", "pattern": "^([0-9a-f]{16})?$" },
+    "parent_span_id": { "type": "string", "pattern": "^([0-9a-f]{16})?$" },
+    "status": { "enum": ["ok", "error", "timeout", "partial", "aborted", "suppressed"] },
+    "anchor": {
+      "type": "object",
+      "required": ["step", "error_code"],
+      "properties": {
+        "step": { "type": "string", "minLength": 1 },
+        "error_code": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string" }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "start_ms", "duration_ms", "status"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "span_id": { "type": "string", "pattern": "^([0-9a-f]{16})?$" },
+          "start_ms": { "type": "integer", "minimum": 0 },
+          "duration_ms": { "type": "integer", "minimum": 0 },
+          "status": { "enum": ["ok", "error"] },
+          "downstream": {
+            "type": "object",
+            "properties": {
+              "service": { "type": "string" },
+              "endpoint": { "type": "string" },
+              "kind": { "type": "string" }
+            }
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": { "type": "string" },
+              "reason": { "type": "string" },
+              "cause": { "type": "string" }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": { "required": ["downstream"] },
+            "then": { "required": ["span_id"] }
+          }
+        ]
+      }
+    },
+    "logs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ts_offset_ms", "level", "msg"],
+        "properties": {
+          "ts_offset_ms": { "type": "integer", "minimum": 0 },
+          "level": { "enum": ["info", "warn", "error"] },
+          "msg": { "type": "string" },
+          "fields": { "type": "object" }
+        }
+      }
+    },
+    "fields": { "type": "object" },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code"],
+        "properties": {
+          "code": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["error", "timeout", "partial", "aborted"] } } },
+      "then": { "required": ["anchor"] }
+    }
+  ]
+}

@@ -13,11 +13,12 @@ var defaultBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 
 type Metrics struct {
 	reg *prometheus.Registry
 
-	IngestLatency  prometheus.Histogram
-	MergeLatency   prometheus.Histogram
-	EventsAccepted prometheus.Counter
-	EventsRejected *prometheus.CounterVec
-	EventlogFails  prometheus.Counter
+	IngestLatency   prometheus.Histogram
+	IngestBatchSize prometheus.Histogram
+	MergeLatency    prometheus.Histogram
+	EventsAccepted  prometheus.Counter
+	EventsRejected  *prometheus.CounterVec
+	EventlogFails   prometheus.Counter
 
 	ReplayLagSeconds    prometheus.Gauge
 	ReplayInProgress    prometheus.Gauge
@@ -76,6 +77,11 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help:    "Full Events handler latency.",
 		Buckets: defaultBuckets,
 	})
+	m.IngestBatchSize = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_ingest_batch_size",
+		Help:    "Number of events parsed from each ingest request.",
+		Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256},
+	})
 	m.MergeLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "waylog_merge_latency_seconds",
 		Help:    "Build + Merge time.",
@@ -89,6 +95,9 @@ func New(reg *prometheus.Registry) *Metrics {
 		Name: "waylog_events_rejected_total",
 		Help: "Dropped events.",
 	}, []string{"reason"})
+	for _, reason := range []string{"validation", "sampling"} {
+		m.EventsRejected.WithLabelValues(reason).Add(0)
+	}
 	m.EventlogFails = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_eventlog_write_failures_total",
 		Help: "Failed eventlog writes.",
@@ -270,7 +279,7 @@ func New(reg *prometheus.Registry) *Metrics {
 	})
 
 	reg.MustRegister(
-		m.IngestLatency, m.MergeLatency,
+		m.IngestLatency, m.IngestBatchSize, m.MergeLatency,
 		m.EventsAccepted, m.EventsRejected, m.EventlogFails,
 		m.ReplayLagSeconds, m.ReplayInProgress, m.ReplayFailuresTotal, m.Ready,
 		m.InFlightRequests,

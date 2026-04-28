@@ -81,6 +81,25 @@ func TestSinglePostCountsEnvelopeRejections(t *testing.T) {
 	}
 }
 
+func TestSinglePostCountsDeprecationHeadersWithEmptyBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Deprecation", "true")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	cli, err := New(Config{IngestURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !cli.Submit(validEvent("e1", eventv2.StatusOK)) {
+		t.Fatal("single submit should succeed")
+	}
+	if got := cli.Deprecated(); got != 1 {
+		t.Fatalf("Deprecated=%d want 1", got)
+	}
+}
+
 func TestNDJSONBatchFlush(t *testing.T) {
 	var batches atomic.Int64
 	var totalEvents atomic.Int64
@@ -137,6 +156,24 @@ func TestNDJSONBatchCountsEnvelopeRejections(t *testing.T) {
 	cli.Shutdown(2 * time.Second)
 	if got := cli.Rejected(); got != 1 {
 		t.Fatalf("Rejected=%d want 1", got)
+	}
+}
+
+func TestNDJSONBatchCountsDeprecationHeadersWithEmptyBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Sunset", "Wed, 01 Jan 2027 00:00:00 GMT")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cli, err := New(Config{IngestURL: srv.URL, BatchMode: true, BatchAgeMs: 1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cli.Submit(validEvent("e1", eventv2.StatusOK))
+	cli.Shutdown(2 * time.Second)
+	if got := cli.Deprecated(); got != 1 {
+		t.Fatalf("Deprecated=%d want 1", got)
 	}
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
+	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	otelhttp "github.com/sssmaran/WaylogCLI/internal/otel"
@@ -302,7 +303,12 @@ func main() {
 	mux.Handle("/metrics", m.Handler())
 
 	// Write endpoints.
-	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(ingestServer.Events)))
+	eventsV2, err := ingestv2.New(m)
+	if err != nil {
+		slog.Error("initialize v2 ingest handler", "err", err)
+		os.Exit(1)
+	}
+	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(eventsV2.Events)))
 	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(ingestServer.Validate)))
 
 	// OTLP/HTTP traces — routed through a dedicated pipeline that reuses the

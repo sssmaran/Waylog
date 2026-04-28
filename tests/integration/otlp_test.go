@@ -49,7 +49,7 @@ func resourceSpansFor(service string, traceID, spanID, parentSpanID []byte, name
 
 // newOTLPHandler builds an OTLP handler that shares store/builder/sampler/etc.
 // with the provided integration server, mirroring what cmd/ingest/main.go does.
-func newOTLPHandler(t *testing.T, srv *ingest.Server, store *graphstore.Store) *otelhttp.Handler {
+func newOTLPHandler(t *testing.T, srv *integrationServer, store *graphstore.Store) *otelhttp.Handler {
 	t.Helper()
 	// Use a 100% sampler so the test is deterministic regardless of the
 	// HAPPY_SAMPLE_RATE_PCT env default the integration server picks up.
