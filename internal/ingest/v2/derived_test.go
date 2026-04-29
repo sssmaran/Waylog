@@ -6,13 +6,14 @@ import (
 	"testing"
 	"time"
 
+	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
 func TestTraceStoryDirectSuppressedIsHeaderOnly(t *testing.T) {
 	idx := NewRecentIndex(nil)
 	ev := testTraceEvent("suppressed", "trace", "checkout", eventv2.StatusSuppressed, testTime(0))
-	ev.Steps = []eventv2.Step{{Name: "hidden", StartMS: 0, DurationMS: 1, Status: "ok"}}
+	ev.Steps = []eventv2.Step{{Name: "hidden", StartMS: 0, DurationMS: 1, Status: eventv2.StepStatusOK}}
 	idx.Insert(ev)
 
 	story, ok := NewReader(idx).TraceStoryByEventID("suppressed")
@@ -35,15 +36,15 @@ func TestTraceStoryByTraceExcludesSuppressedAndBuildsContributingWindow(t *testi
 	okChild.Fields = map[string]any{"http": map[string]any{"route": "/buy"}}
 	okChild.Anchor = &eventv2.Anchor{Step: "pay", ErrorCode: "PMT_502"}
 	okChild.Steps = []eventv2.Step{
-		{Name: "prepare", StartMS: 0, DurationMS: 5, Status: "ok"},
-		{Name: "pay", StartMS: 10, DurationMS: 5, Status: "error", Error: &eventv2.StepError{Code: "PMT_502", Reason: "gateway"}},
-		{Name: "pay", StartMS: 20, DurationMS: 5, Status: "error", Error: &eventv2.StepError{Code: "PMT_502", Reason: "final"}},
-		{Name: "cleanup", StartMS: 30, DurationMS: 5, Status: "ok"},
+		{Name: "prepare", StartMS: 0, DurationMS: 5, Status: eventv2.StepStatusOK},
+		{Name: "pay", StartMS: 10, DurationMS: 5, Status: eventv2.StepStatusError, Error: &eventv2.StepError{Code: "PMT_502", Reason: "gateway"}},
+		{Name: "pay", StartMS: 20, DurationMS: 5, Status: eventv2.StepStatusError, Error: &eventv2.StepError{Code: "PMT_502", Reason: "final"}},
+		{Name: "cleanup", StartMS: 30, DurationMS: 5, Status: eventv2.StepStatusOK},
 	}
 	okChild.Logs = []eventv2.Log{
-		{TsOffsetMS: 4, Level: "warn", Msg: "early"},
-		{TsOffsetMS: 24, Level: "error", Msg: "anchor"},
-		{TsOffsetMS: 31, Level: "error", Msg: "late"},
+		{TsOffsetMS: 4, Level: eventv2.LogLevelWarn, Msg: "early"},
+		{TsOffsetMS: 24, Level: eventv2.LogLevelError, Msg: "anchor"},
+		{TsOffsetMS: 31, Level: eventv2.LogLevelError, Msg: "late"},
 	}
 	idx.Insert(suppressedRoot)
 	idx.Insert(okChild)
@@ -102,7 +103,7 @@ func TestBlastRadiusKeyModesAndCounts(t *testing.T) {
 	reader := NewReader(idx)
 	filter := SearchFilter{Since: testTime(0), Until: testTime(10)}
 	single := reader.BlastRadius(filter, BlastKeyMode{Key: BlastKey{Service: "checkout", Step: "charge", ErrorCode: "PMT_502"}})
-	if single.ViewMode != "single_family" || single.AffectedRequests != 1 || single.AffectedServices != 2 {
+	if single.ViewMode != apiv2.BlastViewSingleFamily || single.AffectedRequests != 1 || single.AffectedServices != 2 {
 		t.Fatalf("single=%+v", single)
 	}
 	if single.AffectedUsers == nil || *single.AffectedUsers != 1 {
@@ -113,7 +114,7 @@ func TestBlastRadiusKeyModesAndCounts(t *testing.T) {
 	}
 
 	cross := reader.BlastRadius(filter, BlastKeyMode{Key: BlastKey{ErrorCode: "PMT_502"}, CrossCode: true})
-	if cross.ViewMode != "cross_family" || cross.AffectedRequests != 2 || cross.AffectedServices != 3 {
+	if cross.ViewMode != apiv2.BlastViewCrossFamily || cross.AffectedRequests != 2 || cross.AffectedServices != 3 {
 		t.Fatalf("cross=%+v", cross)
 	}
 }
@@ -161,7 +162,7 @@ func TestReadHandlerDerivedEndpoints(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &blast); err != nil {
 		t.Fatal(err)
 	}
-	if blast.ViewMode != "single_family" || blast.Key.Service != "checkout" || blast.AffectedRequests != 1 {
+	if blast.ViewMode != apiv2.BlastViewSingleFamily || blast.Key.Service != "checkout" || blast.AffectedRequests != 1 {
 		t.Fatalf("blast=%+v", blast)
 	}
 
@@ -170,12 +171,12 @@ func TestReadHandlerDerivedEndpoints(t *testing.T) {
 }
 
 func TestErrorFamilyDisplayParser(t *testing.T) {
-	key, ok := parseErrorFamilyDisplay(`svc\:a:step\:b:CODE`)
+	key, ok := ParseErrorFamily(`svc\:a:step\:b:CODE`)
 	if !ok || key.Service != "svc:a" || key.Step != "step:b" || key.ErrorCode != "CODE" {
 		t.Fatalf("key=%+v ok=%v", key, ok)
 	}
 	for _, raw := range []string{"a:b", `a:b:c\`, `a:b:c:d`, `a:\x:c`} {
-		if _, ok := parseErrorFamilyDisplay(raw); ok {
+		if _, ok := ParseErrorFamily(raw); ok {
 			t.Fatalf("expected malformed: %q", raw)
 		}
 	}
@@ -184,7 +185,7 @@ func TestErrorFamilyDisplayParser(t *testing.T) {
 func errorEvent(id, traceID, service, step, code string, ts time.Time, userID string) *eventv2.Event {
 	ev := testTraceEvent(id, traceID, service, eventv2.StatusError, ts)
 	ev.Anchor = &eventv2.Anchor{Step: step, ErrorCode: code}
-	ev.Steps = []eventv2.Step{{Name: step, StartMS: 0, DurationMS: 10, Status: "error", Error: &eventv2.StepError{Code: code, Reason: "failed"}}}
+	ev.Steps = []eventv2.Step{{Name: step, StartMS: 0, DurationMS: 10, Status: eventv2.StepStatusError, Error: &eventv2.StepError{Code: code, Reason: "failed"}}}
 	if userID != "" {
 		ev.Fields = map[string]any{"user": map[string]any{"id": userID}}
 	}

@@ -6,7 +6,7 @@ Reference for configuring the Waylog ingest server and SDK. All variables are re
 
 | Variable | Purpose |
 |---|---|
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Required for CLI LLM-backed Ask flows |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Required for legacy server-side Ask flows |
 
 ## Auth
 
@@ -34,6 +34,16 @@ Scoped keys. See the Auth section of the [README](../README.md).
 | `WRITE_TIMEOUT` | `10s` | HTTP write timeout |
 | `IDLE_TIMEOUT` | `120s` | HTTP idle timeout |
 | `CORS_ORIGIN` | `*` | Allowed CORS origin for read APIs |
+
+## CLI
+
+The `waylog` CLI calls the running ingest server's v2 read APIs. The server must run with `WAYLOG_V2_READS=true`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `INGEST_ADDR` | `http://localhost:8080` | CLI target ingest base URL. Bare `host:port` values are normalized to `http://host:port` |
+| `WAYLOG_READ_KEY` | — | Read-scope API key sent as `Authorization: Bearer <key>` |
+| `WAYLOG_CLI_TIMEOUT` | `5s` | Per-request CLI HTTP timeout |
 
 ## Storage and persistence
 

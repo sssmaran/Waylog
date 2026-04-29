@@ -234,6 +234,7 @@ func main() {
 		PlanStore:           planStore,
 		GraphHotWindow:      graphHotWindow,
 		OTLPEnabled:         otlpEnabled,
+		V2ReadsEnabled:      v2ReadsEnabled,
 	})
 
 	// SSE hub for real-time dashboard updates

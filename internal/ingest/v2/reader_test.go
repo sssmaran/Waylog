@@ -60,7 +60,7 @@ func TestSearchEventsPaginatesWithCursor(t *testing.T) {
 func TestRecentTracesUsesAnyEventFilterAndFullTraceSummary(t *testing.T) {
 	idx := NewRecentIndex(nil)
 	root := testTraceEvent("root", "trace", "gateway", eventv2.StatusOK, testTime(0))
-	root.Steps = []eventv2.Step{{Name: "call.payment", SpanID: "span-payment", Status: "ok"}}
+	root.Steps = []eventv2.Step{{Name: "call.payment", SpanID: "span-payment", Status: eventv2.StepStatusOK}}
 	payment := testTraceEvent("payment", "trace", "payment", eventv2.StatusError, testTime(1))
 	payment.ParentSpanID = "span-payment"
 	payment.Anchor = &eventv2.Anchor{Step: "charge", ErrorCode: "PMT:502"}
@@ -98,7 +98,7 @@ func TestRecentTracesSuppressedOnlyRequiresOptIn(t *testing.T) {
 	filter.IncludeSuppressed = true
 	got := reader.RecentTraces(filter, nil, 10)
 	if len(got.Traces) != 1 || got.Traces[0].Status != eventv2.StatusSuppressed {
-		t.Fatalf("traces=%+v", got.Traces)
+		t.Fatalf("traces=%+v want suppressed-only trace when explicitly included", got.Traces)
 	}
 }
 

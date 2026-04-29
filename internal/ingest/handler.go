@@ -141,7 +141,8 @@ type Server struct {
 
 	// OTLP capability flag — reported by /v1/capabilities. Set via
 	// ServerConfig when the OTLP handler is mounted in main.go.
-	otlpEnabled bool
+	otlpEnabled    bool
+	v2ReadsEnabled bool
 
 	// SSE
 	sseHub               *SSEHub
@@ -206,6 +207,7 @@ type ServerConfig struct {
 	PlanStore           *PlanStore
 	GraphHotWindow      time.Duration
 	OTLPEnabled         bool
+	V2ReadsEnabled      bool
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -244,6 +246,7 @@ func NewServer(cfg ServerConfig) *Server {
 		planStore:           cfg.PlanStore,
 		graphHotWindow:      cfg.GraphHotWindow,
 		otlpEnabled:         cfg.OTLPEnabled,
+		v2ReadsEnabled:      cfg.V2ReadsEnabled,
 		rateLimit:           map[string][]time.Time{},
 		replayStatus:        "none",
 	}
@@ -586,6 +589,9 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 		"graph": s.graphUI,
 		"otlp": map[string]any{
 			"http_traces": s.otlpEnabled,
+		},
+		"v2_reads": map[string]any{
+			"enabled": s.v2ReadsEnabled,
 		},
 		"architecture": map[string]any{
 			"flattened": true,

@@ -308,6 +308,9 @@ func TestCapabilities_Defaults(t *testing.T) {
 		Dashboard struct {
 			RefreshIntervalSec int `json:"refresh_interval_sec"`
 		} `json:"dashboard"`
+		V2Reads struct {
+			Enabled bool `json:"enabled"`
+		} `json:"v2_reads"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid json: %v", err)
@@ -320,6 +323,29 @@ func TestCapabilities_Defaults(t *testing.T) {
 	}
 	if resp.Dashboard.RefreshIntervalSec != 10 {
 		t.Errorf("refresh_interval_sec = %d, want 10", resp.Dashboard.RefreshIntervalSec)
+	}
+	if resp.V2Reads.Enabled {
+		t.Errorf("v2_reads.enabled = true, want false")
+	}
+}
+
+func TestCapabilities_V2ReadsEnabled(t *testing.T) {
+	srv := NewServer(ServerConfig{V2ReadsEnabled: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
+	w := httptest.NewRecorder()
+	srv.Capabilities(w, req)
+
+	var resp struct {
+		V2Reads struct {
+			Enabled bool `json:"enabled"`
+		} `json:"v2_reads"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !resp.V2Reads.Enabled {
+		t.Fatal("v2_reads.enabled = false, want true")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
+	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
@@ -330,27 +331,10 @@ type eventGetResponse struct {
 	Event *eventv2.Event `json:"event"`
 }
 
-type eventSearchResponse struct {
-	Events     []*eventv2.Event `json:"events"`
-	NextCursor *string          `json:"next_cursor"`
-}
-
-type traceGetResponse struct {
-	TraceID string           `json:"trace_id"`
-	Events  []*eventv2.Event `json:"events"`
-	Linkage string           `json:"linkage"`
-}
-
-type recentTracesResponse struct {
-	Traces     []TraceSummary `json:"traces"`
-	NextCursor *string        `json:"next_cursor"`
-}
-
-type errorsResponse struct {
-	Window     string     `json:"window"`
-	Rows       []ErrorRow `json:"rows"`
-	NextCursor *string    `json:"next_cursor"`
-}
+type eventSearchResponse = apiv2.EventSearchResponse
+type traceGetResponse = apiv2.TraceGetResponse
+type recentTracesResponse = apiv2.RecentTracesResponse
+type errorsResponse = apiv2.ErrorsResponse
 
 type readErrorBody struct {
 	Error readErrorDetail `json:"error"`
@@ -450,7 +434,7 @@ func parseErrorStatuses(q url.Values) (map[eventv2.Status]struct{}, *queryError)
 		return nil, err
 	}
 	for status := range statuses {
-		if !isFailedStatus(status) {
+		if !status.IsFailed() {
 			return nil, &queryError{code: errorCodeBadRequest, message: "bad request", detail: "status must be one of error, timeout, partial, aborted"}
 		}
 	}
@@ -466,7 +450,7 @@ func parseBlastKey(q url.Values) (BlastKeyMode, bool) {
 		return BlastKeyMode{Key: BlastKey{Service: service, Step: step, ErrorCode: code}}, true
 	}
 	if display := q.Get("error_family"); display != "" {
-		key, ok := parseErrorFamilyDisplay(display)
+		key, ok := ParseErrorFamily(display)
 		if !ok {
 			return BlastKeyMode{}, false
 		}

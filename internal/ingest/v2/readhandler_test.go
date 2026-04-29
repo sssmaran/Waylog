@@ -69,7 +69,7 @@ func TestReadHandlerRejectsWindowOverHotWindowAndOldSince(t *testing.T) {
 func TestReadHandlerTraceGetAndRecent(t *testing.T) {
 	h := newTestReadHandler(t, nil)
 	root := testTraceEvent("root", "trace", "gateway", eventv2.StatusOK, testTime(0))
-	root.Steps = []eventv2.Step{{Name: "call.payment", SpanID: "span-payment", Status: "ok"}}
+	root.Steps = []eventv2.Step{{Name: "call.payment", SpanID: "span-payment", Status: eventv2.StepStatusOK}}
 	payment := testTraceEvent("payment", "trace", "payment", eventv2.StatusError, testTime(1))
 	payment.ParentSpanID = "span-payment"
 	payment.Anchor = &eventv2.Anchor{Step: "charge", ErrorCode: "PMT_502"}

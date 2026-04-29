@@ -2,7 +2,6 @@ package ingestv2
 
 import (
 	"sort"
-	"strings"
 
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
@@ -27,7 +26,7 @@ func ResolveAnchorWithOptions(events []*eventv2.Event, opts ResolveOpts) AnchorR
 
 	failed := make([]*eventv2.Event, 0, len(events))
 	for _, ev := range events {
-		if anchorCandidate(ev, opts) && isFailedStatus(ev.Status) {
+		if anchorCandidate(ev, opts) && ev.Status.IsFailed() {
 			failed = append(failed, ev)
 		}
 	}
@@ -145,16 +144,4 @@ func hasFailedDescendant(graph traceGraph, eventID string, failed map[string]str
 		}
 	}
 	return false
-}
-
-func anchorSummary(ev *eventv2.Event) *string {
-	if ev == nil || ev.Anchor == nil {
-		return nil
-	}
-	s := escapeAnchorPart(ev.Service) + ":" + escapeAnchorPart(ev.Anchor.Step) + ":" + escapeAnchorPart(ev.Anchor.ErrorCode)
-	return &s
-}
-
-func escapeAnchorPart(s string) string {
-	return strings.ReplaceAll(s, ":", `\:`)
 }

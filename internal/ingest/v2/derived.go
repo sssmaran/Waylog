@@ -4,63 +4,19 @@ import (
 	"sort"
 	"time"
 
+	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
-const LinkageDirect = "direct"
+const LinkageDirect = apiv2.LinkageDirect
 
-type StoryResponse struct {
-	TraceID    string            `json:"trace_id"`
-	Service    string            `json:"service"`
-	Route      string            `json:"route"`
-	Status     eventv2.Status    `json:"status"`
-	Anchor     *StoryAnchor      `json:"anchor"`
-	Path       []StoryStep       `json:"path"`
-	Logs       []StoryLog        `json:"logs"`
-	Downstream []StoryDownstream `json:"downstream"`
-	Linkage    string            `json:"linkage"`
-}
-
-type StoryAnchor struct {
-	Step      string `json:"step"`
-	ErrorCode string `json:"error_code"`
-}
-
-type StoryStep struct {
-	Name       string `json:"name"`
-	StartMS    int64  `json:"start_ms"`
-	DurationMS int64  `json:"duration_ms"`
-	Status     string `json:"status"`
-	ErrorCode  string `json:"error_code,omitempty"`
-	ErrorMsg   string `json:"error_msg,omitempty"`
-}
-
-type StoryLog struct {
-	TsOffsetMS int64  `json:"ts_offset_ms"`
-	Level      string `json:"level"`
-	Msg        string `json:"msg"`
-	Step       string `json:"step,omitempty"`
-}
-
-type StoryDownstream struct {
-	Step     string `json:"step"`
-	Service  string `json:"service"`
-	Endpoint string `json:"endpoint"`
-}
-
-type ErrorFamily struct {
-	Service   string `json:"service"`
-	Step      string `json:"step"`
-	ErrorCode string `json:"error_code"`
-}
-
-type ErrorRow struct {
-	ErrorFamily    ErrorFamily `json:"error_family"`
-	Count          int         `json:"count"`
-	AffectedUsers  *int        `json:"affected_users"`
-	AffectedTraces int         `json:"affected_traces"`
-	SampleTraces   []string    `json:"sample_traces"`
-}
+type StoryResponse = apiv2.StoryResponse
+type StoryAnchor = apiv2.StoryAnchor
+type StoryStep = apiv2.StoryStep
+type StoryLog = apiv2.StoryLog
+type StoryDownstream = apiv2.StoryDownstream
+type ErrorFamily = apiv2.ErrorFamily
+type ErrorRow = apiv2.ErrorRow
 
 type ErrorsResult struct {
 	Window     string
@@ -68,22 +24,8 @@ type ErrorsResult struct {
 	NextCursor *ErrorCursor
 }
 
-type BlastKey struct {
-	Service   string `json:"service,omitempty"`
-	Step      string `json:"step,omitempty"`
-	ErrorCode string `json:"error_code"`
-}
-
-type BlastRadiusResult struct {
-	Key              BlastKey `json:"key"`
-	ViewMode         string   `json:"view_mode"`
-	Window           string   `json:"window"`
-	AffectedRequests int      `json:"affected_requests"`
-	AffectedUsers    *int     `json:"affected_users"`
-	AffectedServices int      `json:"affected_services"`
-	TopServices      []string `json:"top_services"`
-	SampleTraces     []string `json:"sample_traces"`
-}
+type BlastKey = apiv2.BlastKey
+type BlastRadiusResult = apiv2.BlastRadiusResponse
 
 type BlastKeyMode struct {
 	Key       BlastKey
@@ -167,9 +109,9 @@ func (r *Reader) BlastRadius(f SearchFilter, key BlastKeyMode) BlastRadiusResult
 	users := collectUsersForTraces(traces, matchedTraceLatest)
 	services := countServicesForTraces(traces, matchedTraceLatest)
 	affectedUsers := nullableCount(len(users), len(users) > 0)
-	viewMode := "single_family"
+	viewMode := apiv2.BlastViewSingleFamily
 	if key.CrossCode {
-		viewMode = "cross_family"
+		viewMode = apiv2.BlastViewCrossFamily
 	}
 	return BlastRadiusResult{
 		Key:              key.Key,
@@ -216,7 +158,7 @@ func buildStory(ev *eventv2.Event, linkage string) StoryResponse {
 		firstStart = steps[0].StartMS
 	}
 	for _, log := range ev.Logs {
-		if log.Level != "warn" && log.Level != "error" {
+		if log.Level != eventv2.LogLevelWarn && log.Level != eventv2.LogLevelError {
 			continue
 		}
 		if anchored && (log.TsOffsetMS < firstStart || log.TsOffsetMS > anchorEnd) {
@@ -262,7 +204,7 @@ func latestAnchorStep(steps []eventv2.Step, name string) (eventv2.Step, bool) {
 			fallback = step
 			hasFallback = true
 		}
-		if step.Status == "error" && (!hasLatest || step.StartMS > latest.StartMS) {
+		if step.Status == eventv2.StepStatusError && (!hasLatest || step.StartMS > latest.StartMS) {
 			latest = step
 			hasLatest = true
 		}
@@ -329,7 +271,7 @@ func aggregateErrorRows(events []*eventv2.Event, traces map[string][]*eventv2.Ev
 }
 
 func eventMatchesErrorRollup(ev *eventv2.Event, f SearchFilter) bool {
-	if ev == nil || ev.Anchor == nil || !isFailedStatus(ev.Status) {
+	if ev == nil || ev.Anchor == nil || !ev.Status.IsFailed() {
 		return false
 	}
 	if len(f.Statuses) > 0 {
@@ -344,7 +286,7 @@ func eventMatchesErrorRollup(ev *eventv2.Event, f SearchFilter) bool {
 }
 
 func eventMatchesBlastKey(ev *eventv2.Event, f SearchFilter, key BlastKeyMode) bool {
-	if ev == nil || ev.Anchor == nil || !isFailedStatus(ev.Status) || !eventWithinWindow(ev, f) {
+	if ev == nil || ev.Anchor == nil || !ev.Status.IsFailed() || !eventWithinWindow(ev, f) {
 		return false
 	}
 	if key.Key.ErrorCode != ev.Anchor.ErrorCode {
@@ -494,39 +436,6 @@ func routeFromV2Fields(fields map[string]any) string {
 	}
 	route, _ := httpFields["route"].(string)
 	return route
-}
-
-func parseErrorFamilyDisplay(s string) (BlastKey, bool) {
-	parts := make([]string, 0, 3)
-	var current []rune
-	escaped := false
-	for _, r := range s {
-		if escaped {
-			if r != ':' && r != '\\' {
-				return BlastKey{}, false
-			}
-			current = append(current, r)
-			escaped = false
-			continue
-		}
-		switch r {
-		case '\\':
-			escaped = true
-		case ':':
-			parts = append(parts, string(current))
-			current = current[:0]
-		default:
-			current = append(current, r)
-		}
-	}
-	if escaped {
-		return BlastKey{}, false
-	}
-	parts = append(parts, string(current))
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return BlastKey{}, false
-	}
-	return BlastKey{Service: parts[0], Step: parts[1], ErrorCode: parts[2]}, true
 }
 
 func timeWindowString(since, until time.Time) string {

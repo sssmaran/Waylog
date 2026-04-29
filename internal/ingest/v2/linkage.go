@@ -3,12 +3,13 @@ package ingestv2
 import (
 	"sort"
 
+	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
 const (
-	LinkageCausal            = "causal"
-	LinkageTimestampFallback = "timestamp_fallback"
+	LinkageCausal            = apiv2.LinkageCausal
+	LinkageTimestampFallback = apiv2.LinkageTimestampFallback
 )
 
 func OrderTrace(events []*eventv2.Event) ([]*eventv2.Event, string) {

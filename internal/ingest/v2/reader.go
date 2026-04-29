@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
@@ -36,14 +37,7 @@ type TraceGetResult struct {
 	Linkage string
 }
 
-type TraceSummary struct {
-	TraceID       string         `json:"trace_id"`
-	TsStart       time.Time      `json:"ts_start"`
-	DurationMS    int64          `json:"duration_ms"`
-	Services      []string       `json:"services"`
-	Status        eventv2.Status `json:"status"`
-	AnchorSummary *string        `json:"anchor_summary"`
-}
+type TraceSummary = apiv2.TraceSummary
 
 type RecentTracesResult struct {
 	Traces     []TraceSummary
@@ -116,7 +110,7 @@ func (r *Reader) RecentTraces(f SearchFilter, after *TraceCursor, limit int) Rec
 	summaries := make([]TraceSummary, 0, len(groups))
 	for traceID, events := range groups {
 		if traceHasMatchingEvent(events, f) {
-			summary, ok := buildTraceSummary(traceID, events)
+			summary, ok := buildTraceSummary(traceID, events, f.IncludeSuppressed)
 			if ok {
 				summaries = append(summaries, summary)
 			}
@@ -189,7 +183,7 @@ func traceHasMatchingEvent(events []*eventv2.Event, f SearchFilter) bool {
 	return false
 }
 
-func buildTraceSummary(traceID string, events []*eventv2.Event) (TraceSummary, bool) {
+func buildTraceSummary(traceID string, events []*eventv2.Event, includeSuppressed bool) (TraceSummary, bool) {
 	if len(events) == 0 {
 		return TraceSummary{}, false
 	}
@@ -221,11 +215,11 @@ func buildTraceSummary(traceID string, events []*eventv2.Event) (TraceSummary, b
 		seenServices[ev.Service] = struct{}{}
 		services = append(services, ev.Service)
 	}
-	resolved := ResolveAnchor(events)
-	status := eventv2.Status("")
-	if resolved.Event != nil {
-		status = resolved.Event.Status
+	resolved := ResolveAnchorWithOptions(events, ResolveOpts{ExcludeSuppressed: !includeSuppressed})
+	if resolved.Event == nil {
+		return TraceSummary{}, false
 	}
+	status := resolved.Event.Status
 	duration := int64(0)
 	if !minStart.IsZero() && !maxEnd.IsZero() && maxEnd.After(minStart) {
 		duration = maxEnd.Sub(minStart).Milliseconds()
@@ -236,7 +230,7 @@ func buildTraceSummary(traceID string, events []*eventv2.Event) (TraceSummary, b
 		DurationMS:    duration,
 		Services:      services,
 		Status:        status,
-		AnchorSummary: anchorSummary(resolved.Event),
+		AnchorSummary: FormatEventErrorFamily(resolved.Event),
 	}, true
 }
 

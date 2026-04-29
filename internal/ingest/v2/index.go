@@ -216,7 +216,7 @@ func (idx *RecentIndex) applyAggregatesLocked(ev *eventv2.Event) {
 		return
 	}
 
-	if isFailedStatus(ev.Status) && ev.Anchor != nil {
+	if ev.Status.IsFailed() && ev.Anchor != nil {
 		key := ErrorKey{Service: ev.Service, Step: ev.Anchor.Step, ErrorCode: ev.Anchor.ErrorCode}
 		node := idx.errors[key]
 		if node == nil {
@@ -285,15 +285,6 @@ func touchRange(first, last *time.Time, ts time.Time) {
 	}
 	if last.IsZero() || ts.After(*last) {
 		*last = ts
-	}
-}
-
-func isFailedStatus(status eventv2.Status) bool {
-	switch status {
-	case eventv2.StatusError, eventv2.StatusTimeout, eventv2.StatusPartial, eventv2.StatusAborted:
-		return true
-	default:
-		return false
 	}
 }
 

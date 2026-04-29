@@ -34,6 +34,25 @@ func (s Status) IsPriority() bool {
 	}
 }
 
+func (s Status) IsFailed() bool {
+	return s.IsPriority()
+}
+
+type StepStatus = string
+
+const (
+	StepStatusOK    StepStatus = "ok"
+	StepStatusError StepStatus = "error"
+)
+
+type LogLevel = string
+
+const (
+	LogLevelInfo  LogLevel = "info"
+	LogLevelWarn  LogLevel = "warn"
+	LogLevelError LogLevel = "error"
+)
+
 const (
 	CodeTimeout = "WAYLOG_TIMEOUT"
 	CodeAborted = "WAYLOG_ABORTED"

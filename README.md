@@ -136,12 +136,16 @@ Runs only the ingest server. Point your own services at it via an SDK or OTLP. F
 ### CLI
 
 ```bash
-waylog "show top errors"
-waylog "explain request 7f3a2b..."
-waylog "trace summary for 7f3a2b..."
-waylog "graph_query expr='error_code=PMT_502' window='10m'"
-waylog "compare_windows current='10m' baseline='10m' offset='1h'"
+WAYLOG_V2_READS=true ./ingest
+
+waylog errors --window 15m
+waylog explain trace_01HX...
+waylog trace trace_01HX...
+waylog blast --service checkout --step payment.charge --code PMT_502
+waylog search PMT_502 --window 1h
 ```
+
+The `waylog` binary is now the v2 operator CLI over the running ingest server's read APIs. It requires the server to advertise `v2_reads.enabled=true` from `/v1/capabilities` and uses `INGEST_ADDR`, `WAYLOG_READ_KEY`, and `WAYLOG_CLI_TIMEOUT` by default. Add `--json` to any verb for machine-readable output.
 
 ### REST (direct tool call)
 
@@ -282,7 +286,8 @@ Public alpha. APIs may break before 1.0.
 - agent-native REST (`/v1/tools/*`, `/v1/ask`, `/v1/plans/execute`) with idempotency and structured envelopes
 - `/v1/traces/story?format=tree` and tree rendering in the dashboard
 - dashboard: Geist theme + light-mode toggle, failing-traces banner, bento layout, deploy-diff, SSE live
-- live TUI (`waylog-live --dev` streams via SSE), MCP stdio, CLI with LLM tool routing
+- v2 operator CLI (`errors`, `trace`, `explain`, `blast`, `search`) over read APIs
+- live TUI (`waylog-live --dev` streams via SSE), MCP stdio
 - scoped auth (write/read/agent) with startup validation
 
 **Planned:**
