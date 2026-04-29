@@ -80,6 +80,19 @@ See [Internals](internals.md) for the full durability model.
 | `HAPPY_SAMPLE_RATE_PCT` | `2` | Success-event sampling rate. Set `100` in dev profiles |
 | `MCP_STDIO` | — | Set to `1` to run MCP stdio server instead of REPL |
 
+## Schema-2.0 reference demo
+
+`make micro-demo` sets these automatically for the local event-driven demo.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `INGEST_URL` | `http://localhost:8080` | SDK delivery base URL used by the demo services |
+| `INGEST_ADDR` | `:8080` | Ingest server listen address |
+| `WAYLOG_WRITE_KEY` | `demo` | Write-scope key used by the demo SDK emitters |
+| `WAYLOG_READ_KEY` | `demo` | Read-scope key used by the printed CLI commands |
+| `DASHBOARD_AUTH` | `key:demo` | Enables dashboard/read-session auth so `WAYLOG_READ_KEY` is valid at startup |
+| `WAYLOG_V2_READS` | `true` in demo scripts | Enables v2 read APIs required by `waylog errors/explain/blast` |
+
 ## Dashboard links
 
 Optional external links rendered in the dashboard header. Hidden if empty.

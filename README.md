@@ -104,22 +104,32 @@ Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1
 ## Quick start
 
 ```bash
-make docker-dev
+make build
+make micro-demo
 ```
 
-This starts the ingest server, embedded dashboard, Prometheus, Grafana, and four real Go services wired together with the Waylog SDK middleware (`api-gateway → checkout → db → payment`). No mocks.
+This starts the ingest server plus four real Go demo services wired through the schema-2.0 Go SDK (`api-gateway → checkout → db/payment`). The local demo path no longer needs Kafka or the bridge process.
 
 Once the stack is up:
 
-1. Open the demo app at <http://localhost:9081/demo> and click a button:
-   - **Purchase (Success)** — healthy 4-service flow
-   - **Purchase (DB Fail)** — `DB_503` cascading up through checkout and the gateway
-   - **Purchase (Payment Fail)** — `PMT_502` cascading up through checkout
-   - **Purchase (Checkout Fail)** — `CHK_500` short-circuit at checkout
-2. Open the dashboard at <http://localhost:8080/ui> — KPIs, failing-traces banner, recent traces, and deploy-diff panel populate live via SSE.
-3. Click into a failing trace to see both the flat propagation chain and the rendered tree.
+1. Open the demo app at <http://localhost:9081/demo>.
+2. Click **Payment gateway 502** or run:
+   ```bash
+   curl -s -X POST http://localhost:9081/purchase \
+     -H 'Content-Type: application/json' \
+     --data '{"sku":"X1","scenario":"payment_502"}'
+   ```
+3. Investigate with the v2 CLI:
+   ```bash
+   WAYLOG_READ_KEY=demo ./waylog errors --window 15m
+   WAYLOG_READ_KEY=demo ./waylog explain <trace_id>
+   WAYLOG_READ_KEY=demo ./waylog blast --service checkout --step payment.charge --code PMT_502 --window 15m
+   WAYLOG_READ_KEY=demo ./waylog blast --code PMT_502 --window 15m
+   ```
 
-Stop with `make docker-down`. Wipe persistent volumes with `make docker-reset`.
+The demo also supports `happy` and `suppressed_payment_502` scenarios through the UI or `POST /purchase`.
+
+Stop with `make micro-demo-stop`.
 
 > `./scripts/demo-cascade-failure.sh` injects an equivalent fixture by POSTing synthetic events directly. It is a fixture, not a substitute for the live path above.
 
@@ -306,4 +316,4 @@ Public alpha. APIs may break before 1.0.
 - No built-in alerting or paging. Waylog answers questions, it doesn't wake you up.
 - No multi-tenancy. One instance = one trust boundary.
 
-**Fastest walkthrough:** `make docker-dev`, open <http://localhost:9081/demo>, click a failure button, then open <http://localhost:8080/ui> to see the propagation chain live.
+**Fastest walkthrough:** `make micro-demo`, open <http://localhost:9081/demo>, click **Payment gateway 502**, then use `waylog errors`, `waylog explain`, and `waylog blast` to answer what failed, which downstream was involved, and how broad the impact is.

@@ -2,32 +2,221 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Waylog Micro-Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f3ea">
+  <title>Waylog v2 Incident Demo</title>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
-    h1 { font-size: 1.4em; }
-    button { margin: 6px 4px; padding: 10px 18px; font-size: 0.95em; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; }
-    button:hover { background: #e8e8e8; }
-    pre { background: #f0f0f0; padding: 16px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; min-height: 60px; }
+    :root {
+      color-scheme: light;
+      --bg: #f7f3ea;
+      --ink: #201a14;
+      --muted: #6d6258;
+      --card: #fffaf0;
+      --border: rgba(79, 58, 35, 0.18);
+      --accent: #b7441f;
+      --accent-ink: #fff8ee;
+      --ok: #1f7a4d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-serif, Georgia, "Times New Roman", serif;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: rgba(183, 68, 31, 0.18);
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding: max(28px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+      background:
+        radial-gradient(circle at top left, rgba(183, 68, 31, 0.15), transparent 34rem),
+        linear-gradient(135deg, rgba(255, 255, 255, 0.58), transparent 45%);
+    }
+
+    main {
+      width: min(880px, 100%);
+      margin: 0 auto;
+    }
+
+    .skip {
+      position: absolute;
+      left: 16px;
+      top: 10px;
+      transform: translateY(-160%);
+      padding: 10px 14px;
+      background: var(--ink);
+      color: white;
+      border-radius: 999px;
+    }
+
+    .skip:focus-visible {
+      transform: translateY(0);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2.2rem, 8vw, 5.2rem);
+      line-height: 0.92;
+      letter-spacing: -0.055em;
+      text-wrap: balance;
+    }
+
+    p {
+      color: var(--muted);
+      font-size: 1.08rem;
+      line-height: 1.55;
+      max-width: 62ch;
+    }
+
+    .panel {
+      margin-top: 28px;
+      padding: 22px;
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      background: color-mix(in srgb, var(--card) 88%, white);
+      box-shadow: 0 26px 80px rgba(74, 50, 21, 0.14), 0 2px 0 rgba(255, 255, 255, 0.8) inset;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    button {
+      min-height: 48px;
+      padding: 13px 15px;
+      border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+      border-radius: 16px;
+      background: #fff4df;
+      color: var(--ink);
+      cursor: pointer;
+      font: 700 1rem/1.2 ui-sans-serif, system-ui, sans-serif;
+      transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: var(--accent-ink);
+      border-color: var(--accent);
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      border-color: var(--accent);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button:focus-visible,
+    .skip:focus-visible {
+      outline: 3px solid #1d4ed8;
+      outline-offset: 3px;
+    }
+
+    .result {
+      margin-top: 18px;
+    }
+
+    .result h2 {
+      margin: 0 0 10px;
+      font: 700 0.9rem/1.2 ui-sans-serif, system-ui, sans-serif;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    pre {
+      min-height: 130px;
+      margin: 0;
+      padding: 16px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: #201a14;
+      color: #fff8ee;
+      font: 0.92rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .hint {
+      margin-top: 18px;
+      padding-left: 18px;
+      border-left: 4px solid var(--ok);
+      color: var(--muted);
+      font: 0.98rem/1.5 ui-sans-serif, system-ui, sans-serif;
+    }
+
+    code {
+      color: var(--ink);
+      background: rgba(32, 26, 20, 0.08);
+      border-radius: 7px;
+      padding: 2px 6px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      button {
+        transition: none;
+      }
+      button:hover,
+      button:active {
+        transform: none;
+      }
+    }
   </style>
 </head>
 <body>
-  <h1>Waylog Micro-Demo</h1>
-  <div>
-    <button onclick="purchase('')">Purchase (Success)</button>
-    <button onclick="purchase('db_fail')">Purchase (DB Fail)</button>
-    <button onclick="purchase('payment_fail')">Purchase (Payment Fail)</button>
-    <button onclick="purchase('checkout_fail')">Purchase (Checkout Fail)</button>
-  </div>
-  <pre id="result">Click a button to send a request...</pre>
+  <a class="skip" href="#demo">Skip to demo</a>
+  <main id="demo">
+    <h1>Trigger a real checkout incident.</h1>
+    <p>
+      This demo sends schema&nbsp;2.0 events through the Go v2 SDK across
+      api-gateway → checkout → db/payment. Use the failure scenario, then run
+      <code>waylog errors</code>, <code>waylog explain</code>, and
+      <code>waylog blast</code> to investigate it.
+    </p>
+
+    <section class="panel" aria-labelledby="scenario-title">
+      <h2 id="scenario-title">Scenarios</h2>
+      <div class="actions">
+        <button type="button" onclick="purchase('happy')">Happy checkout</button>
+        <button type="button" class="primary" onclick="purchase('payment_502')">Payment gateway 502</button>
+        <button type="button" onclick="purchase('suppressed_payment_502')">Suppressed known issue</button>
+      </div>
+
+      <div class="result" aria-live="polite">
+        <h2>Latest response</h2>
+        <pre id="result">Choose a scenario…</pre>
+      </div>
+
+      <p class="hint">
+        Tip: after triggering <code>payment_502</code>, copy the returned
+        <code>trace_id</code> into <code>waylog explain &lt;trace_id&gt;</code>.
+      </p>
+    </section>
+  </main>
+
   <script>
-    async function purchase(force) {
+    async function purchase(scenario) {
       const el = document.getElementById('result');
-      el.textContent = 'Loading...';
+      el.textContent = 'Loading…';
       try {
-        const url = force ? '/purchase?force=' + encodeURIComponent(force) : '/purchase';
-        const resp = await fetch(url);
+        const resp = await fetch('/purchase', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sku: 'X1', scenario })
+        });
         const data = await resp.json();
         el.textContent = JSON.stringify(data, null, 2);
       } catch (err) {

@@ -16,8 +16,8 @@ help:
 	@echo "  clean    - remove build outputs"
 	@echo "  kafka-up - start local Kafka via docker compose"
 	@echo "  kafka-down - stop local Kafka via docker compose"
-	@echo "  demo     - start Kafka + demo flow (single terminal)"
-	@echo "  demo-stop - stop Kafka + demo processes"
+	@echo "  demo     - start schema-2.0 micro-demo (single terminal)"
+	@echo "  demo-stop - stop demo processes"
 	@echo "  micro-demo - start 4-service micro-demo (gateway+checkout+db+payment)"
 	@echo "  micro-demo-stop - stop micro-demo processes"
 	@echo "  waylog-live - run TUI dashboard (connects to ingest server)"
@@ -112,13 +112,13 @@ kafka-down:
 	docker compose -f docker-compose.kafka.yml down -v
 
 demo:
-	START_KAFKA=1 ./scripts/demo.sh
+	./scripts/demo.sh
 
 demo-stop:
 	./scripts/demo-stop.sh
 
 micro-demo:
-	START_KAFKA=1 ./scripts/micro-demo.sh
+	./scripts/micro-demo.sh
 
 micro-demo-stop:
 	./scripts/micro-demo-stop.sh
