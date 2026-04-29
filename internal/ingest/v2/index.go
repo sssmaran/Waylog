@@ -119,6 +119,41 @@ func (idx *RecentIndex) TraceEvents(traceID string) []*eventv2.Event {
 	return out
 }
 
+func (idx *RecentIndex) SnapshotEvents() []*eventv2.Event {
+	if idx == nil {
+		return nil
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	out := make([]*eventv2.Event, 0, len(idx.byID))
+	for _, ev := range idx.byID {
+		out = append(out, ev)
+	}
+	return out
+}
+
+func (idx *RecentIndex) SnapshotTrace(traceID string) []*eventv2.Event {
+	if idx == nil || traceID == "" {
+		return nil
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return append([]*eventv2.Event(nil), idx.byTrace[traceID]...)
+}
+
+func (idx *RecentIndex) SnapshotTraces() map[string][]*eventv2.Event {
+	if idx == nil {
+		return nil
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	out := make(map[string][]*eventv2.Event, len(idx.byTrace))
+	for traceID, events := range idx.byTrace {
+		out[traceID] = append([]*eventv2.Event(nil), events...)
+	}
+	return out
+}
+
 func (idx *RecentIndex) Sizes() IndexSizes {
 	if idx == nil {
 		return IndexSizes{}

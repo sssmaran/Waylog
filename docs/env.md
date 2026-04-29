@@ -47,6 +47,7 @@ Scoped keys. See the Auth section of the [README](../README.md).
 | `EVENT_LOG_MAX_FILE_MB` | `50` | Rotation size. `0` disables rotation |
 | `EVENT_LOG_RETENTION` | `72h` | Event log retention. Must be positive |
 | `WAYLOG_V2_DEDUP_CAPACITY` | `65536` | Recent schema-2.0 `event_id` dedupe cache capacity |
+| `GRAPH_HOT_WINDOW` | `GRAPH_RETENTION` or `24h` | Recent in-memory graph/index retention window and max v2 read window |
 | `GRAPH_RETENTION` | `24h` | Hot graph retention. Nodes older than this are pruned every snapshot tick |
 
 See [Internals](internals.md) for the full durability model.
@@ -63,6 +64,7 @@ See [Internals](internals.md) for the full durability model.
 | Variable | Default | Purpose |
 |---|---|---|
 | `GRAPH_UI` | `false` | Enable Graph topology tab in dashboard and `/v1/topology` endpoint |
+| `WAYLOG_V2_READS` | `false` | Route v2 read endpoints to the schema-2.0 recent index |
 | `CAUSAL_ENABLED` | `false` | Enable shadow-mode causal inference |
 | `CAUSAL_INTERVAL` | `30s` | Causal inference ticker interval |
 | `HAPPY_SAMPLE_RATE_PCT` | `2` | Success-event sampling rate. Set `100` in dev profiles |

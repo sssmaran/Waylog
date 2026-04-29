@@ -54,12 +54,14 @@ npm install @waylog/sdk
 ```ts
 import { waylog, useLogger } from "@waylog/sdk/express";
 
-app.use(waylog({
-  service: "checkout",
-  env: "prod",
-  ingestUrl: "http://localhost:8080",
-  apiKey: process.env.WAYLOG_WRITE_KEY,
-}));
+app.use(
+  waylog({
+    service: "checkout",
+    env: "prod",
+    ingestUrl: "http://localhost:8080",
+    apiKey: process.env.WAYLOG_WRITE_KEY,
+  }),
+);
 
 app.post("/buy", (req, res) => {
   useLogger(req).info("cart loaded", { user_id: req.user.id, tier: "vip" });
@@ -256,11 +258,11 @@ make ci             # fmt + vet + test-race + test-sdk + ts-test + doc-link + ro
 
 Waylog uses three scoped keys. They are independent — the dashboard never holds the agent key.
 
-| Key                | Protects                                |
-| ------------------ | --------------------------------------- |
+| Key                | Protects                                              |
+| ------------------ | ----------------------------------------------------- |
 | `WAYLOG_WRITE_KEY` | `/v1/events`, `/v1/otlp/v1/traces` (SDKs, collectors) |
-| `WAYLOG_READ_KEY`  | Read APIs, dashboard session            |
-| `WAYLOG_AGENT_KEY` | `/v1/tools/*`, `/v1/ask`, `/v1/plans/*` |
+| `WAYLOG_READ_KEY`  | Read APIs, dashboard session                          |
+| `WAYLOG_AGENT_KEY` | `/v1/tools/*`, `/v1/ask`, `/v1/plans/*`               |
 
 `WAYLOG_API_KEY` is a legacy alias for the write scope. `ParseConfig` validates the auth matrix at startup and refuses to boot with an unsafe combination.
 
@@ -274,6 +276,7 @@ Public alpha. APIs may break before 1.0.
 - OTLP/HTTP traces at `/v1/otlp/v1/traces` (Phase A — traces only)
 - durable ingest with WAL + replay
 - hot graph with flattened 3-node model + dedicated trace store
+- schema-2.0 recent-index read APIs behind `WAYLOG_V2_READS=true`
 - SQLite cold store (events, deployments, causal claims)
 - 10 deterministic analysis tools, rollup-correct root-cause attribution
 - agent-native REST (`/v1/tools/*`, `/v1/ask`, `/v1/plans/execute`) with idempotency and structured envelopes

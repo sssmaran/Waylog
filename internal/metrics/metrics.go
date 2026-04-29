@@ -32,6 +32,9 @@ type Metrics struct {
 	V2ValidateLatency      prometheus.Histogram
 	V2WALWriteLatency      prometheus.Histogram
 	V2ProjectLatency       prometheus.Histogram
+	V2ReadLatency          *prometheus.HistogramVec
+	V2ReadEmpty            *prometheus.CounterVec
+	V2ReadNotFound         *prometheus.CounterVec
 
 	ReplayLagSeconds    prometheus.Gauge
 	ReplayInProgress    prometheus.Gauge
@@ -176,6 +179,24 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help:    "Schema-2.0 per-event recent-index projection latency.",
 		Buckets: defaultBuckets,
 	})
+	m.V2ReadLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "waylog_v2_read_latency_seconds",
+		Help:    "Schema-2.0 read endpoint latency by handler.",
+		Buckets: defaultBuckets,
+	}, []string{"handler"})
+	m.V2ReadEmpty = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_v2_read_empty_total",
+		Help: "Schema-2.0 read endpoint 200 responses with empty result arrays by handler.",
+	}, []string{"handler"})
+	m.V2ReadNotFound = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_v2_read_not_found_total",
+		Help: "Schema-2.0 read endpoint 404 responses by handler.",
+	}, []string{"handler"})
+	for _, handler := range []string{"event_get", "event_search", "trace_get", "traces_recent", "trace_story", "errors", "blast_radius"} {
+		m.V2ReadLatency.WithLabelValues(handler).Observe(0)
+		m.V2ReadEmpty.WithLabelValues(handler).Add(0)
+		m.V2ReadNotFound.WithLabelValues(handler).Add(0)
+	}
 
 	m.ReplayLagSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "waylog_replay_lag_seconds",
@@ -360,6 +381,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.V2ReplaySkipped,
 		m.V2TypedDecodeFailed, m.V2ProjectPanic,
 		m.V2ValidateLatency, m.V2WALWriteLatency, m.V2ProjectLatency,
+		m.V2ReadLatency, m.V2ReadEmpty, m.V2ReadNotFound,
 		m.ReplayLagSeconds, m.ReplayInProgress, m.ReplayFailuresTotal, m.Ready,
 		m.InFlightRequests,
 		m.SnapshotLastSuccess, m.SnapshotLastError,

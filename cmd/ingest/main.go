@@ -123,6 +123,7 @@ func main() {
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
 	graphUI := config.GetenvBool("GRAPH_UI", false)
 	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
+	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", false)
 
 	causalEnabled := config.GetenvBool("CAUSAL_ENABLED", false)
 	causalInterval := config.GetenvDuration("CAUSAL_INTERVAL", 30*time.Second)
@@ -383,15 +384,30 @@ func main() {
 		return http.HandlerFunc(ingest.CORSWrap(corsOrigin, "GET, OPTIONS",
 			func(w http.ResponseWriter, r *http.Request) { inner.ServeHTTP(w, r) }))
 	}
-	mux.Handle("/v1/traces/story", readCORS(ingestServer.TraceStory))
-	mux.Handle("/v1/traces/recent", readCORS(ingestServer.RecentTraces))
 	mux.Handle("/v1/overview", readCORS(ingestServer.Overview))
-	mux.Handle("/v1/events/search", readCORS(ingestServer.EventSearch))
+	if v2ReadsEnabled {
+		v2Reader := ingestv2.NewReader(v2Index)
+		v2ReadHandler := ingestv2.NewReadHandler(v2Reader, m, graphHotWindow)
+		mux.Handle("/v1/events/search", readCORS(v2ReadHandler.EventSearch))
+		mux.Handle("/v1/errors", readCORS(v2ReadHandler.Errors))
+		mux.Handle("/v1/blast_radius", readCORS(v2ReadHandler.BlastRadius))
+		mux.Handle("/v1/traces/story", readCORS(v2ReadHandler.TraceStory))
+		mux.Handle("/v1/traces/recent", readCORS(v2ReadHandler.RecentTraces))
+		// ServeMux chooses the longest matching pattern, so these prefix handlers
+		// do not capture the concrete routes above or /v1/events/validate.
+		mux.Handle("/v1/events/", readCORS(v2ReadHandler.EventByID))
+		mux.Handle("/v1/traces/", readCORS(v2ReadHandler.TraceByID))
+		slog.Info("v2 read endpoints enabled")
+	} else {
+		mux.Handle("/v1/traces/story", readCORS(ingestServer.TraceStory))
+		mux.Handle("/v1/blast_radius", readCORS(ingestServer.BlastRadius))
+		mux.Handle("/v1/traces/recent", readCORS(ingestServer.RecentTraces))
+		mux.Handle("/v1/events/search", readCORS(ingestServer.EventSearch))
+	}
 	mux.Handle("/v1/overview/timeseries", readCORS(ingestServer.OverviewTimeseries))
 	mux.Handle("/v1/routes", readCORS(ingestServer.Routes))
 	mux.Handle("/v1/capabilities", readCORS(ingestServer.Capabilities))
 	mux.Handle("/v1/topology", readCORS(ingestServer.Topology))
-	mux.Handle("/v1/blast_radius", readCORS(ingestServer.BlastRadius))
 	mux.Handle("/v1/stream/dashboard", readCORS(ingestServer.SSEStream))
 	mux.Handle("/v1/insight", readCORS(ingestServer.Insight))
 
