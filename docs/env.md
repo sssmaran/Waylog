@@ -93,6 +93,8 @@ See [Internals](internals.md) for the full durability model.
 | `DASHBOARD_AUTH` | `key:demo` | Enables dashboard/read-session auth so `WAYLOG_READ_KEY` is valid at startup |
 | `WAYLOG_V2_READS` | `true` in demo scripts | Enables v2 read APIs required by `waylog errors/explain/blast` |
 
+The embedded `/ui` dashboard is also v2-only and renders a setup message unless `WAYLOG_V2_READS=true`.
+
 ## Dashboard links
 
 Optional external links rendered in the dashboard header. Hidden if empty.

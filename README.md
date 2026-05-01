@@ -33,7 +33,41 @@ A request hits your API gateway, fans out to three services, and one of them fai
 
 This is not log search. Waylog builds a live in-memory graph from every request flowing through your services. When you ask a question — "why did this trace fail?", "who is affected by `PMT_502`?", "what changed in the last 10 minutes?" — it walks the graph and returns a precomputed, structured answer. Root-cause rollups count the originating failure once, not once per propagated hop.
 
-Run `make docker-dev` and see it yourself.
+Run `make demo` and see it yourself.
+
+## Quick start
+
+```bash
+make demo
+```
+
+This starts the ingest server plus four real Go demo services wired through the schema-2.0 Go SDK (`api-gateway → checkout → db/payment`), enables `WAYLOG_V2_READS=true`, and does not require Docker, Kafka, or the bridge process.
+
+Once the stack is up:
+
+1. Open demo controls at <http://localhost:9081/demo>, or open the dashboard at <http://localhost:8080/ui/>. The local demo disables dashboard login.
+2. Click **Run traffic burst** to fire a production-like mix through the checkout chain. For a focused single-trace look, click **Run payment outage** instead, or run:
+   ```bash
+   curl -s -X POST http://localhost:9081/purchase \
+     -H 'Content-Type: application/json' \
+     --data '{"sku":"X1","scenario":"payment_502"}'
+   ```
+3. Investigate with the v2 CLI:
+   ```bash
+   ./waylog errors --window 15m
+   ./waylog explain <trace_id>
+   ./waylog blast --service checkout --step payment.charge --code PMT_502 --window 15m
+   ./waylog blast --code PMT_502 --window 15m
+   ```
+
+The demo also supports `happy` and `suppressed_payment_502` scenarios through the UI or `POST /purchase`.
+
+Stop with `make demo-stop`.
+
+Prefer Docker? Use `make docker-dev` / `make docker-down`. Prefer foreground service logs while hacking on Go code? Use `make micro-demo` and stop with `make micro-demo-stop`.
+
+> `./scripts/demo-cascade-failure.sh` injects an equivalent fixture by POSTing synthetic events directly. It is a fixture, not a substitute for the live path above.
+
 
 ## How it works
 
@@ -100,38 +134,6 @@ The recommended SDK path is framework middleware plus `waylog.From(ctx)` / `useL
 ### OTLP/HTTP traces
 
 Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1/traces`. Protobuf bodies are accepted (gzip optional) and spans convert to WideEvents on the way in. **Phase A covers traces over HTTP.** gRPC, logs, and metrics are not yet shipping.
-
-## Quick start
-
-```bash
-make build
-make micro-demo
-```
-
-This starts the ingest server plus four real Go demo services wired through the schema-2.0 Go SDK (`api-gateway → checkout → db/payment`). The local demo path no longer needs Kafka or the bridge process.
-
-Once the stack is up:
-
-1. Open the demo app at <http://localhost:9081/demo>.
-2. Click **Payment gateway 502** or run:
-   ```bash
-   curl -s -X POST http://localhost:9081/purchase \
-     -H 'Content-Type: application/json' \
-     --data '{"sku":"X1","scenario":"payment_502"}'
-   ```
-3. Investigate with the v2 CLI:
-   ```bash
-   WAYLOG_READ_KEY=demo ./waylog errors --window 15m
-   WAYLOG_READ_KEY=demo ./waylog explain <trace_id>
-   WAYLOG_READ_KEY=demo ./waylog blast --service checkout --step payment.charge --code PMT_502 --window 15m
-   WAYLOG_READ_KEY=demo ./waylog blast --code PMT_502 --window 15m
-   ```
-
-The demo also supports `happy` and `suppressed_payment_502` scenarios through the UI or `POST /purchase`.
-
-Stop with `make micro-demo-stop`.
-
-> `./scripts/demo-cascade-failure.sh` injects an equivalent fixture by POSTing synthetic events directly. It is a fixture, not a substitute for the live path above.
 
 ### Alternative: local ingest server (no Docker)
 
@@ -220,19 +222,15 @@ Full schemas: `GET /v1/tools` or [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Dashboard
 
-The embedded dashboard at `/ui` is the fastest way to see a running system:
+The embedded dashboard at `/ui` is a v2 triage surface over the same read APIs as the CLI. It requires `WAYLOG_V2_READS=true` and uses the dashboard session cookie for read-scope auth.
 
-- Geist dark theme with a light-mode toggle
-- failing-traces banner at the top of the bento layout
-- KPI overview with time series (error rate, p50/p95/p99)
-- recent traces with flat-chain **and** tree views in the trace modal
-- **most likely failure origin** — root-cause attribution per window (rollup-correct)
-- **who's affected** — user cohort by tier and region
-- **what changed** — deploy-diff panel with causal shadow-mode claims
-- graph topology (Cytoscape, cose layout) — gated by `GRAPH_UI=1`
-- SSE live updates, no polling
+- dark, minimal Geist UI with aligned KPI modules and inline SVG mini-graphs
+- `#/errors` — top error families over `/v1/errors`
+- `#/explain/<id>` — first observable failing step over `/v1/traces/story`
+- `#/blast/<key>` — impact panel over `/v1/blast_radius`
+- recent-request stream from `/v1/traces/recent`, polled every 5s
+- no Chart.js, Cytoscape, topology-first UI, Ask panel, deploy diff, or large dashboard charts
 
-<!-- TODO: dashboard screenshot -->
 
 ## Architecture
 
@@ -246,9 +244,9 @@ Go / TS services (SDK) · OTLP/HTTP collectors
     ├─ trace store (span-level detail, time-bucketed)
     ├─ SQLite cold store (events · deployments · causal claims)
     ├─ tool registry · Ask · plan execution
-    └─ SSE dashboard · health · metrics · OpenAPI
+    └─ v2 dashboard · health · metrics · OpenAPI
         │
-        ├──▶ /ui dashboard (Geist theme, Chart.js, Cytoscape.js)
+        ├──▶ /ui dashboard (Geist, no vendored chart/topology libs)
         ├──▶ /v1/tools/* · /v1/plans/execute (agent-native)
         └──▶ CLI · TUI · MCP · agents
 ```
@@ -295,7 +293,7 @@ Public alpha. APIs may break before 1.0.
 - 10 deterministic analysis tools, rollup-correct root-cause attribution
 - agent-native REST (`/v1/tools/*`, `/v1/ask`, `/v1/plans/execute`) with idempotency and structured envelopes
 - `/v1/traces/story?format=tree` and tree rendering in the dashboard
-- dashboard: Geist theme + light-mode toggle, failing-traces banner, bento layout, deploy-diff, SSE live
+- dashboard: minimal v2 triage loop (errors, explain, blast) with inline SVG mini-graphs
 - v2 operator CLI (`errors`, `trace`, `explain`, `blast`, `search`) over read APIs
 - live TUI (`waylog-live --dev` streams via SSE), MCP stdio
 - scoped auth (write/read/agent) with startup validation
@@ -316,4 +314,4 @@ Public alpha. APIs may break before 1.0.
 - No built-in alerting or paging. Waylog answers questions, it doesn't wake you up.
 - No multi-tenancy. One instance = one trust boundary.
 
-**Fastest walkthrough:** `make micro-demo`, open <http://localhost:9081/demo>, click **Payment gateway 502**, then use `waylog errors`, `waylog explain`, and `waylog blast` to answer what failed, which downstream was involved, and how broad the impact is.
+**Fastest walkthrough:** `make demo`, open <http://localhost:9081/demo>, click **Run payment outage**, then use the dashboard or `waylog errors`, `waylog explain`, and `waylog blast` to answer what failed, which downstream was involved, and how broad the impact is.

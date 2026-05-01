@@ -45,13 +45,73 @@ func TestCheckoutPayment502EmitsNarrativeEvent(t *testing.T) {
 	if ev.Anchor == nil || ev.Anchor.Step != "payment.charge" || ev.Anchor.ErrorCode != "PMT_502" {
 		t.Fatalf("anchor = %#v, want payment.charge/PMT_502", ev.Anchor)
 	}
-	requireStep(t, ev, "db.load_cart", eventv2.StepStatusOK, "")
+	requireStep(t, ev, "cart.validate", eventv2.StepStatusOK, "")
+	requireStep(t, ev, "db.load_cart", eventv2.StepStatusOK, "db")
+	requireStep(t, ev, "inventory.reserve", eventv2.StepStatusOK, "")
 	requireStep(t, ev, "payment.charge", eventv2.StepStatusError, "payment")
+	requireNoStep(t, ev, "order.commit")
 	requireLog(t, ev, eventv2.LogLevelWarn, "retrying payment")
 	requireLog(t, ev, eventv2.LogLevelError, "upstream gateway 5xx")
 	requireField(t, ev, "user", "id", "demo-user")
 	requireField(t, ev, "demo", "scenario", microdemo.ScenarioPayment502)
 	requireField(t, ev, "http", "route", "/checkout")
+}
+
+func TestCheckoutDBMissEmitsCartNotFoundAnchor(t *testing.T) {
+	out := initSDK(t, "checkout")
+	db := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"success":false,"error":"cart record not found"}`))
+	}))
+	defer db.Close()
+	payment := httptest.NewServer(okJSON())
+	defer payment.Close()
+
+	resp := postPurchase(t, wayloghttp.HTTP(microdemo.NewCheckoutHandler(payment.URL, db.URL)), "/checkout", microdemo.ScenarioDBMiss)
+	if resp.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusBadGateway)
+	}
+	ev := oneEvent(t, out)
+	if ev.Status != eventv2.StatusError {
+		t.Fatalf("status = %s, want error", ev.Status)
+	}
+	if ev.Anchor == nil || ev.Anchor.Step != "db.load_cart" || ev.Anchor.ErrorCode != "CART_NOT_FOUND" {
+		t.Fatalf("anchor = %#v, want db.load_cart/CART_NOT_FOUND", ev.Anchor)
+	}
+	requireStep(t, ev, "cart.validate", eventv2.StepStatusOK, "")
+	requireStep(t, ev, "db.load_cart", eventv2.StepStatusError, "db")
+	requireNoStep(t, ev, "inventory.reserve")
+	requireNoStep(t, ev, "payment.charge")
+	requireNoStep(t, ev, "order.commit")
+}
+
+func TestCheckoutInternalErrorEmitsCHK500WithoutDownstream(t *testing.T) {
+	out := initSDK(t, "checkout")
+	db := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("db should not be called for checkout_error scenario")
+	}))
+	defer db.Close()
+	payment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("payment should not be called for checkout_error scenario")
+	}))
+	defer payment.Close()
+
+	resp := postPurchase(t, wayloghttp.HTTP(microdemo.NewCheckoutHandler(payment.URL, db.URL)), "/checkout", microdemo.ScenarioCheckoutError)
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusInternalServerError)
+	}
+	ev := oneEvent(t, out)
+	if ev.Status != eventv2.StatusError {
+		t.Fatalf("status = %s, want error", ev.Status)
+	}
+	if ev.Anchor == nil || ev.Anchor.Step != "cart.validate" || ev.Anchor.ErrorCode != "CHK_500" {
+		t.Fatalf("anchor = %#v, want cart.validate/CHK_500", ev.Anchor)
+	}
+	requireStep(t, ev, "cart.validate", eventv2.StepStatusError, "")
+	requireNoStep(t, ev, "db.load_cart")
+	requireNoStep(t, ev, "inventory.reserve")
+	requireNoStep(t, ev, "payment.charge")
+	requireNoStep(t, ev, "order.commit")
 }
 
 func TestCheckoutHappyEmitsOKWithoutAnchor(t *testing.T) {
@@ -72,8 +132,15 @@ func TestCheckoutHappyEmitsOKWithoutAnchor(t *testing.T) {
 	if ev.Anchor != nil {
 		t.Fatalf("anchor = %#v, want nil", ev.Anchor)
 	}
+	requireStep(t, ev, "cart.validate", eventv2.StepStatusOK, "")
 	requireStep(t, ev, "db.load_cart", eventv2.StepStatusOK, "db")
+	requireStep(t, ev, "inventory.reserve", eventv2.StepStatusOK, "")
 	requireStep(t, ev, "payment.charge", eventv2.StepStatusOK, "payment")
+	requireStep(t, ev, "order.commit", eventv2.StepStatusOK, "")
+	requireLog(t, ev, eventv2.LogLevelInfo, "cart validated")
+	requireLog(t, ev, eventv2.LogLevelInfo, "cart loaded")
+	requireLog(t, ev, eventv2.LogLevelInfo, "inventory reserved")
+	requireLog(t, ev, eventv2.LogLevelInfo, "order committed")
 	requireNoLog(t, ev, eventv2.LogLevelWarn, "retrying payment")
 }
 
@@ -121,7 +188,7 @@ func TestGatewayDemoUIAndCheckoutPropagationStep(t *testing.T) {
 	uiReq := httptest.NewRequest(http.MethodGet, "/demo", nil)
 	uiResp := httptest.NewRecorder()
 	mux.ServeHTTP(uiResp, uiReq)
-	if uiResp.Code != http.StatusOK || !strings.Contains(uiResp.Body.String(), "Payment gateway 502") {
+	if uiResp.Code != http.StatusOK || !strings.Contains(uiResp.Body.String(), "Run payment outage") {
 		t.Fatalf("demo UI status/body = %d/%q", uiResp.Code, uiResp.Body.String())
 	}
 
@@ -203,6 +270,22 @@ func requireStep(t *testing.T, ev eventv2.Event, name, status, downstream string
 		return
 	}
 	t.Fatalf("missing step %q in %#v", name, ev.Steps)
+}
+
+func hasStep(ev eventv2.Event, name string) bool {
+	for _, step := range ev.Steps {
+		if step.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func requireNoStep(t *testing.T, ev eventv2.Event, name string) {
+	t.Helper()
+	if hasStep(ev, name) {
+		t.Fatalf("unexpected step %q in %#v", name, ev.Steps)
+	}
 }
 
 func requireLog(t *testing.T, ev eventv2.Event, level, msg string) {

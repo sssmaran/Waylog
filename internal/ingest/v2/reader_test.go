@@ -102,6 +102,25 @@ func TestRecentTracesSuppressedOnlyRequiresOptIn(t *testing.T) {
 	}
 }
 
+func TestRecentTracesIncludeSuppressedAddsToRegularResults(t *testing.T) {
+	idx := NewRecentIndex(nil)
+	idx.Insert(testTraceEvent("ok", "trace-ok", "gateway", eventv2.StatusOK, testTime(0)))
+	idx.Insert(testTraceEvent("suppressed", "trace-suppressed", "gateway", eventv2.StatusSuppressed, testTime(1)))
+	reader := NewReader(idx)
+	filter := SearchFilter{Since: testTime(-1), Until: testTime(10)}
+	if got := reader.RecentTraces(filter, nil, 10); len(got.Traces) != 1 || got.Traces[0].TraceID != "trace-ok" {
+		t.Fatalf("default traces=%+v want only non-suppressed trace", got.Traces)
+	}
+	filter.IncludeSuppressed = true
+	got := reader.RecentTraces(filter, nil, 10)
+	if len(got.Traces) != 2 {
+		t.Fatalf("include suppressed traces=%+v want suppressed and non-suppressed", got.Traces)
+	}
+	if got.Traces[0].TraceID != "trace-suppressed" || got.Traces[1].TraceID != "trace-ok" {
+		t.Fatalf("include suppressed order=%+v", got.Traces)
+	}
+}
+
 func stringsJoin(parts []string) string {
 	out := ""
 	for i, part := range parts {

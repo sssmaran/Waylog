@@ -3,225 +3,788 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f7f3ea">
-  <title>Waylog v2 Incident Demo</title>
+  <meta name="theme-color" content="#ece7da">
+  <title>Waylog — Live demo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f7f3ea;
-      --ink: #201a14;
-      --muted: #6d6258;
-      --card: #fffaf0;
-      --border: rgba(79, 58, 35, 0.18);
-      --accent: #b7441f;
-      --accent-ink: #fff8ee;
-      --ok: #1f7a4d;
+      color-scheme: light dark;
+      --bg: #ece7da;
+      --ink: #0a0a0a;
+      --muted: #585448;
+      --faint: #8a8473;
+      --line: #cdc6b4;
+      --line-strong: #a8a18d;
+      --surface: #f4efe1;
+      --surface-2: #ede7d6;
+      --accent: #15803d;
+      --accent-bright: #22c55e;
+      --accent-soft: rgba(34, 197, 94, 0.18);
+      --danger: #b42318;
+      --danger-soft: rgba(180, 35, 24, 0.16);
+      --warn: #b45309;
+      --focus: #2563eb;
+      --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --radius-sm: 4px;
+      --radius: 6px;
+      --bracket-len: 14px;
+      --bracket-thick: 1.5px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #050505;
+        --ink: #f5f0e6;
+        --muted: #9a958a;
+        --faint: #5d5851;
+        --line: #1c1c1c;
+        --line-strong: #2a2a2a;
+        --surface: #0c0c0c;
+        --surface-2: #121212;
+        --accent: #5eff8b;
+        --accent-bright: #5eff8b;
+        --accent-soft: rgba(94, 255, 139, 0.18);
+        --danger: #f87171;
+        --danger-soft: rgba(248, 113, 113, 0.18);
+        --warn: #fbbf24;
+      }
     }
 
-    * {
-      box-sizing: border-box;
-    }
-
-    html {
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
       background: var(--bg);
       color: var(--ink);
-      font-family: ui-serif, Georgia, "Times New Roman", serif;
-      touch-action: manipulation;
-      -webkit-tap-highlight-color: rgba(183, 68, 31, 0.18);
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
-
     body {
       min-height: 100vh;
-      margin: 0;
-      padding: max(28px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
-      background:
-        radial-gradient(circle at top left, rgba(183, 68, 31, 0.15), transparent 34rem),
-        linear-gradient(135deg, rgba(255, 255, 255, 0.58), transparent 45%);
+      padding-left: max(20px, env(safe-area-inset-left));
+      padding-right: max(20px, env(safe-area-inset-right));
     }
+    a { color: inherit; text-decoration: none; }
+    a:hover { color: var(--ink); }
 
-    main {
-      width: min(880px, 100%);
-      margin: 0 auto;
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      text-transform: uppercase;
     }
+    .tag .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-bright);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .tag .num { color: var(--ink); }
+
+    button, .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      height: 38px;
+      padding: 0 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line-strong);
+      background: var(--bg);
+      color: var(--ink);
+      cursor: pointer;
+      font: 500 0.875rem/1 var(--font-sans);
+      letter-spacing: -0.005em;
+      transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+      touch-action: manipulation;
+    }
+    button.primary, .button.primary {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: var(--bg);
+    }
+    button:hover, .button:hover { border-color: var(--ink); }
+    button.primary:hover, .button.primary:hover {
+      background: color-mix(in srgb, var(--ink) 86%, var(--bg));
+      border-color: color-mix(in srgb, var(--ink) 86%, var(--bg));
+    }
+    button:disabled, .button:disabled { cursor: wait; opacity: 0.5; }
+    button:focus-visible, a:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+    .spinner {
+      width: 12px;
+      height: 12px;
+      border: 1.5px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 999px;
+      display: inline-block;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     .skip {
       position: absolute;
       left: 16px;
-      top: 10px;
+      top: 12px;
       transform: translateY(-160%);
-      padding: 10px 14px;
       background: var(--ink);
-      color: white;
-      border-radius: 999px;
+      color: var(--bg);
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      font-size: 0.82rem;
+      font-weight: 500;
     }
+    .skip:focus-visible { transform: translateY(0); }
 
-    .skip:focus-visible {
-      transform: translateY(0);
+    .topbar {
+      max-width: 1080px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 22px 0;
+      border-bottom: 1px dashed var(--line);
     }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-weight: 500;
+      letter-spacing: -0.005em;
+    }
+    .brand .name {
+      color: var(--ink);
+      font-weight: 600;
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      letter-spacing: -0.02em;
+    }
+    .brand .div { color: var(--faint); }
+    .brand .ctx { color: var(--muted); }
 
+    main {
+      width: min(1080px, 100%);
+      margin: 0 auto;
+      padding: 64px 0 96px;
+    }
+    .hero { padding-bottom: 56px; }
     h1 {
       margin: 0;
-      font-size: clamp(2.2rem, 8vw, 5.2rem);
-      line-height: 0.92;
-      letter-spacing: -0.055em;
+      font-family: var(--font-sans);
+      font-size: clamp(2.1rem, 4.6vw, 3.4rem);
+      font-weight: 600;
+      letter-spacing: -0.045em;
+      line-height: 1.04;
+      max-width: 22ch;
       text-wrap: balance;
     }
-
-    p {
+    .lede {
       color: var(--muted);
-      font-size: 1.08rem;
-      line-height: 1.55;
-      max-width: 62ch;
+      font-size: clamp(1rem, 1.5vw, 1.08rem);
+      max-width: 56ch;
+      margin: 18px 0 0;
+      line-height: 1.6;
     }
-
-    .panel {
-      margin-top: 28px;
-      padding: 22px;
-      border: 1px solid var(--border);
-      border-radius: 28px;
-      background: color-mix(in srgb, var(--card) 88%, white);
-      box-shadow: 0 26px 80px rgba(74, 50, 21, 0.14), 0 2px 0 rgba(255, 255, 255, 0.8) inset;
-    }
-
+    .lede .mono { color: var(--ink); }
     .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 32px;
+    }
+
+    .section { padding: 36px 0; border-top: 1px dashed var(--line); }
+    .section h2 {
+      margin: 0 0 18px;
+      font-size: 1.05rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .bracketed {
+      position: relative;
+      padding: 22px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 0;
+    }
+    .bracketed::before {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      pointer-events: none;
+      background:
+        linear-gradient(var(--accent), var(--accent)) top    left  no-repeat,
+        linear-gradient(var(--accent), var(--accent)) top    left  no-repeat,
+        linear-gradient(var(--accent), var(--accent)) top    right no-repeat,
+        linear-gradient(var(--accent), var(--accent)) top    right no-repeat,
+        linear-gradient(var(--accent), var(--accent)) bottom left  no-repeat,
+        linear-gradient(var(--accent), var(--accent)) bottom left  no-repeat,
+        linear-gradient(var(--accent), var(--accent)) bottom right no-repeat,
+        linear-gradient(var(--accent), var(--accent)) bottom right no-repeat;
+      background-size:
+        var(--bracket-len) var(--bracket-thick),
+        var(--bracket-thick) var(--bracket-len),
+        var(--bracket-len) var(--bracket-thick),
+        var(--bracket-thick) var(--bracket-len),
+        var(--bracket-len) var(--bracket-thick),
+        var(--bracket-thick) var(--bracket-len),
+        var(--bracket-len) var(--bracket-thick),
+        var(--bracket-thick) var(--bracket-len);
+    }
+
+    .expectations {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
-      margin-top: 18px;
+    }
+    .expectation strong {
+      display: block;
+      font-size: 0.95rem;
+      font-weight: 600;
+      letter-spacing: -0.012em;
+      margin-bottom: 8px;
+    }
+    .expectation span.detail {
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.55;
+      display: block;
     }
 
-    button {
-      min-height: 48px;
-      padding: 13px 15px;
-      border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
-      border-radius: 16px;
-      background: #fff4df;
-      color: var(--ink);
-      cursor: pointer;
-      font: 700 1rem/1.2 ui-sans-serif, system-ui, sans-serif;
-      transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease;
+    .result-empty {
+      color: var(--muted);
+      border: 1px dashed var(--line-strong);
+      border-radius: 0;
+      padding: 22px;
+      background: var(--surface);
+      font-size: 0.92rem;
     }
-
-    button.primary {
-      background: var(--accent);
-      color: var(--accent-ink);
-      border-color: var(--accent);
+    .result-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 0.85fr);
+      gap: 24px;
     }
-
-    button:hover {
-      transform: translateY(-1px);
-      border-color: var(--accent);
-    }
-
-    button:active {
-      transform: translateY(0);
-    }
-
-    button:focus-visible,
-    .skip:focus-visible {
-      outline: 3px solid #1d4ed8;
-      outline-offset: 3px;
-    }
-
-    .result {
-      margin-top: 18px;
-    }
-
-    .result h2 {
-      margin: 0 0 10px;
-      font: 700 0.9rem/1.2 ui-sans-serif, system-ui, sans-serif;
-      letter-spacing: 0.08em;
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--muted);
+      letter-spacing: 0.04em;
       text-transform: uppercase;
-      color: var(--muted);
     }
-
-    pre {
-      min-height: 130px;
-      margin: 0;
-      padding: 16px;
-      overflow: auto;
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      background: #201a14;
-      color: #fff8ee;
-      font: 0.92rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      white-space: pre-wrap;
+    .eyebrow::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-bright);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .muted {
+      color: var(--muted);
+      margin: 12px 0 0;
+      font-size: 0.94rem;
+    }
+    .small { font-size: 0.84rem; }
+    .burst-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 22px;
+      align-items: end;
+    }
+    .burst-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: end;
+      justify-content: flex-end;
+    }
+    .burst-form label {
+      display: grid;
+      gap: 6px;
+      min-width: 118px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .burst-form input {
+      width: 100%;
+      min-height: 38px;
+      border: 0;
+      border-bottom: 1px dashed var(--line-strong);
+      border-radius: 0;
+      background: transparent;
+      color: var(--ink);
+      font: 500 1rem/1 var(--font-mono);
+      padding: 0 2px;
+    }
+    .burst-form input:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+    .burst-summary {
+      display: grid;
+      gap: 16px;
+    }
+    .burst-counts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .burst-count {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--line);
+      background: var(--surface-2);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      padding: 6px 8px;
+    }
+    .burst-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-bright);
+    }
+    .burst-dot.error { background: var(--danger); }
+    .burst-dot.warn { background: var(--warn); }
+    .note {
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin: 22px 0 6px;
+    }
+    .trace-id {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      color: var(--ink);
       overflow-wrap: anywhere;
-      font-variant-numeric: tabular-nums;
+      padding: 8px 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+    }
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
     }
 
-    .hint {
-      margin-top: 18px;
-      padding-left: 18px;
-      border-left: 4px solid var(--ok);
+    .timeline {
+      display: grid;
+      gap: 6px;
+    }
+    .step {
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 11px 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+    }
+    .step::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-bright);
+    }
+    .step.failed::before { background: var(--danger); }
+    .step-title {
+      font-family: var(--font-mono);
+      font-weight: 500;
+      font-size: 0.82rem;
+      letter-spacing: -0.01em;
+      overflow-wrap: anywhere;
+      color: var(--ink);
+    }
+    .step-meta {
       color: var(--muted);
-      font: 0.98rem/1.5 ui-sans-serif, system-ui, sans-serif;
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      margin-top: 3px;
+    }
+    .badge {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--muted);
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      padding: 3px 6px;
+      white-space: nowrap;
+    }
+    .step.failed .badge {
+      color: var(--danger);
+      border-color: var(--danger-soft);
     }
 
     code {
-      color: var(--ink);
-      background: rgba(32, 26, 20, 0.08);
-      border-radius: 7px;
-      padding: 2px 6px;
+      font-family: var(--font-mono);
+      font-size: 0.86em;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      padding: 1px 5px;
     }
+    .mono { font-family: var(--font-mono); }
 
+    .foot {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 22px 0 32px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      align-items: center;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      border-top: 1px dashed var(--line);
+    }
+    .foot a { color: var(--muted); transition: color 0.15s ease; }
+    .foot a:hover { color: var(--ink); }
+    .foot .sep { color: var(--faint); }
+
+    @media (max-width: 760px) {
+      .expectations { grid-template-columns: 1fr; }
+      .result-grid { grid-template-columns: 1fr; }
+      .burst-row { grid-template-columns: 1fr; }
+      .burst-form { justify-content: flex-start; }
+      main { padding: 36px 0 64px; }
+      .hero { padding-bottom: 36px; }
+    }
     @media (prefers-reduced-motion: reduce) {
-      button {
-        transition: none;
-      }
-      button:hover,
-      button:active {
-        transform: none;
-      }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
     }
   </style>
 </head>
 <body>
   <a class="skip" href="#demo">Skip to demo</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="name">Waylog</span>
+      <span class="div">/</span>
+      <span class="ctx">live demo</span>
+    </div>
+    <span class="tag"><span class="dot"></span> streaming events</span>
+  </header>
+
   <main id="demo">
-    <h1>Trigger a real checkout incident.</h1>
-    <p>
-      This demo sends schema&nbsp;2.0 events through the Go v2 SDK across
-      api-gateway → checkout → db/payment. Use the failure scenario, then run
-      <code>waylog errors</code>, <code>waylog explain</code>, and
-      <code>waylog blast</code> to investigate it.
-    </p>
-
-    <section class="panel" aria-labelledby="scenario-title">
-      <h2 id="scenario-title">Scenarios</h2>
+    <section class="hero">
+      <h1>Simulate a checkout outage. Watch Waylog explain the cascade.</h1>
+      <p class="lede">Trigger a real request through <span class="mono">api-gateway</span> → <span class="mono">checkout</span> → <span class="mono">db</span>/<span class="mono">payment</span>, then jump into Waylog to see the failure path, blast radius, and trace narrative.</p>
       <div class="actions">
-        <button type="button" onclick="purchase('happy')">Happy checkout</button>
-        <button type="button" class="primary" onclick="purchase('payment_502')">Payment gateway 502</button>
-        <button type="button" onclick="purchase('suppressed_payment_502')">Suppressed known issue</button>
+        <button type="button" class="primary" data-scenario="payment_502">Run payment outage</button>
+        <button type="button" data-scenario="db_miss">Run cart not found</button>
+        <button type="button" data-scenario="checkout_error">Run checkout 500</button>
+        <button type="button" data-scenario="happy">Run happy checkout</button>
+        <button type="button" data-scenario="suppressed_payment_502">Run suppressed known issue</button>
       </div>
+    </section>
 
-      <div class="result" aria-live="polite">
-        <h2>Latest response</h2>
-        <pre id="result">Choose a scenario…</pre>
+    <section class="section" aria-label="Scenario expectations">
+      <h2>Scenarios</h2>
+      <div class="expectations">
+        <article class="expectation bracketed">
+          <strong>Happy checkout</strong>
+          <span class="detail">Captured as a successful recent request; no error family appears.</span>
+        </article>
+        <article class="expectation bracketed">
+          <strong>Payment outage</strong>
+          <span class="detail">Checkout records <code>payment.charge</code> with <code>PMT_502</code>; dashboard shows the failure path and blast radius.</span>
+        </article>
+        <article class="expectation bracketed">
+          <strong>Cart not found</strong>
+          <span class="detail">DB returns 404; checkout records <code>db.load_cart</code> with <code>CART_NOT_FOUND</code> — a logical (not infra) failure.</span>
+        </article>
+        <article class="expectation bracketed">
+          <strong>Checkout 500</strong>
+          <span class="detail">Checkout fails before any downstream call: <code>cart.validate</code> raises <code>CHK_500</code> with no payment or db hop.</span>
+        </article>
+        <article class="expectation bracketed">
+          <strong>Suppressed known issue</strong>
+          <span class="detail">Visible in recent/direct trace views, excluded from error rollups and blast radius.</span>
+        </article>
       </div>
+    </section>
 
-      <p class="hint">
-        Tip: after triggering <code>payment_502</code>, copy the returned
-        <code>trace_id</code> into <code>waylog explain &lt;trace_id&gt;</code>.
-      </p>
+    <section class="section burst-row" aria-labelledby="burst-title">
+      <div class="burst-meta">
+        <h2 id="burst-title">Production-like traffic mix</h2>
+        <p class="muted small">Fires concurrent purchases through the same chain, with realistic checkout steps and failure cutoffs.</p>
+      </div>
+      <form id="burst-form" class="burst-form">
+        <label><span>Requests</span><input type="number" name="requests" value="50" min="1" max="250" required></label>
+        <label><span>Concurrency</span><input type="number" name="concurrency" value="10" min="1" max="50" required></label>
+        <button type="submit" class="primary" id="burst-run">Run traffic burst</button>
+      </form>
+    </section>
+
+    <section class="section" aria-labelledby="result-title">
+      <h2 id="result-title">Result</h2>
+      <div id="result" class="result-empty" aria-live="polite">Choose a scenario to send a real request through the demo services.</div>
     </section>
   </main>
 
+  <footer class="foot">
+    <a href="http://localhost:8080/ui/">Dashboard</a>
+    <span class="sep">·</span>
+    <a href="http://localhost:8080/v1/traces/recent?limit=10">Recent traces</a>
+    <span class="sep">·</span>
+    <span>schema 2.0 · go sdk</span>
+  </footer>
+
   <script>
-    async function purchase(scenario) {
-      const el = document.getElementById('result');
-      el.textContent = 'Loading…';
+    const dashboardURL = "http://localhost:8080/ui/";
+    function impactURL(family) {
+      return dashboardURL + "#/blast/" + encodeURIComponent(family);
+    }
+    const burstImpactFamilies = {
+      payment_502: "checkout:payment.charge:PMT_502",
+      db_miss: "checkout:db.load_cart:CART_NOT_FOUND",
+      checkout_error: "checkout:cart.validate:CHK_500"
+    };
+    const scenarioLabels = {
+      happy: "happy",
+      payment_502: "payment_502",
+      db_miss: "db_miss",
+      checkout_error: "checkout_error",
+      suppressed_payment_502: "suppressed"
+    };
+    const scenarioCopy = {
+      happy: {
+        title: "Happy checkout captured",
+        detail: "This request should appear in Recent requests without creating an error family.",
+        impactFamily: ""
+      },
+      payment_502: {
+        title: "Payment outage captured",
+        detail: "Waylog should show checkout:payment.charge:PMT_502 in Failures and Impact.",
+        impactFamily: "checkout:payment.charge:PMT_502"
+      },
+      db_miss: {
+        title: "Cart not found captured",
+        detail: "Waylog should show checkout:db.load_cart:CART_NOT_FOUND in Failures and Impact.",
+        impactFamily: "checkout:db.load_cart:CART_NOT_FOUND"
+      },
+      checkout_error: {
+        title: "Checkout 500 captured",
+        detail: "Waylog should show checkout:cart.validate:CHK_500 in Failures and Impact — no payment or db hop should appear.",
+        impactFamily: "checkout:cart.validate:CHK_500"
+      },
+      suppressed_payment_502: {
+        title: "Suppressed issue captured",
+        detail: "This known issue should show in Recent requests while staying out of Failures and Impact.",
+        impactFamily: ""
+      }
+    };
+
+    const scenarioButtons = Array.from(document.querySelectorAll("[data-scenario]"));
+    const burstForm = document.getElementById("burst-form");
+    const burstButton = document.getElementById("burst-run");
+    const burstControls = Array.from(burstForm.elements);
+    let burstInFlight = false;
+    scenarioButtons.forEach(button => {
+      button.addEventListener("click", () => purchase(button.dataset.scenario, button));
+    });
+    burstForm.addEventListener("submit", runBurst);
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+
+    function setLoading(activeButton, loading) {
+      [...scenarioButtons, ...burstControls].forEach(control => {
+        control.disabled = loading;
+        control.setAttribute("aria-busy", loading ? "true" : "false");
+        control.querySelector?.(".spinner")?.remove();
+      });
+      if (loading && activeButton) {
+        activeButton.insertAdjacentHTML("beforeend", `<span class="spinner" aria-hidden="true"></span>`);
+      }
+    }
+
+    async function purchase(scenario, activeButton) {
+      const result = document.getElementById("result");
+      setLoading(activeButton, true);
+      result.className = "result-empty";
+      result.textContent = "Sending request through api-gateway → checkout → db/payment…";
       try {
-        const resp = await fetch('/purchase', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sku: 'X1', scenario })
+        const resp = await fetch("/purchase", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sku: "X1", scenario })
         });
         const data = await resp.json();
-        el.textContent = JSON.stringify(data, null, 2);
+        renderResult(scenario, data, null);
+        await pollStory(scenario, data);
       } catch (err) {
-        el.textContent = 'Error: ' + err.message;
+        result.className = "result-empty";
+        result.textContent = "Error: " + err.message;
+      } finally {
+        setLoading(activeButton, false);
       }
+    }
+
+    async function runBurst(event) {
+      event.preventDefault();
+      if (burstInFlight) return;
+      burstInFlight = true;
+      setLoading(burstButton, true);
+      const formData = new FormData(burstForm);
+      const payload = {
+        requests: Number(formData.get("requests")),
+        concurrency: Number(formData.get("concurrency"))
+      };
+      const result = document.getElementById("result");
+      result.className = "result-empty";
+      result.textContent = "Running production-like traffic mix through the demo chain…";
+      try {
+        const resp = await fetch("/demo/burst", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!resp.ok) throw new Error(await resp.text() || "burst failed");
+        renderBurstSummary(await resp.json());
+      } catch (err) {
+        result.className = "result-empty";
+        result.textContent = "Error: " + err.message;
+      } finally {
+        burstInFlight = false;
+        setLoading(burstButton, false);
+      }
+    }
+
+    async function pollStory(scenario, data) {
+      if (!data.trace_id) return;
+      const attempts = 16;
+      for (let i = 0; i < attempts; i++) {
+        await new Promise(resolve => setTimeout(resolve, 750));
+        try {
+          const story = await fetchStory(data.trace_id);
+          renderResult(scenario, data, story);
+          return;
+        } catch (_) {
+          // keep the "still propagating" placeholder rendered by the initial call
+        }
+      }
+      renderResult(scenario, data, null, true);
+    }
+
+    async function fetchStory(traceID) {
+      const url = "http://localhost:8080/v1/traces/story?trace_id=" + encodeURIComponent(traceID);
+      const resp = await fetch(url, { credentials: "include" });
+      if (!resp.ok) throw new Error("story not ready");
+      return resp.json();
+    }
+
+    function renderResult(scenario, data, story, timedOut = false) {
+      const copy = scenarioCopy[scenario] || scenarioCopy.happy;
+      const explain = data.trace_id ? dashboardURL + "#/explain/" + encodeURIComponent(data.trace_id) : dashboardURL;
+      const links = [
+        `<a class="button primary" href="${dashboardURL}">Open dashboard</a>`,
+        data.trace_id ? `<a class="button" href="${explain}">Explain this trace</a>` : "",
+        copy.impactFamily ? `<a class="button" href="${impactURL(copy.impactFamily)}">View impact</a>` : ""
+      ].filter(Boolean).join("");
+      const timeline = story ? renderTimeline(story) : `<div class="result-empty">${timedOut ? "Trace captured, but the story is still catching up. Use the dashboard link to retry." : "Still propagating through Waylog…"}</div>`;
+      const result = document.getElementById("result");
+      result.className = "bracketed";
+      result.innerHTML = `
+        <div class="result-grid">
+          <div>
+            <div class="eyebrow">${esc(copy.title)}</div>
+            <p class="muted">${esc(copy.detail)}</p>
+            <p class="note">trace id</p>
+            <div class="trace-id">${esc(data.trace_id || "unavailable")}</div>
+            <div class="links">${links}</div>
+            ${timedOut ? `<button id="retry-story" type="button" style="margin-top:14px">Retry story lookup</button>` : ""}
+          </div>
+          <div>${timeline}</div>
+        </div>`;
+      const retry = document.getElementById("retry-story");
+      if (retry) retry.addEventListener("click", () => pollStory(scenario, data));
+    }
+
+    function renderTimeline(story) {
+      const anchorStep = story.anchor && story.anchor.step;
+      const steps = story.path && story.path.length ? story.path : [];
+      if (!steps.length) {
+        return `<div class="timeline"><div class="step"><div><div class="step-title">${esc(story.service || "request")}</div><div class="step-meta">status ${esc(story.status || "unknown")}</div></div><span class="badge">${esc(story.linkage || "direct")}</span></div></div>`;
+      }
+      return `<div class="timeline">${steps.map(step => {
+        const failed = anchorStep && step.name === anchorStep;
+        return `<div class="step ${failed ? "failed" : ""}">
+          <div><div class="step-title">${esc(step.name)}${failed ? " ← first failure" : ""}</div><div class="step-meta">${esc(step.error_msg || step.error_code || "completed")}</div></div>
+          <span class="badge">${esc(step.status)}</span>
+        </div>`;
+      }).join("")}</div>`;
+    }
+
+    function renderBurstSummary(summary) {
+      const reqLabel = summary.requested.requests === summary.accepted.requests
+        ? `${summary.accepted.requests} reqs`
+        : `${summary.accepted.requests}/${summary.requested.requests} reqs`;
+      const counts = Object.entries(scenarioLabels).map(([scenario, label]) => {
+        const count = summary.by_scenario?.[scenario] || 0;
+        const cls = scenario === "suppressed_payment_502" ? "warn" : (scenario === "happy" ? "" : "error");
+        return `<span class="burst-count"><span class="burst-dot ${cls}" aria-hidden="true"></span>${esc(label)} <strong>${count}</strong></span>`;
+      }).join("");
+      const blastLinks = Object.entries(burstImpactFamilies)
+        .filter(([scenario]) => (summary.by_scenario?.[scenario] || 0) > 0)
+        .map(([, family]) => `<a class="button" href="${impactURL(family)}">View blast for ${esc(family.split(":").at(-1))}</a>`)
+        .join("");
+      const samples = (summary.sample_trace_ids || []).slice(0, 3)
+        .map(id => `<a class="button" href="${dashboardURL}#/explain/${encodeURIComponent(id)}">Explain ${esc(id.slice(0, 12))}…</a>`)
+        .join("");
+
+      const result = document.getElementById("result");
+      result.className = "bracketed";
+      result.innerHTML = `<div class="burst-summary">
+        <div>
+          <div class="eyebrow">Burst captured</div>
+          <p class="muted mono">${reqLabel} · ${summary.accepted.concurrency}× · ${summary.duration_ms}ms</p>
+        </div>
+        <div class="burst-counts">${counts}</div>
+        <div class="links">
+          <a class="button primary" href="${dashboardURL}#/errors">Open dashboard</a>
+          ${blastLinks}
+          ${samples}
+        </div>
+      </div>`;
     }
   </script>
 </body>

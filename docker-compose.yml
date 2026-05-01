@@ -1,11 +1,13 @@
 services:
   zookeeper:
+    profiles: ["legacy-kafka"]
     image: confluentinc/cp-zookeeper:7.7.7
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
 
   kafka:
+    profiles: ["legacy-kafka"]
     image: confluentinc/cp-kafka:7.7.7
     depends_on:
       zookeeper:
@@ -44,11 +46,13 @@ services:
       EVENT_LOG_DIR: /data/eventlog
       LOG_LEVEL: info
       CORS_ORIGIN: "*"
-      WAYLOG_API_KEY: ${WAYLOG_API_KEY:-}
-      WAYLOG_WRITE_KEY: ${WAYLOG_WRITE_KEY:-}
-      WAYLOG_READ_KEY: ${WAYLOG_READ_KEY:-}
+      WAYLOG_API_KEY: ${WAYLOG_API_KEY:-demo}
+      WAYLOG_WRITE_KEY: ${WAYLOG_WRITE_KEY:-demo}
+      WAYLOG_READ_KEY: ${WAYLOG_READ_KEY:-demo}
       WAYLOG_AGENT_KEY: ${WAYLOG_AGENT_KEY:-}
-      DASHBOARD_AUTH: ${DASHBOARD_AUTH:-off}
+      WAYLOG_V2_READS: ${WAYLOG_V2_READS:-true}
+      EVENT_LOG_V2_DIR: /data/eventlog-v2
+      DASHBOARD_AUTH: ${DASHBOARD_AUTH:-key:demo}
       DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
@@ -70,6 +74,7 @@ services:
       retries: 10
 
   bridge:
+    profiles: ["legacy-kafka"]
     build:
       context: .
       target: bridge
@@ -98,49 +103,53 @@ services:
       context: .
       target: api-gateway
     depends_on:
-      kafka:
+      ingest:
         condition: service_healthy
     ports:
       - "9081:9081"
     environment:
       CHECKOUT_URL: http://checkout-demo:9082
-      KAFKA_BROKERS: kafka:29092
-      KAFKA_TOPIC: wide_events
+      INGEST_URL: http://ingest:8080
+      WAYLOG_WRITE_KEY: ${WAYLOG_WRITE_KEY:-demo}
 
   checkout-demo:
     build:
       context: .
       target: checkout-demo
     depends_on:
-      kafka:
+      ingest:
         condition: service_healthy
+      payment-demo:
+        condition: service_started
+      db-demo:
+        condition: service_started
     environment:
       PAYMENT_URL: http://payment-demo:9083
       DB_URL: http://db-demo:9084
-      KAFKA_BROKERS: kafka:29092
-      KAFKA_TOPIC: wide_events
+      INGEST_URL: http://ingest:8080
+      WAYLOG_WRITE_KEY: ${WAYLOG_WRITE_KEY:-demo}
 
   payment-demo:
     build:
       context: .
       target: payment-demo
     depends_on:
-      kafka:
+      ingest:
         condition: service_healthy
     environment:
-      KAFKA_BROKERS: kafka:29092
-      KAFKA_TOPIC: wide_events
+      INGEST_URL: http://ingest:8080
+      WAYLOG_WRITE_KEY: ${WAYLOG_WRITE_KEY:-demo}
 
   db-demo:
     build:
       context: .
       target: db-demo
     depends_on:
-      kafka:
+      ingest:
         condition: service_healthy
     environment:
-      KAFKA_BROKERS: kafka:29092
-      KAFKA_TOPIC: wide_events
+      INGEST_URL: http://ingest:8080
+      WAYLOG_WRITE_KEY: ${WAYLOG_WRITE_KEY:-demo}
 
   prometheus:
     image: prom/prometheus:v2.53.0

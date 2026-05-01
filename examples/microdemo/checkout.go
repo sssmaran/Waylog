@@ -23,10 +23,10 @@ func NewCheckoutHandler(paymentURL, dbURL string) *CheckoutHandler {
 		paymentURL: paymentURL,
 		dbURL:      dbURL,
 		paymentClient: &http.Client{
-			Transport: wayloghttp.NewTransport(http.DefaultTransport, "payment"),
+			Transport: wayloghttp.NewTransport(demoHTTPTransport(), "payment"),
 		},
 		dbClient: &http.Client{
-			Transport: wayloghttp.NewTransport(http.DefaultTransport, "db"),
+			Transport: wayloghttp.NewTransport(demoHTTPTransport(), "db"),
 		},
 	}
 }
@@ -45,14 +45,29 @@ func (h *CheckoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.validateCart(ctx, reqBody); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, "checkout validation failed"))
+		return
+	}
 	if err := h.loadCart(ctx, reqBody); err != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, "database operation failed"))
+		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, err.Error()))
+		return
+	}
+	if err := h.reserveInventory(ctx, reqBody); err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, err.Error()))
 		return
 	}
 	if err := h.chargePayment(ctx, reqBody); err != nil {
 		w.WriteHeader(http.StatusBadGateway)
 		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, "payment gateway failure"))
+		return
+	}
+	if err := h.commitOrder(ctx, reqBody); err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, err.Error()))
 		return
 	}
 
@@ -66,6 +81,16 @@ func (h *CheckoutHandler) serveSuppressedPayment(w http.ResponseWriter, reqBody 
 	w.WriteHeader(http.StatusBadGateway)
 	waylogv2.Suppress(ctx)
 	_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, "known payment gateway issue suppressed"))
+}
+
+func (h *CheckoutHandler) validateCart(ctx context.Context, reqBody PurchaseRequest) error {
+	return waylogv2.StepVoid(ctx, "cart.validate", func(ctx context.Context) error {
+		if reqBody.Scenario == ScenarioCheckoutError {
+			return waylogv2.NewError("CHK_500", waylogv2.WithReason("invalid cart state: missing tenant binding"))
+		}
+		waylogv2.From(ctx).Info("cart validated", waylogv2.F{"sku": reqBody.SKU})
+		return nil
+	})
 }
 
 func (h *CheckoutHandler) loadCart(ctx context.Context, reqBody PurchaseRequest) error {
@@ -82,9 +107,27 @@ func (h *CheckoutHandler) loadCart(ctx context.Context, reqBody PurchaseRequest)
 		}
 		defer resp.Body.Close()
 		_, _ = io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode == http.StatusNotFound {
+			return waylogv2.NewError("CART_NOT_FOUND", waylogv2.WithReason("cart record not found for sku"))
+		}
 		if resp.StatusCode >= http.StatusInternalServerError {
 			return waylogv2.NewError("DB_503", waylogv2.WithReason("database unavailable"))
 		}
+		waylogv2.From(ctx).Info("cart loaded", waylogv2.F{
+			"sku":              reqBody.SKU,
+			"items_n":          3,
+			"cart_value_cents": 4299,
+		})
+		return nil
+	})
+}
+
+func (h *CheckoutHandler) reserveInventory(ctx context.Context, reqBody PurchaseRequest) error {
+	return waylogv2.StepVoid(ctx, "inventory.reserve", func(ctx context.Context) error {
+		waylogv2.From(ctx).Info("inventory reserved", waylogv2.F{
+			"sku":            reqBody.SKU,
+			"reservation_id": "res-" + reqBody.SKU,
+		})
 		return nil
 	})
 }
@@ -101,6 +144,16 @@ func (h *CheckoutHandler) chargePayment(ctx context.Context, reqBody PurchaseReq
 			waylogv2.From(ctx).Error("upstream gateway 5xx", werr, waylogv2.F{"status": resp})
 			return werr
 		}
+		return nil
+	})
+}
+
+func (h *CheckoutHandler) commitOrder(ctx context.Context, reqBody PurchaseRequest) error {
+	return waylogv2.StepVoid(ctx, "order.commit", func(ctx context.Context) error {
+		waylogv2.From(ctx).Info("order committed", waylogv2.F{
+			"sku":      reqBody.SKU,
+			"order_id": "ord-" + reqBody.SKU,
+		})
 		return nil
 	})
 }

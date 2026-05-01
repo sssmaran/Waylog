@@ -450,14 +450,6 @@ func main() {
 	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
 	})
-	mux.Handle("/ui/ask", http.HandlerFunc(ingest.CORSWrap(corsOrigin, "POST, OPTIONS",
-		func(w http.ResponseWriter, r *http.Request) {
-			dashGate(http.HandlerFunc(ingestServer.DashboardAsk)).ServeHTTP(w, r)
-		})))
-	mux.Handle("/ui/explain", http.HandlerFunc(ingest.CORSWrap(corsOrigin, "GET, OPTIONS",
-		func(w http.ResponseWriter, r *http.Request) {
-			dashGate(http.HandlerFunc(ingestServer.DashboardExplain)).ServeHTTP(w, r)
-		})))
 
 	handler := ingest.CorrelationIDMiddleware(mux)
 

@@ -1901,17 +1901,6 @@ func TestBlastRadiusEndpoint_ReturnsResult(t *testing.T) {
 	}
 }
 
-func TestDashboardExplain_MissingTraceID(t *testing.T) {
-	srv := makeTestServer()
-	req := httptest.NewRequest("GET", "/ui/explain", nil)
-	w := httptest.NewRecorder()
-	srv.DashboardExplain(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
 func TestOverview_IncludesLatestFailedTraceID(t *testing.T) {
 	srv := makeTestServer()
 	req := httptest.NewRequest("GET", "/v1/overview?window=1h", nil)

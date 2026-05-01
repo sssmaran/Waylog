@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
 	waylogv2 "github.com/sssmaran/WaylogCLI/pkg/waylog/v2"
@@ -16,6 +17,8 @@ const (
 	ScenarioHappy                = "happy"
 	ScenarioPayment502           = "payment_502"
 	ScenarioSuppressedPayment502 = "suppressed_payment_502"
+	ScenarioDBMiss               = "db_miss"
+	ScenarioCheckoutError        = "checkout_error"
 
 	demoUserID = "demo-user"
 )
@@ -26,6 +29,7 @@ var uiHTML []byte
 type GatewayHandler struct {
 	checkoutURL string
 	client      *http.Client
+	purchase    http.Handler
 }
 
 type PurchaseRequest struct {
@@ -34,12 +38,27 @@ type PurchaseRequest struct {
 }
 
 func NewGatewayHandler(checkoutURL string) *GatewayHandler {
-	return &GatewayHandler{
+	h := &GatewayHandler{
 		checkoutURL: checkoutURL,
 		client: &http.Client{
-			Transport: wayloghttp.NewTransport(http.DefaultTransport, "checkout"),
+			Transport: wayloghttp.NewTransport(demoHTTPTransport(), "checkout"),
 		},
 	}
+	// Pre-wrap so the live /purchase route and /demo/burst dispatch share a
+	// single instance — and so callers can't forget to wire it up.
+	h.purchase = wayloghttp.HTTP(http.HandlerFunc(h.ServePurchase))
+	return h
+}
+
+// PurchaseHandler returns the wayloghttp-wrapped /purchase handler. Use this
+// to register the route so /demo/burst dispatches through the same chain.
+func (h *GatewayHandler) PurchaseHandler() http.Handler {
+	return h.purchase
+}
+
+// SetPurchaseHandler overrides the handler used by /demo/burst. Test seam.
+func (h *GatewayHandler) SetPurchaseHandler(handler http.Handler) {
+	h.purchase = handler
 }
 
 func (h *GatewayHandler) ServeDemo(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +109,36 @@ func (h *GatewayHandler) ServePurchase(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
+}
+
+func (h *GatewayHandler) ServeBurst(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "content-type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	if h.purchase == nil {
+		http.Error(w, "purchase handler unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req BurstRequest
+	if r.Body != nil {
+		defer r.Body.Close()
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil && err != io.EOF {
+			http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	summary := runBurst(r.Context(), h.purchase, req)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(summary)
 }
 
 func parsePurchaseRequest(r *http.Request) (PurchaseRequest, error) {

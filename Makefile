@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
@@ -16,9 +16,11 @@ help:
 	@echo "  clean    - remove build outputs"
 	@echo "  kafka-up - start local Kafka via docker compose"
 	@echo "  kafka-down - stop local Kafka via docker compose"
-	@echo "  demo     - start schema-2.0 micro-demo (single terminal)"
+	@echo "  demo     - start dashboard demo locally (detached, no Docker)"
 	@echo "  demo-stop - stop demo processes"
-	@echo "  micro-demo - start 4-service micro-demo (gateway+checkout+db+payment)"
+	@echo "  demo-up  - start v2 demo stack in Docker (detached)"
+	@echo "  demo-down - stop Docker demo stack"
+	@echo "  micro-demo - start 4-service micro-demo in foreground for debugging"
 	@echo "  micro-demo-stop - stop micro-demo processes"
 	@echo "  waylog-live - run TUI dashboard (connects to ingest server)"
 	@echo "  docker-build - build all Docker images"
@@ -117,6 +119,10 @@ demo:
 demo-stop:
 	./scripts/demo-stop.sh
 
+demo-up: docker-dev
+
+demo-down: docker-down
+
 micro-demo:
 	./scripts/micro-demo.sh
 
@@ -137,6 +143,10 @@ docker-reset:
 
 docker-dev:
 	ENV_FILE=deploy/dev.env docker compose up -d --build
+	@echo "v2 demo stack running:"
+	@echo "  Dashboard: http://localhost:8080/ui/  (key: demo)"
+	@echo "  Demo UI:   http://localhost:9081/demo"
+	@echo "  Trigger:   curl -s -X POST http://localhost:9081/purchase -H 'Content-Type: application/json' --data '{\"sku\":\"X1\",\"scenario\":\"payment_502\"}'"
 
 docker-prod:
 	ENV_FILE=deploy/prod.env docker compose up -d --build

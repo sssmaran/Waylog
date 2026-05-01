@@ -17,6 +17,10 @@ func normalizeScenario(s string) string {
 		return ScenarioPayment502
 	case ScenarioSuppressedPayment502:
 		return ScenarioSuppressedPayment502
+	case ScenarioDBMiss:
+		return ScenarioDBMiss
+	case ScenarioCheckoutError:
+		return ScenarioCheckoutError
 	default:
 		return ""
 	}

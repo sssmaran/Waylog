@@ -24,7 +24,9 @@ func (h *PaymentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setDemoFields(ctx, "payment", reqBody)
 
 	switch reqBody.Scenario {
-	case ScenarioHappy:
+	case ScenarioHappy, ScenarioDBMiss, ScenarioCheckoutError:
+		// db_miss and checkout_error fail upstream of payment, but defensive
+		// happy-path payment is fine if checkout ever calls us.
 		chargeAcquirer(ctx, false)
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(response(ctx, true, reqBody, ""))

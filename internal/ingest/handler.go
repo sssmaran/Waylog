@@ -128,11 +128,6 @@ type Server struct {
 	coldStore           coldstore.Store
 	planStore           *PlanStore
 
-	// Dashboard rate limiter: per-IP sliding window
-	rateMu         sync.Mutex
-	rateLimit      map[string][]time.Time
-	rateCheckCount int
-
 	// Replay state — set once during startup, read by /healthz.
 	replayStatus      string // "none", "ok", "failed"
 	replayError       string
@@ -247,7 +242,6 @@ func NewServer(cfg ServerConfig) *Server {
 		graphHotWindow:      cfg.GraphHotWindow,
 		otlpEnabled:         cfg.OTLPEnabled,
 		v2ReadsEnabled:      cfg.V2ReadsEnabled,
-		rateLimit:           map[string][]time.Time{},
 		replayStatus:        "none",
 	}
 	if s.sampler == nil {
@@ -578,7 +572,6 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 			"max_steps_default": s.askMaxStepsDefault,
 			"max_steps_max":     s.askMaxStepsMax,
 		},
-		"ask_endpoint": "/ui/ask",
 		"dashboard": map[string]any{
 			"refresh_interval_sec": s.dashboardRefreshSec,
 		},
@@ -2131,115 +2124,6 @@ func (s *Server) replayDedupEntry(w http.ResponseWriter, r *http.Request, entry 
 	json.NewEncoder(w).Encode(entry.Data)
 }
 
-// DashboardAsk handles POST /ui/ask — rate-limited ask proxy for the web dashboard.
-func (s *Server) DashboardAsk(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Per-IP rate limit: 5 req/min
-	ip := clientIP(r, s.trustProxy)
-	if !s.checkRateLimit(ip) {
-		w.Header().Set("Retry-After", "60")
-		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
-		return
-	}
-
-	if s.store == nil {
-		http.Error(w, "store not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
-	var req askRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	req.Prompt = strings.TrimSpace(req.Prompt)
-	if req.Prompt == "" {
-		http.Error(w, "prompt is required", http.StatusBadRequest)
-		return
-	}
-
-	var (
-		provider llm.Provider
-		model    string
-		toolMode string
-		err      error
-	)
-	if s.askProvider != nil {
-		provider = s.askProvider
-	} else {
-		provider, model, toolMode, err = s.askProviderFromEnv()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-	}
-
-	registry := s.askRegistry
-	if registry == nil {
-		http.Error(w, "tool registry unavailable", http.StatusInternalServerError)
-		return
-	}
-
-	defs := make([]llm.ToolDefinition, 0, len(registry.List()))
-	for _, t := range registry.List() {
-		defs = append(defs, llm.ToolDefinition{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-		})
-	}
-
-	// Force max_steps=5, abort on error
-	maxSteps := 5
-
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store, ts: s.traceStore}
-	answer, toolRecords, askErr := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
-		return registry.Call(ctx, fs, name, params)
-	}), req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: "abort"})
-
-	steps := make([]askToolStep, 0, len(toolRecords))
-	for i, rec := range toolRecords {
-		step := askToolStep{
-			Index:      i + 1,
-			Tool:       rec.Name,
-			DurationMs: rec.DurationMs,
-			Params:     decodeJSONRaw(rec.Params),
-			Error:      rec.Error,
-		}
-		if rec.Result != nil {
-			step.Result = normalizeJSONValue(rec.Result)
-		}
-		steps = append(steps, step)
-	}
-
-	if askErr != nil {
-		slog.Warn("dashboard ask failed", "err", askErr)
-		http.Error(w, "ask failed: "+askErr.Error(), http.StatusBadGateway)
-		return
-	}
-
-	resp := askResponse{
-		Answer:     answer,
-		Model:      model,
-		ToolMode:   toolMode,
-		DurationMs: time.Since(start).Milliseconds(),
-		Steps:      steps,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
 func clientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
@@ -2253,53 +2137,6 @@ func clientIP(r *http.Request, trustProxy bool) string {
 		return r.RemoteAddr
 	}
 	return host
-}
-
-func (s *Server) checkRateLimit(ip string) bool {
-	now := time.Now()
-	cutoff := now.Add(-time.Minute)
-
-	s.rateMu.Lock()
-	defer s.rateMu.Unlock()
-
-	// Periodic global prune every 100 calls
-	s.rateCheckCount++
-	if s.rateCheckCount%100 == 0 {
-		for k, v := range s.rateLimit {
-			allStale := true
-			for _, ts := range v {
-				if ts.After(cutoff) {
-					allStale = false
-					break
-				}
-			}
-			if allStale {
-				delete(s.rateLimit, k)
-			}
-		}
-	}
-
-	// Hard bound: reject if map still too large after pruning
-	if len(s.rateLimit) > 10000 {
-		return false
-	}
-
-	// Prune stale entries for this IP
-	timestamps := s.rateLimit[ip]
-	valid := timestamps[:0]
-	for _, ts := range timestamps {
-		if ts.After(cutoff) {
-			valid = append(valid, ts)
-		}
-	}
-
-	if len(valid) >= 5 {
-		s.rateLimit[ip] = valid
-		return false
-	}
-
-	s.rateLimit[ip] = append(valid, now)
-	return true
 }
 
 // Topology handles GET /v1/topology — service-to-service edges with failure counts.
@@ -2369,51 +2206,6 @@ func (s *Server) BlastRadius(w http.ResponseWriter, r *http.Request) {
 		meta.DataStatus = "empty"
 	}
 	writeJSON(w, http.StatusOK, result, meta, nil)
-}
-
-// DashboardExplain handles GET /ui/explain?trace_id=X — server-side proxy for explain_request tool.
-// No agent auth required (same pattern as /ui/ask).
-func (s *Server) DashboardExplain(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	meta := APIMeta{RequestID: RequestIDFromContext(r.Context())}
-
-	traceID := r.URL.Query().Get("trace_id")
-	if traceID == "" {
-		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "trace_id is required", false, meta)
-		return
-	}
-
-	if s.askRegistry == nil {
-		respondError(w, r, http.StatusServiceUnavailable, "NOT_AVAILABLE", "tools not available", false, meta)
-		return
-	}
-
-	params, _ := json.Marshal(map[string]string{"trace_id": traceID})
-	result, err := s.askRegistry.Call(r.Context(), s.store, "explain_request", params)
-	if err != nil {
-		var te *tools.ToolError
-		if errors.As(err, &te) {
-			status := http.StatusInternalServerError
-			if te.Code == tools.CodeNotFound {
-				status = http.StatusNotFound
-			} else if te.Code == tools.CodeInvalidParams {
-				status = http.StatusBadRequest
-			}
-			respondError(w, r, status, te.Code, te.Message, te.Retryable, meta)
-			return
-		}
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL", "internal error", true, meta)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
 }
 
 // PlanExecute handles POST /v1/plans/execute — deterministic plan execution.

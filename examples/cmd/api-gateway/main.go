@@ -7,7 +7,6 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/examples/microdemo"
 	"github.com/sssmaran/WaylogCLI/internal/config"
-	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/waylog/http"
 )
 
 func main() {
@@ -20,8 +19,9 @@ func main() {
 	gateway := microdemo.NewGatewayHandler(checkoutURL)
 
 	mux := http.NewServeMux()
-	mux.Handle("/purchase", wayloghttp.HTTP(http.HandlerFunc(gateway.ServePurchase)))
+	mux.Handle("/purchase", gateway.PurchaseHandler())
 	mux.HandleFunc("/demo", gateway.ServeDemo)
+	mux.HandleFunc("/demo/burst", gateway.ServeBurst)
 
 	microdemo.RunService("api-gateway", ":9081", mux)
 }

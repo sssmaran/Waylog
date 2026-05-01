@@ -30,6 +30,15 @@ func (h *DBHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if reqBody.Scenario == ScenarioDBMiss {
+		_ = waylogv2.StepVoid(ctx, "cart.lookup", func(ctx context.Context) error {
+			return waylogv2.NewError("CART_NOT_FOUND", waylogv2.WithReason("cart record not found for sku"))
+		})
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, "cart record not found"))
+		return
+	}
+
 	if err := loadCart(ctx); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, "database unavailable"))
