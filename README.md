@@ -66,8 +66,6 @@ Stop with `make demo-stop`.
 
 Prefer Docker? Use `make docker-dev` / `make docker-down`. Prefer foreground service logs while hacking on Go code? Use `make micro-demo` and stop with `make micro-demo-stop`.
 
-> `./scripts/demo-cascade-failure.sh` injects an equivalent fixture by POSTing synthetic events directly. It is a fixture, not a substitute for the live path above.
-
 
 ## How it works
 
@@ -255,7 +253,7 @@ Go / TS services (SDK) · OTLP/HTTP collectors
 
 Events are durably logged before projection — if the process crashes, replay rebuilds the read models from the WAL on next boot.
 
-Durability model, retention, merge semantics, readiness policy, and counter buffer: [`docs/internals.md`](docs/internals.md). Full HTTP contract: [`docs/openapi.yaml`](docs/openapi.yaml).
+Durability model, retention, merge semantics, readiness policy, and counter buffer: [`docs/internals.md`](docs/internals.md). Full v2 HTTP contract: [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Development
 

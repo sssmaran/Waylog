@@ -26,17 +26,6 @@ func normalizeScenario(s string) string {
 	}
 }
 
-func legacyForceScenario(force string) string {
-	switch force {
-	case "", "success":
-		return ScenarioHappy
-	case "payment_fail", "payment_retry":
-		return ScenarioPayment502
-	default:
-		return ""
-	}
-}
-
 func setDemoFields(ctx context.Context, service string, req PurchaseRequest) {
 	waylogv2.SetField(ctx, "user", map[string]any{
 		"id":     demoUserID,

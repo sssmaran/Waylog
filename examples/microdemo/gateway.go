@@ -152,9 +152,6 @@ func parsePurchaseRequest(r *http.Request) (PurchaseRequest, error) {
 	if scenario := r.URL.Query().Get("scenario"); scenario != "" {
 		req.Scenario = scenario
 	}
-	if force := r.URL.Query().Get("force"); force != "" {
-		req.Scenario = legacyForceScenario(force)
-	}
 	if req.SKU == "" {
 		req.SKU = "X1"
 	}
