@@ -121,6 +121,51 @@ func TestRecentIndexPrunePreservesTraceOrder(t *testing.T) {
 	}
 }
 
+func TestRecentIndexPruneRemovesOldReadsAndKeepsCursorOrder(t *testing.T) {
+	idx := NewRecentIndex(nil)
+	base := time.Date(2026, 4, 25, 14, 0, 0, 0, time.UTC)
+	oldErr := testEvent("old-error", eventv2.StatusError)
+	oldErr.TraceID = "trace-old"
+	oldErr.TsStart = base
+	oldErr.TsEnd = base.Add(10 * time.Millisecond)
+	oldErr.Anchor = &eventv2.Anchor{Step: "payment.charge", ErrorCode: "PMT_502"}
+	freshA := testEvent("fresh-a", eventv2.StatusOK)
+	freshA.TraceID = "trace-a"
+	freshA.TsStart = base.Add(1 * time.Hour)
+	freshA.TsEnd = freshA.TsStart.Add(10 * time.Millisecond)
+	freshB := testEvent("fresh-b", eventv2.StatusError)
+	freshB.TraceID = "trace-b"
+	freshB.TsStart = base.Add(2 * time.Hour)
+	freshB.TsEnd = freshB.TsStart.Add(10 * time.Millisecond)
+	freshB.Anchor = &eventv2.Anchor{Step: "db.load_cart", ErrorCode: "CART_NOT_FOUND"}
+
+	projector := NewProjector(idx)
+	projector.Project(oldErr)
+	projector.Project(freshA)
+	projector.Project(freshB)
+
+	pruned := idx.PruneOlderThan(base.Add(30 * time.Minute))
+	if pruned.Events != 1 {
+		t.Fatalf("pruned=%d want 1", pruned.Events)
+	}
+	reader := NewReader(idx)
+	filter := SearchFilter{Since: base, Until: base.Add(3 * time.Hour)}
+	if _, ok := reader.GetEvent("old-error"); ok {
+		t.Fatal("old event should be gone")
+	}
+	if got := reader.Errors(filter, nil, 10); len(got.Rows) != 1 || got.Rows[0].ErrorFamily.ErrorCode != "CART_NOT_FOUND" {
+		t.Fatalf("errors=%+v", got)
+	}
+	page1 := reader.SearchEvents(filter, nil, 1)
+	if got := ids(page1.Events); got != "fresh-b" || page1.NextCursor == nil {
+		t.Fatalf("page1=%s cursor=%+v", got, page1.NextCursor)
+	}
+	page2 := reader.SearchEvents(filter, page1.NextCursor, 1)
+	if got := ids(page2.Events); got != "fresh-a" || page2.NextCursor != nil {
+		t.Fatalf("page2=%s cursor=%+v", got, page2.NextCursor)
+	}
+}
+
 func eventIDs(events []*eventv2.Event) []string {
 	out := make([]string, 0, len(events))
 	for _, ev := range events {

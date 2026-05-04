@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
@@ -18,6 +18,7 @@ help:
 	@echo "  kafka-down - stop local Kafka via docker compose"
 	@echo "  demo     - start dashboard demo locally (detached, no Docker)"
 	@echo "  demo-stop - stop demo processes"
+	@echo "  demo-acceptance - verify a running local demo end-to-end"
 	@echo "  demo-up  - start v2 demo stack in Docker (detached)"
 	@echo "  demo-down - stop Docker demo stack"
 	@echo "  micro-demo - start 4-service micro-demo in foreground for debugging"
@@ -118,6 +119,9 @@ demo:
 
 demo-stop:
 	./scripts/demo-stop.sh
+
+demo-acceptance:
+	./scripts/demo-acceptance.sh
 
 demo-up: docker-dev
 

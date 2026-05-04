@@ -149,6 +149,57 @@ func TestRunCLIExplainFallsBackToTraceID(t *testing.T) {
 	}
 }
 
+func TestRunCLIBlastDisplayFamilyAllowsTrailingWindow(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			_, _ = w.Write([]byte(`{"v2_reads":{"enabled":true}}`))
+			return
+		}
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"key":{"service":"checkout","step":"payment.charge","error_code":"PMT_502"},"view_mode":"single_family","window":"15m","affected_requests":1,"affected_services":2,"top_services":["checkout","payment"],"sample_traces":["trace"]}`))
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := RunCLI([]string{"--addr", srv.URL, "blast", "checkout:payment.charge:PMT_502", "--window", "15m"}, nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if gotPath != "/v1/blast_radius" || !strings.Contains(gotQuery, "error_family=checkout%3Apayment.charge%3APMT_502") || !strings.Contains(gotQuery, "window=15m") {
+		t.Fatalf("path=%q query=%q", gotPath, gotQuery)
+	}
+}
+
+func TestRunCLISearchAllowsTrailingFilters(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			_, _ = w.Write([]byte(`{"v2_reads":{"enabled":true}}`))
+			return
+		}
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"events":[],"next_cursor":null}`))
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := RunCLI([]string{"--addr", srv.URL, "search", "PMT_502", "--window", "15m", "--limit", "5"}, nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"error_code=PMT_502", "window=15m", "limit=5"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query=%q missing %q", gotQuery, want)
+		}
+	}
+	if gotPath != "/v1/events/search" {
+		t.Fatalf("path=%q", gotPath)
+	}
+}
+
 func TestRunCLIUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := RunCLI([]string{"search"}, nil, &stdout, &stderr)

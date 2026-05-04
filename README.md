@@ -185,14 +185,14 @@ curl -X POST http://localhost:8080/v1/plans/execute \
 
 Plans execute deterministically server-side with SSE progress on `/v1/stream/plans/{id}`.
 
-### Trace story as a tree
+### Trace story
 
 ```bash
-curl "http://localhost:8080/v1/traces/story?trace_id=$TRACE&format=tree" \
+curl "http://localhost:8080/v1/traces/story?trace_id=$TRACE" \
   -H "Authorization: Bearer $WAYLOG_READ_KEY"
 ```
 
-Returns the nested propagation tree the dashboard renders. Omit `format=tree` for the flat chain.
+Returns the first failing step, contributing path, logs, downstream calls, and linkage mode used by the dashboard and `waylog explain`.
 
 ### MCP (agent surface)
 
@@ -264,6 +264,7 @@ make fmt vet test   # checks
 make test-race      # race detector
 make ts-test        # TypeScript SDK vitest suite
 make ci             # fmt + vet + test-race + test-sdk + ts-test + doc-link + rollup-contract
+make demo-acceptance # with make demo running, verify demo + CLI triage loop
 ```
 
 ## Auth
@@ -292,9 +293,9 @@ Public alpha. APIs may break before 1.0.
 - SQLite cold store (events, deployments, causal claims)
 - 10 deterministic analysis tools, rollup-correct root-cause attribution
 - agent-native REST (`/v1/tools/*`, `/v1/ask`, `/v1/plans/execute`) with idempotency and structured envelopes
-- `/v1/traces/story?format=tree` and tree rendering in the dashboard
-- dashboard: minimal v2 triage loop (errors, explain, blast) with inline SVG mini-graphs
-- v2 operator CLI (`errors`, `trace`, `explain`, `blast`, `search`) over read APIs
+- `/v1/traces/story` and indented failure-path rendering in the dashboard
+- dashboard: minimal v2 triage loop (errors, explain, blast, recent requests)
+- v2 operator CLI (`capabilities`, `recent`, `errors`, `event`, `trace`, `explain`, `blast`, `search`) over read APIs
 - live TUI (`waylog-live --dev` streams via SSE), MCP stdio
 - scoped auth (write/read/agent) with startup validation
 
@@ -314,4 +315,4 @@ Public alpha. APIs may break before 1.0.
 - No built-in alerting or paging. Waylog answers questions, it doesn't wake you up.
 - No multi-tenancy. One instance = one trust boundary.
 
-**Fastest walkthrough:** `make demo`, open <http://localhost:9081/demo>, click **Run payment outage**, then use the dashboard or `waylog errors`, `waylog explain`, and `waylog blast` to answer what failed, which downstream was involved, and how broad the impact is.
+**Fastest walkthrough:** `make demo`, open <http://localhost:9081/demo>, click **Run traffic burst**, then use the dashboard or `waylog recent`, `waylog errors`, `waylog explain`, and `waylog blast` to answer what failed, which downstream was involved, and how broad the impact is.

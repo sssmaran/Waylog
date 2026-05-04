@@ -1,6 +1,6 @@
-// e2e-otlp constructs a minimal OTLP/HTTP ExportTraceServiceRequest (1 trace,
-// 2 spans) and POSTs it to the ingest server's /v1/otlp/v1/traces endpoint.
-// The trace_id is printed on stdout for use by scripts/e2e-mark2.sh.
+// e2e-otlp constructs a minimal OTLP/HTTP ExportTraceServiceRequest and POSTs
+// it to the ingest server's /v1/otlp/v1/traces endpoint. The trace_id is
+// printed on stdout for ad hoc OTLP smoke checks.
 package main
 
 import (

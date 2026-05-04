@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -219,15 +220,7 @@ func runExplain(ctx context.Context, client *Client, cfg cliConfig, args []strin
 }
 
 func runBlast(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("blast", stderr)
-	service := fs.String("service", "", "")
-	step := fs.String("step", "", "")
-	errorCode := fs.String("code", "", "")
-	window := fs.String("window", "", "")
-	if err := fs.Parse(args); err != nil {
-		return usage(stderr, "usage: waylog blast (--service <svc> --step <step> --code <code> | --code <code> | <service:step:code>) [--window <dur>] [--json]")
-	}
-	p, err := resolveBlastForm(BlastParams{Service: *service, Step: *step, ErrorCode: *errorCode, Window: *window}, fs.Args())
+	p, err := parseBlastArgs(args)
 	if err != nil {
 		return usage(stderr, err.Error())
 	}
@@ -236,6 +229,48 @@ func runBlast(ctx context.Context, client *Client, cfg cliConfig, args []string,
 	}
 	resp, err := client.Blast(ctx, p)
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderBlast)
+}
+
+func parseBlastArgs(args []string) (BlastParams, error) {
+	var flags BlastParams
+	positionals := []string{}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--service" || arg == "--step" || arg == "--code" || arg == "--window":
+			if i+1 >= len(args) {
+				return BlastParams{}, fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			setBlastFlag(&flags, arg, args[i])
+		case strings.HasPrefix(arg, "--service="):
+			setBlastFlag(&flags, "--service", strings.TrimPrefix(arg, "--service="))
+		case strings.HasPrefix(arg, "--step="):
+			setBlastFlag(&flags, "--step", strings.TrimPrefix(arg, "--step="))
+		case strings.HasPrefix(arg, "--code="):
+			setBlastFlag(&flags, "--code", strings.TrimPrefix(arg, "--code="))
+		case strings.HasPrefix(arg, "--window="):
+			setBlastFlag(&flags, "--window", strings.TrimPrefix(arg, "--window="))
+		case strings.HasPrefix(arg, "-"):
+			return BlastParams{}, fmt.Errorf("unknown flag: %s", arg)
+		default:
+			positionals = append(positionals, arg)
+		}
+	}
+	return resolveBlastForm(flags, positionals)
+}
+
+func setBlastFlag(p *BlastParams, key, value string) {
+	switch key {
+	case "--service":
+		p.Service = value
+	case "--step":
+		p.Step = value
+	case "--code":
+		p.ErrorCode = value
+	case "--window":
+		p.Window = value
+	}
 }
 
 func resolveBlastForm(flags BlastParams, positional []string) (BlastParams, error) {
@@ -262,22 +297,10 @@ func resolveBlastForm(flags BlastParams, positional []string) (BlastParams, erro
 }
 
 func runSearch(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("search", stderr)
-	service := fs.String("service", "", "")
-	status := fs.String("status", "", "")
-	window := fs.String("window", "", "")
-	limit := fs.Int("limit", 0, "")
-	cursor := fs.String("cursor", "", "")
-	errorCode := fs.String("error-code", "", "")
-	traceID := fs.String("trace-id", "", "")
-	if err := fs.Parse(args); err != nil || fs.NArg() > 1 {
-		return usage(stderr, "usage: waylog search <query> [--service <svc>] [--status <csv>] [--window <dur>] [--limit <n>] [--cursor <c>] [--json]")
+	p, query, err := parseSearchArgs(args)
+	if err != nil {
+		return usage(stderr, err.Error())
 	}
-	query := ""
-	if fs.NArg() == 1 {
-		query = fs.Arg(0)
-	}
-	p := SearchParams{Service: *service, Status: *status, Window: *window, Limit: *limit, Cursor: *cursor, ErrorCode: *errorCode, TraceID: *traceID}
 	if p.ErrorCode == "" && p.TraceID == "" {
 		if query == "" {
 			return usage(stderr, "search requires <query>, --error-code, or --trace-id")
@@ -289,6 +312,79 @@ func runSearch(ctx context.Context, client *Client, cfg cliConfig, args []string
 	}
 	resp, err := client.Search(ctx, p)
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderSearch)
+}
+
+func parseSearchArgs(args []string) (SearchParams, string, error) {
+	var p SearchParams
+	positionals := []string{}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--service" || arg == "--status" || arg == "--window" || arg == "--cursor" || arg == "--error-code" || arg == "--trace-id":
+			if i+1 >= len(args) {
+				return SearchParams{}, "", fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			setSearchStringFlag(&p, arg, args[i])
+		case arg == "--limit":
+			if i+1 >= len(args) {
+				return SearchParams{}, "", fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			limit, err := strconv.Atoi(args[i])
+			if err != nil {
+				return SearchParams{}, "", fmt.Errorf("invalid limit: %s", args[i])
+			}
+			p.Limit = limit
+		case strings.HasPrefix(arg, "--service="):
+			setSearchStringFlag(&p, "--service", strings.TrimPrefix(arg, "--service="))
+		case strings.HasPrefix(arg, "--status="):
+			setSearchStringFlag(&p, "--status", strings.TrimPrefix(arg, "--status="))
+		case strings.HasPrefix(arg, "--window="):
+			setSearchStringFlag(&p, "--window", strings.TrimPrefix(arg, "--window="))
+		case strings.HasPrefix(arg, "--cursor="):
+			setSearchStringFlag(&p, "--cursor", strings.TrimPrefix(arg, "--cursor="))
+		case strings.HasPrefix(arg, "--error-code="):
+			setSearchStringFlag(&p, "--error-code", strings.TrimPrefix(arg, "--error-code="))
+		case strings.HasPrefix(arg, "--trace-id="):
+			setSearchStringFlag(&p, "--trace-id", strings.TrimPrefix(arg, "--trace-id="))
+		case strings.HasPrefix(arg, "--limit="):
+			limit, err := strconv.Atoi(strings.TrimPrefix(arg, "--limit="))
+			if err != nil {
+				return SearchParams{}, "", fmt.Errorf("invalid limit: %s", strings.TrimPrefix(arg, "--limit="))
+			}
+			p.Limit = limit
+		case strings.HasPrefix(arg, "-"):
+			return SearchParams{}, "", fmt.Errorf("unknown flag: %s", arg)
+		default:
+			positionals = append(positionals, arg)
+		}
+	}
+	if len(positionals) > 1 {
+		return SearchParams{}, "", errors.New("usage: waylog search <query> [--service <svc>] [--status <csv>] [--window <dur>] [--limit <n>] [--cursor <c>] [--json]")
+	}
+	query := ""
+	if len(positionals) == 1 {
+		query = positionals[0]
+	}
+	return p, query, nil
+}
+
+func setSearchStringFlag(p *SearchParams, key, value string) {
+	switch key {
+	case "--service":
+		p.Service = value
+	case "--status":
+		p.Status = value
+	case "--window":
+		p.Window = value
+	case "--cursor":
+		p.Cursor = value
+	case "--error-code":
+		p.ErrorCode = value
+	case "--trace-id":
+		p.TraceID = value
+	}
 }
 
 func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {

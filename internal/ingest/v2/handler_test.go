@@ -145,6 +145,49 @@ func TestEventsNDJSONBatches(t *testing.T) {
 	}
 }
 
+func TestEventsMixedNDJSONDurabilityAndSuppressedReadInvariants(t *testing.T) {
+	index := NewRecentIndex(nil)
+	h, wal := newTestHandlerWithIndex(t, nil, index)
+	invalid := validEventMap("00000000-0000-4000-8000-000000000202")
+	delete(invalid, "service")
+	body := strings.Join([]string{
+		mustJSON(t, cascadeCheckoutFailureEvent()),
+		mustJSON(t, invalid),
+		mustJSON(t, suppressedPaymentEvent()),
+	}, "\n")
+
+	env := expectEnvelopeStatus(t, post(t, h, "application/x-ndjson", "", body), http.StatusOK)
+	if env.Accepted != 2 || env.Duplicate != 0 || len(env.Rejected) != 1 {
+		t.Fatalf("env=%+v", env)
+	}
+	if env.Rejected[0].Index != 1 || env.Rejected[0].Reason != ReasonSchemaValidationFailed {
+		t.Fatalf("rejected=%+v", env.Rejected[0])
+	}
+	if wal.Count() != 2 {
+		t.Fatalf("wal writes=%d want 2", wal.Count())
+	}
+
+	reader := NewReader(index)
+	filter := SearchFilter{Since: testTime(-1), Until: testTime(10)}
+	if _, ok := reader.GetEvent("00000000-0000-4000-8000-000000000202"); ok {
+		t.Fatal("invalid event should not be readable")
+	}
+	if got := reader.Errors(filter, nil, 10); len(got.Rows) != 1 || got.Rows[0].ErrorFamily.ErrorCode != "PMT_502" {
+		t.Fatalf("errors=%+v", got)
+	}
+	blast := reader.BlastRadius(filter, BlastKeyMode{Key: BlastKey{ErrorCode: "PMT_502"}, CrossCode: true})
+	if blast.AffectedRequests != 1 {
+		t.Fatalf("blast=%+v want one unsuppressed request", blast)
+	}
+	if got := ids(reader.SearchEvents(filter, nil, 10).Events); got != "00000000-0000-4000-8000-000000000102" {
+		t.Fatalf("default search=%s", got)
+	}
+	filter.IncludeSuppressed = true
+	if got := ids(reader.SearchEvents(filter, nil, 10).Events); got != "00000000-0000-4000-8000-000000000104,00000000-0000-4000-8000-000000000102" {
+		t.Fatalf("include suppressed search=%s", got)
+	}
+}
+
 func TestEventsBatchOversize(t *testing.T) {
 	var b strings.Builder
 	for i := 0; i < maxBatchItems+1; i++ {

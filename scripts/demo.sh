@@ -141,11 +141,13 @@ Open:
   Dashboard:     http://localhost:8080/ui/
 
 How to demo it:
-  1. Open Demo controls and click "Run payment outage".
-  2. Open Dashboard and watch the failure appear.
-  3. Click the failure family to inspect impact, then a trace to explain it.
+  1. Open Demo controls and click "Run traffic burst".
+  2. Open Dashboard and inspect errors, impact, and trace explanation.
+  3. Or run: make demo-acceptance
 
 Useful CLI checks:
+  ./waylog capabilities
+  ./waylog recent --limit 5
   ./waylog errors --window 15m
   ./waylog blast --service checkout --step payment.charge --code PMT_502 --window 15m
 

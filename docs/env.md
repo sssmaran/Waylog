@@ -6,7 +6,7 @@ Reference for configuring the Waylog ingest server and SDK. All variables are re
 
 | Variable | Purpose |
 |---|---|
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Required for legacy server-side Ask flows |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Required when server-side Ask/tool flows use Gemini |
 
 ## Auth
 
@@ -73,7 +73,7 @@ See [Internals](internals.md) for the full durability model.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GRAPH_UI` | `false` | Enable Graph topology tab in dashboard and `/v1/topology` endpoint |
+| `GRAPH_UI` | `false` | Enable optional graph topology endpoint `/v1/graph/topology` |
 | `WAYLOG_V2_READS` | `false` | Route v2 read endpoints to the schema-2.0 recent index |
 | `CAUSAL_ENABLED` | `false` | Enable shadow-mode causal inference |
 | `CAUSAL_INTERVAL` | `30s` | Causal inference ticker interval |
@@ -82,18 +82,18 @@ See [Internals](internals.md) for the full durability model.
 
 ## Schema-2.0 reference demo
 
-`make micro-demo` sets these automatically for the local event-driven demo.
+`make demo` sets these automatically for the detached local showcase. `make micro-demo` uses the same services in foreground debug mode.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `INGEST_URL` | `http://localhost:8080` | SDK delivery base URL used by the demo services |
-| `INGEST_ADDR` | `:8080` | Ingest server listen address |
+| `INGEST_ADDR` | `127.0.0.1:8080` in `make demo`; `:8080` in `make micro-demo` | Ingest server listen address |
 | `WAYLOG_WRITE_KEY` | `demo` | Write-scope key used by the demo SDK emitters |
 | `WAYLOG_READ_KEY` | `demo` | Read-scope key used by the printed CLI commands |
-| `DASHBOARD_AUTH` | `key:demo` | Enables dashboard/read-session auth so `WAYLOG_READ_KEY` is valid at startup |
+| `DASHBOARD_AUTH` | `off` in `make demo`; `key:demo` in `make micro-demo` | Dashboard auth mode for the local demo surface |
 | `WAYLOG_V2_READS` | `true` in demo scripts | Enables v2 read APIs required by `waylog errors/explain/blast` |
 
-The embedded `/ui` dashboard is also v2-only and renders a setup message unless `WAYLOG_V2_READS=true`.
+The embedded `/ui` dashboard is a schema-2.0 triage surface and renders a setup message unless `WAYLOG_V2_READS=true`.
 
 ## Dashboard links
 
@@ -108,7 +108,7 @@ Optional external links rendered in the dashboard header. Hidden if empty.
 
 Pre-baked `.env` files live in [`deploy/`](../deploy):
 
-- `deploy/dev.env` — 100% sampling, graph UI on, causal on, verbose logging
+- `deploy/dev.env` — 100% sampling, optional graph endpoints on, causal on, verbose logging
 - `deploy/prod.env` — 5% happy-path sampling, graph UI off by default, tighter retention
 
 Use with `make docker-dev` or `make docker-prod`.
