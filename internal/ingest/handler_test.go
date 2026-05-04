@@ -308,6 +308,9 @@ func TestCapabilities_Defaults(t *testing.T) {
 		Dashboard struct {
 			RefreshIntervalSec int `json:"refresh_interval_sec"`
 		} `json:"dashboard"`
+		V2Reads struct {
+			Enabled bool `json:"enabled"`
+		} `json:"v2_reads"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid json: %v", err)
@@ -320,6 +323,29 @@ func TestCapabilities_Defaults(t *testing.T) {
 	}
 	if resp.Dashboard.RefreshIntervalSec != 10 {
 		t.Errorf("refresh_interval_sec = %d, want 10", resp.Dashboard.RefreshIntervalSec)
+	}
+	if resp.V2Reads.Enabled {
+		t.Errorf("v2_reads.enabled = true, want false")
+	}
+}
+
+func TestCapabilities_V2ReadsEnabled(t *testing.T) {
+	srv := NewServer(ServerConfig{V2ReadsEnabled: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
+	w := httptest.NewRecorder()
+	srv.Capabilities(w, req)
+
+	var resp struct {
+		V2Reads struct {
+			Enabled bool `json:"enabled"`
+		} `json:"v2_reads"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !resp.V2Reads.Enabled {
+		t.Fatal("v2_reads.enabled = false, want true")
 	}
 }
 
@@ -566,63 +592,6 @@ func TestReadEndpoints_NoStore(t *testing.T) {
 	})
 }
 
-func TestEvents_BodyTooLarge(t *testing.T) {
-	srv := NewServer(ServerConfig{
-		Store:        graphstore.NewStore(),
-		MaxBodyBytes: 64,
-	})
-
-	largeJSON := `{"schema_version":"1.0","event_name":"test.request","padding":"` + strings.Repeat("a", 100) + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(largeJSON))
-	w := httptest.NewRecorder()
-	srv.Events(w, req)
-
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("expected 413, got %d", w.Code)
-	}
-}
-
-func TestEvents_DefaultMaxBody(t *testing.T) {
-	srv := NewServer(ServerConfig{
-		Store: graphstore.NewStore(),
-	})
-	if srv.maxBodyBytes != 1<<20 {
-		t.Errorf("expected default 1MB, got %d", srv.maxBodyBytes)
-	}
-}
-
-func TestValidate_ValidEvent(t *testing.T) {
-	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
-	body := `{"schema_version":"1.0","event_name":"test.request","timestamp":"2026-02-17T10:00:00Z","user":{"id":"u1"},"request":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"},"system":{"service":"test","env":"prod"},"outcome":{"success":true,"status_code":200,"kind":"http"},"metrics":{"latency_ms":10}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/events/validate", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	srv.Validate(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["valid"] != true {
-		t.Errorf("expected valid=true, got %v", resp["valid"])
-	}
-}
-
-func TestValidate_InvalidEvent(t *testing.T) {
-	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
-	body := `{"schema_version":"1.0","event_name":"test.request","timestamp":"2026-02-17T10:00:00Z","user":{"id":""},"request":{"trace_id":"aaa"},"system":{"service":"test","env":"prod"},"outcome":{"success":true,"status_code":200,"kind":"http"},"metrics":{"latency_ms":10}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/events/validate", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	srv.Validate(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["valid"] != false {
-		t.Errorf("expected valid=false, got %v", resp["valid"])
-	}
-}
-
 func TestEventSearch_NoFilter(t *testing.T) {
 	srv := NewServer(ServerConfig{Store: graphstore.NewStore(), EventLogDir: t.TempDir()})
 
@@ -692,26 +661,6 @@ func TestEventSearch_WithResults(t *testing.T) {
 
 func newTestEventLog(dir string) (*eventlog.Writer, error) {
 	return eventlog.New(dir)
-}
-
-func TestValidate_BadJSON(t *testing.T) {
-	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
-	req := httptest.NewRequest(http.MethodPost, "/v1/events/validate", strings.NewReader("{bad"))
-	w := httptest.NewRecorder()
-	srv.Validate(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestValidate_MethodNotAllowed(t *testing.T) {
-	srv := NewServer(ServerConfig{Store: graphstore.NewStore()})
-	req := httptest.NewRequest(http.MethodGet, "/v1/events/validate", nil)
-	w := httptest.NewRecorder()
-	srv.Validate(w, req)
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", w.Code)
-	}
 }
 
 func TestEventSearch_BadStartReturns400(t *testing.T) {
@@ -905,8 +854,8 @@ func TestOverview_ErrorRateFromPresamplingCounters(t *testing.T) {
 		Sampler: keepAllSampler(),
 	})
 
-	// Send 4 events through the handler: 3 success + 1 error.
-	makeBody := func(traceID string, success bool, code int, errCode string) string {
+	// Seed 4 events into the graph and pre-sampling counters: 3 success + 1 error.
+	makeEvent := func(traceID string, success bool, code int, errCode string) event.WideEvent {
 		ev := testutil.MakeEvent(
 			testutil.WithTraceID(traceID),
 			testutil.WithService("svc"),
@@ -917,21 +866,20 @@ func TestOverview_ErrorRateFromPresamplingCounters(t *testing.T) {
 			ev.Error = &event.ErrorContext{Code: errCode, Message: "fail"}
 			ev.EventName = "svc.error"
 		}
-		b, _ := json.Marshal(ev)
-		return string(b)
+		return ev
 	}
 
-	for _, body := range []string{
-		makeBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", true, 200, ""),
-		makeBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2", true, 200, ""),
-		makeBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3", true, 200, ""),
-		makeBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa4", false, 500, "ERR_X"),
+	for _, ev := range []event.WideEvent{
+		makeEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", true, 200, ""),
+		makeEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2", true, 200, ""),
+		makeEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3", true, 200, ""),
+		makeEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa4", false, 500, "ERR_X"),
 	} {
-		req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(body))
-		w := httptest.NewRecorder()
-		srv.Events(w, req)
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+		result := srv.builder.BuildResult(ev)
+		srv.store.Merge(result.Graph)
+		srv.counters.Inc(!ev.Outcome.Success)
+		if result.Span != nil {
+			srv.traceStore.Upsert(ev.Request.TraceID, core.ID("request", ev.Request.TraceID), result.Span)
 		}
 	}
 
@@ -957,119 +905,6 @@ func TestOverview_ErrorRateFromPresamplingCounters(t *testing.T) {
 
 func keepAllSampler() *sampler.Sampler {
 	return sampler.New(sampler.Config{HappySampleRatePct: 100})
-}
-
-func TestEvents_MetricsIncremented(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	m := metrics.New(reg)
-
-	srv := NewServer(ServerConfig{
-		Store:   graphstore.NewStore(),
-		Metrics: m,
-		Sampler: keepAllSampler(),
-	})
-
-	body := `{"schema_version":"1.0","event_name":"test.request","timestamp":"` + time.Now().UTC().Format(time.RFC3339) + `","user":{"id":"u1"},"request":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"},"system":{"service":"test","env":"prod"},"outcome":{"success":true,"status_code":200,"kind":"http"},"metrics":{"latency_ms":10}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	srv.Events(w, req)
-
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
-	}
-
-	families, err := reg.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	fm := gatherMap(families)
-
-	if v := counterValue(fm["waylog_events_accepted_total"]); v < 1 {
-		t.Errorf("events_accepted_total = %v, want >= 1", v)
-	}
-	if v := histogramCount(fm["waylog_ingest_latency_seconds"]); v < 1 {
-		t.Errorf("ingest_latency count = %v, want >= 1", v)
-	}
-	if v := histogramCount(fm["waylog_merge_latency_seconds"]); v < 1 {
-		t.Errorf("merge_latency count = %v, want >= 1", v)
-	}
-}
-
-func TestEvents_RejectedMetrics(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	m := metrics.New(reg)
-
-	srv := NewServer(ServerConfig{
-		Store:   graphstore.NewStore(),
-		Metrics: m,
-	})
-
-	// Invalid JSON
-	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader("{bad"))
-	w := httptest.NewRecorder()
-	srv.Events(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-
-	families, err := reg.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	fm := gatherMap(families)
-
-	mf := fm["waylog_events_rejected_total"]
-	if mf == nil {
-		t.Fatal("waylog_events_rejected_total not found")
-	}
-	found := false
-	for _, m := range mf.GetMetric() {
-		for _, lp := range m.GetLabel() {
-			if lp.GetName() == "reason" && lp.GetValue() == "validation" {
-				if m.GetCounter().GetValue() >= 1 {
-					found = true
-				}
-			}
-		}
-	}
-	if !found {
-		t.Error("events_rejected_total{reason=validation} not >= 1")
-	}
-}
-
-func TestEvents_EventlogWriteFailRejects(t *testing.T) {
-	dir := t.TempDir()
-	el, err := eventlog.New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Close the writer so subsequent writes fail.
-	el.Close()
-
-	srv := NewServer(ServerConfig{
-		Store:   graphstore.NewStore(),
-		Sampler: keepAllSampler(),
-	})
-	srv.EventLog = el
-
-	body := `{"schema_version":"1.0","event_name":"test.request","timestamp":"` + time.Now().UTC().Format(time.RFC3339) + `","user":{"id":"u1"},"request":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"},"system":{"service":"test","env":"prod"},"outcome":{"success":true,"status_code":200,"kind":"http"},"metrics":{"latency_ms":10}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	srv.Events(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503 when eventlog write fails, got %d", w.Code)
-	}
-	// Event should NOT have been merged into the store.
-	if srv.AcceptedCount() != 0 {
-		t.Errorf("accepted = %d, want 0 (event should be rejected)", srv.AcceptedCount())
-	}
-	// Unsampled counters should NOT have been incremented.
-	total, errs := srv.counters.Sum(time.Hour)
-	if total != 0 || errs != 0 {
-		t.Errorf("counters = (%d, %d), want (0, 0) after WAL failure", total, errs)
-	}
 }
 
 func TestOverviewTimeseries(t *testing.T) {
@@ -2063,17 +1898,6 @@ func TestBlastRadiusEndpoint_ReturnsResult(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestDashboardExplain_MissingTraceID(t *testing.T) {
-	srv := makeTestServer()
-	req := httptest.NewRequest("GET", "/ui/explain", nil)
-	w := httptest.NewRecorder()
-	srv.DashboardExplain(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
 

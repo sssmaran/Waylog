@@ -38,6 +38,7 @@ export interface Stats {
   eventsDropped: number;
   deliveryFailures: number;
   eventsRejected: number;
+  deprecatedSchemaResponses: number;
 }
 
 export interface Anchor {

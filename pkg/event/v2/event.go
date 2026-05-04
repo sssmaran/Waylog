@@ -34,6 +34,25 @@ func (s Status) IsPriority() bool {
 	}
 }
 
+func (s Status) IsFailed() bool {
+	return s.IsPriority()
+}
+
+type StepStatus = string
+
+const (
+	StepStatusOK    StepStatus = "ok"
+	StepStatusError StepStatus = "error"
+)
+
+type LogLevel = string
+
+const (
+	LogLevelInfo  LogLevel = "info"
+	LogLevelWarn  LogLevel = "warn"
+	LogLevelError LogLevel = "error"
+)
+
 const (
 	CodeTimeout = "WAYLOG_TIMEOUT"
 	CodeAborted = "WAYLOG_ABORTED"
@@ -103,7 +122,12 @@ type ErrorRef struct {
 }
 
 // Validate checks an in-memory Event against the v2.0 JSON Schema at schemaPath.
+// Callers in hot paths should prefer CompileSchema once + ValidateAny per event.
 func Validate(schemaPath string, e *Event) error {
+	sch, err := CompileSchema(schemaPath)
+	if err != nil {
+		return err
+	}
 	raw, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -112,11 +136,15 @@ func Validate(schemaPath string, e *Event) error {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return err
 	}
-	return validateAny(schemaPath, v)
+	return ValidateAny(sch, v)
 }
 
 // ValidateFile reads a JSON file from disk and validates it against schemaPath.
 func ValidateFile(schemaPath, eventPath string) error {
+	sch, err := CompileSchema(schemaPath)
+	if err != nil {
+		return err
+	}
 	raw, err := os.ReadFile(eventPath)
 	if err != nil {
 		return fmt.Errorf("read event: %w", err)
@@ -125,24 +153,31 @@ func ValidateFile(schemaPath, eventPath string) error {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return fmt.Errorf("parse event: %w", err)
 	}
-	return validateAny(schemaPath, v)
+	return ValidateAny(sch, v)
 }
 
-func validateAny(schemaPath string, v any) error {
-	sch, err := compileSchema(schemaPath)
-	if err != nil {
-		return err
-	}
-	return sch.Validate(v)
+// ValidateAny runs a previously-compiled schema against an arbitrary decoded
+// JSON value (typically map[string]any from json.Unmarshal). Validating the
+// raw decoded shape — rather than a typed struct — avoids zero-value masking
+// of missing required fields.
+func ValidateAny(schema *jsonschema.Schema, v any) error {
+	return schema.Validate(v)
 }
 
 const schemaResourceID = "schema"
 
-func compileSchema(schemaPath string) (*jsonschema.Schema, error) {
+// CompileSchema reads and compiles a JSON Schema document at schemaPath.
+// The returned *jsonschema.Schema is safe for concurrent reuse across many
+// ValidateAny calls; callers should compile once at startup.
+func CompileSchema(schemaPath string) (*jsonschema.Schema, error) {
 	raw, err := os.ReadFile(schemaPath)
 	if err != nil {
 		return nil, fmt.Errorf("read schema: %w", err)
 	}
+	return compileFromBytes(raw)
+}
+
+func compileFromBytes(raw []byte) (*jsonschema.Schema, error) {
 	c := jsonschema.NewCompiler()
 	if err := c.AddResource(schemaResourceID, bytes.NewReader(raw)); err != nil {
 		return nil, fmt.Errorf("add schema resource: %w", err)

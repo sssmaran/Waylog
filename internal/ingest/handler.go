@@ -128,11 +128,6 @@ type Server struct {
 	coldStore           coldstore.Store
 	planStore           *PlanStore
 
-	// Dashboard rate limiter: per-IP sliding window
-	rateMu         sync.Mutex
-	rateLimit      map[string][]time.Time
-	rateCheckCount int
-
 	// Replay state — set once during startup, read by /healthz.
 	replayStatus      string // "none", "ok", "failed"
 	replayError       string
@@ -141,7 +136,8 @@ type Server struct {
 
 	// OTLP capability flag — reported by /v1/capabilities. Set via
 	// ServerConfig when the OTLP handler is mounted in main.go.
-	otlpEnabled bool
+	otlpEnabled    bool
+	v2ReadsEnabled bool
 
 	// SSE
 	sseHub               *SSEHub
@@ -206,6 +202,7 @@ type ServerConfig struct {
 	PlanStore           *PlanStore
 	GraphHotWindow      time.Duration
 	OTLPEnabled         bool
+	V2ReadsEnabled      bool
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -244,7 +241,7 @@ func NewServer(cfg ServerConfig) *Server {
 		planStore:           cfg.PlanStore,
 		graphHotWindow:      cfg.GraphHotWindow,
 		otlpEnabled:         cfg.OTLPEnabled,
-		rateLimit:           map[string][]time.Time{},
+		v2ReadsEnabled:      cfg.V2ReadsEnabled,
 		replayStatus:        "none",
 	}
 	if s.sampler == nil {
@@ -366,190 +363,6 @@ func (s *Server) SetReplayResult(err error) {
 	}
 }
 
-// Events handles event ingestion requests.
-func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	if s.metrics != nil {
-		s.metrics.InFlightRequests.Inc()
-		defer s.metrics.InFlightRequests.Dec()
-		defer func() { s.metrics.IngestLatency.Observe(time.Since(start).Seconds()) }()
-	}
-
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
-
-	var ev event.WideEvent
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(&ev); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			if s.metrics != nil {
-				s.metrics.EventsRejected.WithLabelValues("validation").Inc()
-			}
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		slog.Warn("json decode failed", "err", err)
-		if s.metrics != nil {
-			s.metrics.EventsRejected.WithLabelValues("validation").Inc()
-		}
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-
-	// Ensure server-side timestamp sanity
-	if ev.Timestamp.After(time.Now().Add(5 * time.Minute)) {
-		if s.metrics != nil {
-			s.metrics.EventsRejected.WithLabelValues("validation").Inc()
-		}
-		http.Error(w, "timestamp too far in future", http.StatusBadRequest)
-		return
-	}
-
-	if err := ev.Validate(); err != nil {
-		slog.Warn("event validation failed", "err", err)
-		if s.metrics != nil {
-			s.metrics.EventsRejected.WithLabelValues("validation").Inc()
-		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	sampled := s.sampler.ShouldKeep(ev)
-
-	// Write-ahead: the eventlog is the durable source of truth. If it's
-	// configured and the write fails, reject the event so the client retries.
-	// Nothing enters the graph without being logged first.
-	if s.EventLog != nil {
-		if err := s.EventLog.Write(&ev, sampled); err != nil {
-			slog.Error("eventlog write failed", "err", err)
-			if s.metrics != nil {
-				s.metrics.EventlogFails.Inc()
-			}
-			http.Error(w, "event log unavailable", http.StatusServiceUnavailable)
-			return
-		}
-	}
-
-	// Windowed unsampled counters — incremented after successful WAL write
-	// so rejected events (WAL failure → 503) are never counted.
-	s.counters.Inc(!ev.Outcome.Success)
-
-	// Enqueue ALL accepted events to cold store (before sampling gate)
-	// so /v1/events/search returns complete results regardless of sampling.
-	if s.coldWriter != nil {
-		s.coldWriter.Enqueue(ev)
-	}
-
-	// Auto-extract deployment from event (post-WAL, pre-sampling gate).
-	// Uses detached context: event is already durable in WAL, client disconnect
-	// must not abort the upsert.
-	if ev.System.DeploymentID != "" && s.coldStore != nil {
-		upsertCtx, upsertCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		err := s.coldStore.UpsertDeployment(upsertCtx, coldstore.Deployment{
-			ID:        ev.System.DeploymentID,
-			Service:   ev.System.Service,
-			Version:   ev.System.Version,
-			Env:       ev.System.Env,
-			FirstSeen: ev.Timestamp,
-			LastSeen:  ev.Timestamp,
-		})
-		upsertCancel()
-		if err != nil {
-			if !errors.Is(err, coldstore.ErrEnvConflict) && s.metrics != nil {
-				s.metrics.DeployUpsertErrors.Inc()
-			}
-			slog.Warn("deployment auto-extract failed",
-				"deployment_id", ev.System.DeploymentID,
-				"err", err,
-			)
-		} else if s.metrics != nil {
-			s.metrics.DeployUpsertsTotal.Inc()
-		}
-	}
-
-	if !sampled {
-		if s.metrics != nil {
-			s.metrics.EventsRejected.WithLabelValues("sampling").Inc()
-		}
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-
-	slog.Info("event accepted",
-		"trace_id", ev.Request.TraceID,
-		"status_code", ev.Outcome.StatusCode,
-		"success", ev.Outcome.Success,
-		"error_code", errorCode(&ev),
-	)
-
-	// Build graph + trace-store records from event and merge into derived views.
-	mergeStart := time.Now()
-	result := s.builder.BuildResult(ev)
-	if s.store != nil {
-		s.store.Merge(result.Graph)
-	}
-	if s.traceStore != nil && result.Span != nil {
-		traceStart := time.Now()
-		s.traceStore.Upsert(ev.Request.TraceID, core.ID("request", ev.Request.TraceID), result.Span)
-		if s.metrics != nil {
-			s.metrics.TraceUpsertDuration.Observe(time.Since(traceStart).Seconds())
-		}
-	}
-	if s.sseHub != nil {
-		s.sseHub.MarkDirty(TopicOverview, TopicRoutes, TopicTimeseries)
-	}
-	if s.metrics != nil {
-		s.metrics.MergeLatency.Observe(time.Since(mergeStart).Seconds())
-		s.metrics.EventsAccepted.Inc()
-	}
-
-	s.accepted.Add(1)
-	w.WriteHeader(http.StatusAccepted)
-}
-
-// Validate handles POST /v1/events/validate — dry-run validation without ingestion.
-func (s *Server) Validate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
-
-	var ev event.WideEvent
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(&ev); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{"valid": false, "errors": []string{err.Error()}})
-		return
-	}
-
-	if err := ev.Validate(); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{"valid": false, "errors": []string{err.Error()}})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"valid": true})
-}
-
 // Store returns the server's graph store.
 func (s *Server) Store() *store.Store {
 	return s.store
@@ -565,15 +378,15 @@ func (s *Server) Builder() *build.Builder {
 	return s.builder
 }
 
-// Sampler returns the server's sampler so external wiring (e.g., OTLP
-// pipeline construction in main.go) can share the same sampling policy.
+// Sampler returns the server's sampler so external schema-1.x pipeline wiring
+// can share the same sampling policy.
 func (s *Server) Sampler() *sampler.Sampler { return s.sampler }
 
 // SSEHub returns the server's SSE hub for reuse as a Pipeline Notifier.
 func (s *Server) SSEHub() *SSEHub { return s.sseHub }
 
-// Counters returns the shared unsampled windowed counters. Used so the
-// OTLP pipeline contributes to the same windowed error rate as the SDK path.
+// Counters returns the shared unsampled windowed counters for schema-1.x
+// pipeline wiring.
 func (s *Server) Counters() *unsampledCounters { return &s.counters }
 
 // AcceptedPtr returns a pointer to the accepted-events atomic counter so the
@@ -759,7 +572,6 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 			"max_steps_default": s.askMaxStepsDefault,
 			"max_steps_max":     s.askMaxStepsMax,
 		},
-		"ask_endpoint": "/ui/ask",
 		"dashboard": map[string]any{
 			"refresh_interval_sec": s.dashboardRefreshSec,
 		},
@@ -770,6 +582,9 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 		"graph": s.graphUI,
 		"otlp": map[string]any{
 			"http_traces": s.otlpEnabled,
+		},
+		"v2_reads": map[string]any{
+			"enabled": s.v2ReadsEnabled,
 		},
 		"architecture": map[string]any{
 			"flattened": true,
@@ -2309,115 +2124,6 @@ func (s *Server) replayDedupEntry(w http.ResponseWriter, r *http.Request, entry 
 	json.NewEncoder(w).Encode(entry.Data)
 }
 
-// DashboardAsk handles POST /ui/ask — rate-limited ask proxy for the web dashboard.
-func (s *Server) DashboardAsk(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Per-IP rate limit: 5 req/min
-	ip := clientIP(r, s.trustProxy)
-	if !s.checkRateLimit(ip) {
-		w.Header().Set("Retry-After", "60")
-		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
-		return
-	}
-
-	if s.store == nil {
-		http.Error(w, "store not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
-	var req askRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	req.Prompt = strings.TrimSpace(req.Prompt)
-	if req.Prompt == "" {
-		http.Error(w, "prompt is required", http.StatusBadRequest)
-		return
-	}
-
-	var (
-		provider llm.Provider
-		model    string
-		toolMode string
-		err      error
-	)
-	if s.askProvider != nil {
-		provider = s.askProvider
-	} else {
-		provider, model, toolMode, err = s.askProviderFromEnv()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-	}
-
-	registry := s.askRegistry
-	if registry == nil {
-		http.Error(w, "tool registry unavailable", http.StatusInternalServerError)
-		return
-	}
-
-	defs := make([]llm.ToolDefinition, 0, len(registry.List()))
-	for _, t := range registry.List() {
-		defs = append(defs, llm.ToolDefinition{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-		})
-	}
-
-	// Force max_steps=5, abort on error
-	maxSteps := 5
-
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store, ts: s.traceStore}
-	answer, toolRecords, askErr := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
-		return registry.Call(ctx, fs, name, params)
-	}), req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: "abort"})
-
-	steps := make([]askToolStep, 0, len(toolRecords))
-	for i, rec := range toolRecords {
-		step := askToolStep{
-			Index:      i + 1,
-			Tool:       rec.Name,
-			DurationMs: rec.DurationMs,
-			Params:     decodeJSONRaw(rec.Params),
-			Error:      rec.Error,
-		}
-		if rec.Result != nil {
-			step.Result = normalizeJSONValue(rec.Result)
-		}
-		steps = append(steps, step)
-	}
-
-	if askErr != nil {
-		slog.Warn("dashboard ask failed", "err", askErr)
-		http.Error(w, "ask failed: "+askErr.Error(), http.StatusBadGateway)
-		return
-	}
-
-	resp := askResponse{
-		Answer:     answer,
-		Model:      model,
-		ToolMode:   toolMode,
-		DurationMs: time.Since(start).Milliseconds(),
-		Steps:      steps,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
 func clientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
@@ -2431,53 +2137,6 @@ func clientIP(r *http.Request, trustProxy bool) string {
 		return r.RemoteAddr
 	}
 	return host
-}
-
-func (s *Server) checkRateLimit(ip string) bool {
-	now := time.Now()
-	cutoff := now.Add(-time.Minute)
-
-	s.rateMu.Lock()
-	defer s.rateMu.Unlock()
-
-	// Periodic global prune every 100 calls
-	s.rateCheckCount++
-	if s.rateCheckCount%100 == 0 {
-		for k, v := range s.rateLimit {
-			allStale := true
-			for _, ts := range v {
-				if ts.After(cutoff) {
-					allStale = false
-					break
-				}
-			}
-			if allStale {
-				delete(s.rateLimit, k)
-			}
-		}
-	}
-
-	// Hard bound: reject if map still too large after pruning
-	if len(s.rateLimit) > 10000 {
-		return false
-	}
-
-	// Prune stale entries for this IP
-	timestamps := s.rateLimit[ip]
-	valid := timestamps[:0]
-	for _, ts := range timestamps {
-		if ts.After(cutoff) {
-			valid = append(valid, ts)
-		}
-	}
-
-	if len(valid) >= 5 {
-		s.rateLimit[ip] = valid
-		return false
-	}
-
-	s.rateLimit[ip] = append(valid, now)
-	return true
 }
 
 // Topology handles GET /v1/topology — service-to-service edges with failure counts.
@@ -2547,51 +2206,6 @@ func (s *Server) BlastRadius(w http.ResponseWriter, r *http.Request) {
 		meta.DataStatus = "empty"
 	}
 	writeJSON(w, http.StatusOK, result, meta, nil)
-}
-
-// DashboardExplain handles GET /ui/explain?trace_id=X — server-side proxy for explain_request tool.
-// No agent auth required (same pattern as /ui/ask).
-func (s *Server) DashboardExplain(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	meta := APIMeta{RequestID: RequestIDFromContext(r.Context())}
-
-	traceID := r.URL.Query().Get("trace_id")
-	if traceID == "" {
-		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "trace_id is required", false, meta)
-		return
-	}
-
-	if s.askRegistry == nil {
-		respondError(w, r, http.StatusServiceUnavailable, "NOT_AVAILABLE", "tools not available", false, meta)
-		return
-	}
-
-	params, _ := json.Marshal(map[string]string{"trace_id": traceID})
-	result, err := s.askRegistry.Call(r.Context(), s.store, "explain_request", params)
-	if err != nil {
-		var te *tools.ToolError
-		if errors.As(err, &te) {
-			status := http.StatusInternalServerError
-			if te.Code == tools.CodeNotFound {
-				status = http.StatusNotFound
-			} else if te.Code == tools.CodeInvalidParams {
-				status = http.StatusBadRequest
-			}
-			respondError(w, r, status, te.Code, te.Message, te.Retryable, meta)
-			return
-		}
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL", "internal error", true, meta)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
 }
 
 // PlanExecute handles POST /v1/plans/execute — deterministic plan execution.

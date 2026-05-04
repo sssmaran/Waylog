@@ -1,11 +1,11 @@
 package microdemo
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
-	waylog "github.com/sssmaran/WaylogCLI/pkg"
-	"github.com/sssmaran/WaylogCLI/pkg/trace"
+	waylogv2 "github.com/sssmaran/WaylogCLI/pkg/waylog/v2"
 )
 
 type DBHandler struct{}
@@ -16,33 +16,40 @@ func NewDBHandler() *DBHandler {
 
 func (h *DBHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	ctx = waylog.WithUser(ctx, waylog.User{
-		ID:     "demo-user",
-		Tier:   "standard",
-		Region: "us-east-1",
-	})
-	ctx = waylog.WithFlow(ctx, "db")
-
-	traceID := ""
-	if tc, ok := trace.FromContext(ctx); ok {
-		traceID = tc.TraceID
+	reqBody, err := parsePurchaseRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
+	setDemoFields(ctx, "db", reqBody)
 
-	if r.URL.Query().Get("force") == "db_fail" {
-		waylog.Error(ctx, codedError{code: "DB_503", message: "database unavailable"})
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]any{
-			"success":  false,
-			"trace_id": traceID,
-			"error":    "database unavailable",
-		})
+	if reqBody.Scenario == ScenarioSuppressedPayment502 {
+		w.WriteHeader(http.StatusOK)
+		waylogv2.Suppress(ctx)
+		_ = json.NewEncoder(w).Encode(response(ctx, true, reqBody, ""))
 		return
 	}
 
+	if reqBody.Scenario == ScenarioDBMiss {
+		_ = waylogv2.StepVoid(ctx, "cart.lookup", func(ctx context.Context) error {
+			return waylogv2.NewError("CART_NOT_FOUND", waylogv2.WithReason("cart record not found for sku"))
+		})
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, "cart record not found"))
+		return
+	}
+
+	if err := loadCart(ctx); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(response(ctx, false, reqBody, "database unavailable"))
+		return
+	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{
-		"success":  true,
-		"trace_id": traceID,
-		"result":   "db_ok",
+	_ = json.NewEncoder(w).Encode(response(ctx, true, reqBody, ""))
+}
+
+func loadCart(ctx context.Context) error {
+	return waylogv2.StepVoid(ctx, "cart.lookup", func(ctx context.Context) error {
+		return nil
 	})
 }

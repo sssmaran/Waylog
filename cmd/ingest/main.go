@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -21,10 +22,12 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/dashboard"
 	"github.com/sssmaran/WaylogCLI/internal/detect"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
+	eventlogv2 "github.com/sssmaran/WaylogCLI/internal/eventlog/v2"
 	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
+	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	otelhttp "github.com/sssmaran/WaylogCLI/internal/otel"
@@ -120,6 +123,7 @@ func main() {
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
 	graphUI := config.GetenvBool("GRAPH_UI", false)
 	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
+	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", false)
 
 	causalEnabled := config.GetenvBool("CAUSAL_ENABLED", false)
 	causalInterval := config.GetenvDuration("CAUSAL_INTERVAL", 30*time.Second)
@@ -138,6 +142,48 @@ func main() {
 	// Prometheus metrics
 	promReg := prometheus.NewRegistry()
 	m := metrics.New(promReg)
+
+	eventLogSync := config.GetenvBool("EVENT_LOG_SYNC", true)
+	eventLogMaxMB := int64(config.GetenvInt("EVENT_LOG_MAX_FILE_MB", 50))
+	eventLogRetention := config.GetenvDuration("EVENT_LOG_RETENTION", 72*time.Hour)
+	if eventLogRetention <= 0 {
+		slog.Error("EVENT_LOG_RETENTION must be positive", "value", eventLogRetention)
+		os.Exit(1)
+	}
+	eventLogV2Dir := config.Getenv("EVENT_LOG_V2_DIR", defaultEventLogV2Dir(eventLogDir))
+	v2Wal, err := eventlogv2.New(eventLogV2Dir,
+		eventlogv2.WithSync(eventLogSync),
+		eventlogv2.WithMaxBytes(eventLogMaxMB*1024*1024),
+	)
+	if err != nil {
+		slog.Error("eventlog v2 init failed", "err", err)
+		os.Exit(1)
+	}
+	defer v2Wal.Close()
+
+	dedupCapacity := config.GetenvInt("WAYLOG_V2_DEDUP_CAPACITY", ingestv2.DefaultDedupCapacity)
+	v2Dedup := ingestv2.NewDedup(dedupCapacity, m.EventDedupCacheSize)
+	v2Index := ingestv2.NewRecentIndex(m.V2IndexSize)
+	v2Projector := ingestv2.NewProjector(v2Index)
+	v2ReplaySince := time.Now().Add(-graphHotWindow)
+	v2Replay, err := ingestv2.ReplayWAL(eventLogV2Dir, v2Dedup, v2Projector, v2ReplaySince, m)
+	if err != nil {
+		slog.Error("eventlog v2 replay failed", "err", err)
+		os.Exit(1)
+	}
+	m.EventDedupReplayLoaded.Add(float64(v2Replay.DedupLoaded))
+	m.V2ReplayProjected.Add(float64(v2Replay.Projected))
+	slog.Info("eventlog v2 enabled",
+		"dir", eventLogV2Dir,
+		"sync_per_write", eventLogSync,
+		"max_file_mb", eventLogMaxMB,
+		"retention", eventLogRetention,
+		"dedup_capacity", dedupCapacity,
+		"replay_since", v2ReplaySince,
+		"dedup_replay_loaded", v2Replay.DedupLoaded,
+		"replay_projected", v2Replay.Projected,
+		"replay_decode_fails", v2Replay.DecodeFails,
+	)
 
 	// Optional SQLite cold store
 	var coldDB coldstore.ManagedStore
@@ -188,20 +234,14 @@ func main() {
 		PlanStore:           planStore,
 		GraphHotWindow:      graphHotWindow,
 		OTLPEnabled:         otlpEnabled,
+		V2ReadsEnabled:      v2ReadsEnabled,
 	})
 
 	// SSE hub for real-time dashboard updates
 	sseHub := ingest.NewSSEHub(config.GetenvInt("SSE_MAX_CLIENTS", 100))
 	ingestServer.SetSSEHub(sseHub)
 
-	// Optional append-only event log
-	eventLogSync := config.GetenvBool("EVENT_LOG_SYNC", true)
-	eventLogMaxMB := int64(config.GetenvInt("EVENT_LOG_MAX_FILE_MB", 50))
-	eventLogRetention := config.GetenvDuration("EVENT_LOG_RETENTION", 72*time.Hour)
-	if eventLogRetention <= 0 {
-		slog.Error("EVENT_LOG_RETENTION must be positive", "value", eventLogRetention)
-		os.Exit(1)
-	}
+	// Optional append-only v1 event log
 	var el *eventlog.Writer
 	if eventLogDir != "" {
 		var err error
@@ -302,28 +342,23 @@ func main() {
 	mux.Handle("/metrics", m.Handler())
 
 	// Write endpoints.
-	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(ingestServer.Events)))
-	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(ingestServer.Validate)))
+	eventsV2, err := ingestv2.New(ingestv2.Config{
+		Metrics: m,
+		Dedup:   v2Dedup,
+		WAL:     v2Wal,
+		Index:   v2Index,
+		Project: v2Projector,
+	})
+	if err != nil {
+		slog.Error("initialize v2 ingest handler", "err", err)
+		os.Exit(1)
+	}
+	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(eventsV2.Events)))
+	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(eventsV2.Validate)))
 
-	// OTLP/HTTP traces — routed through a dedicated pipeline that reuses the
-	// same store, builder, sampler, WAL, cold store, and SSE hub as the SDK
-	// path so counters and /v1/overview reflect OTLP traffic too.
+	// OTLP/HTTP traces reuse the same schema-2.0 WAL and projector as the SDK path.
 	if otlpEnabled {
-		otlpPipeline := ingest.NewPipeline(ingest.PipelineConfig{
-			Store:      graphStore,
-			TraceStore: traceStore,
-			Builder:    ingestServer.Builder(),
-			Sampler:    ingestServer.Sampler(),
-			EventLog:   ingestServer.EventLog,
-			ColdWriter: coldWriter,
-			ColdStore:  coldDB,
-			Counters:   ingestServer.Counters(),
-			Accepted:   ingestServer.AcceptedPtr(),
-			Metrics:    m,
-			Notifier:   ingestServer.SSEHub(),
-			Validator:  ingest.OTLPValidator,
-		})
-		otlpHandler := otelhttp.NewHandler(otlpPipeline, m, maxBody)
+		otlpHandler := otelhttp.NewHandler(eventsV2, m, maxBody)
 		mux.Handle("/v1/otlp/v1/traces", writeAuth(http.HandlerFunc(otlpHandler.ServeHTTP)))
 		slog.Info("otlp enabled", "endpoint", "/v1/otlp/v1/traces")
 	}
@@ -334,15 +369,30 @@ func main() {
 		return http.HandlerFunc(ingest.CORSWrap(corsOrigin, "GET, OPTIONS",
 			func(w http.ResponseWriter, r *http.Request) { inner.ServeHTTP(w, r) }))
 	}
-	mux.Handle("/v1/traces/story", readCORS(ingestServer.TraceStory))
-	mux.Handle("/v1/traces/recent", readCORS(ingestServer.RecentTraces))
 	mux.Handle("/v1/overview", readCORS(ingestServer.Overview))
-	mux.Handle("/v1/events/search", readCORS(ingestServer.EventSearch))
+	if v2ReadsEnabled {
+		v2Reader := ingestv2.NewReader(v2Index)
+		v2ReadHandler := ingestv2.NewReadHandler(v2Reader, m, graphHotWindow)
+		mux.Handle("/v1/events/search", readCORS(v2ReadHandler.EventSearch))
+		mux.Handle("/v1/errors", readCORS(v2ReadHandler.Errors))
+		mux.Handle("/v1/blast_radius", readCORS(v2ReadHandler.BlastRadius))
+		mux.Handle("/v1/traces/story", readCORS(v2ReadHandler.TraceStory))
+		mux.Handle("/v1/traces/recent", readCORS(v2ReadHandler.RecentTraces))
+		// ServeMux chooses the longest matching pattern, so these prefix handlers
+		// do not capture the concrete routes above or /v1/events/validate.
+		mux.Handle("/v1/events/", readCORS(v2ReadHandler.EventByID))
+		mux.Handle("/v1/traces/", readCORS(v2ReadHandler.TraceByID))
+		slog.Info("v2 read endpoints enabled")
+	} else {
+		mux.Handle("/v1/traces/story", readCORS(ingestServer.TraceStory))
+		mux.Handle("/v1/blast_radius", readCORS(ingestServer.BlastRadius))
+		mux.Handle("/v1/traces/recent", readCORS(ingestServer.RecentTraces))
+		mux.Handle("/v1/events/search", readCORS(ingestServer.EventSearch))
+	}
 	mux.Handle("/v1/overview/timeseries", readCORS(ingestServer.OverviewTimeseries))
 	mux.Handle("/v1/routes", readCORS(ingestServer.Routes))
 	mux.Handle("/v1/capabilities", readCORS(ingestServer.Capabilities))
 	mux.Handle("/v1/topology", readCORS(ingestServer.Topology))
-	mux.Handle("/v1/blast_radius", readCORS(ingestServer.BlastRadius))
 	mux.Handle("/v1/stream/dashboard", readCORS(ingestServer.SSEStream))
 	mux.Handle("/v1/insight", readCORS(ingestServer.Insight))
 
@@ -384,14 +434,6 @@ func main() {
 	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
 	})
-	mux.Handle("/ui/ask", http.HandlerFunc(ingest.CORSWrap(corsOrigin, "POST, OPTIONS",
-		func(w http.ResponseWriter, r *http.Request) {
-			dashGate(http.HandlerFunc(ingestServer.DashboardAsk)).ServeHTTP(w, r)
-		})))
-	mux.Handle("/ui/explain", http.HandlerFunc(ingest.CORSWrap(corsOrigin, "GET, OPTIONS",
-		func(w http.ResponseWriter, r *http.Request) {
-			dashGate(http.HandlerFunc(ingestServer.DashboardExplain)).ServeHTTP(w, r)
-		})))
 
 	handler := ingest.CorrelationIDMiddleware(mux)
 
@@ -452,6 +494,10 @@ func main() {
 				// Enforce retention: prune nodes older than the retention window.
 				cutoff := time.Now().Add(-graphHotWindow)
 				graphStore.PruneOlderThan(cutoff)
+				v2Pruned := v2Index.PruneOlderThan(cutoff)
+				if v2Pruned.Events > 0 {
+					m.V2IndexPruned.Add(float64(v2Pruned.Events))
+				}
 				deletedTraces, _ := traceStore.PruneOlderThan(cutoff)
 				m.GraphPrunedTotal.Inc()
 				if deletedTraces > 0 {
@@ -516,7 +562,7 @@ func main() {
 
 	// ---------------- Event log retention ----------------
 
-	if el != nil {
+	if el != nil || v2Wal != nil {
 		go func() {
 			retTicker := time.NewTicker(5 * time.Minute)
 			defer retTicker.Stop()
@@ -525,11 +571,21 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-retTicker.C:
-					n, err := eventlog.PruneOlderThan(eventLogDir, eventLogRetention, el.ActivePath())
-					if err != nil {
-						slog.Warn("eventlog retention cleanup error", "err", err)
-					} else if n > 0 {
-						slog.Info("eventlog retention cleanup", "deleted", n)
+					if el != nil {
+						n, err := eventlog.PruneOlderThan(eventLogDir, eventLogRetention, el.ActivePath())
+						if err != nil {
+							slog.Warn("eventlog retention cleanup error", "err", err)
+						} else if n > 0 {
+							slog.Info("eventlog retention cleanup", "dir", eventLogDir, "deleted", n)
+						}
+					}
+					if v2Wal != nil {
+						n, err := eventlog.PruneOlderThan(eventLogV2Dir, eventLogRetention, v2Wal.ActivePath())
+						if err != nil {
+							slog.Warn("eventlog v2 retention cleanup error", "err", err)
+						} else if n > 0 {
+							slog.Info("eventlog v2 retention cleanup", "dir", eventLogV2Dir, "deleted", n)
+						}
 					}
 				}
 			}
@@ -703,6 +759,13 @@ func replLoop() {
 		args := strings.Fields(line)
 		cli.Run(args)
 	}
+}
+
+func defaultEventLogV2Dir(eventLogDir string) string {
+	if eventLogDir != "" {
+		return filepath.Join(eventLogDir, "v2")
+	}
+	return "./data/eventlog-v2"
 }
 
 func printHelp() {

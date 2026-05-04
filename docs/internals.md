@@ -4,16 +4,16 @@ Mechanics behind the ingest server. If you're adopting Waylog for a service and 
 
 ## Data flow
 
-1. **SDK / collector** emits a WideEvent over HTTP or Kafka.
-2. **Ingest** validates the event, writes it to the event log, and — only if the log write succeeds — merges it into the hot graph.
-3. **Hot graph** converts events into nodes (request, user, service, error) and edges. Spans are routed to the TraceStore for drill-down.
+1. **SDK / collector** emits a schema-2.0 WideEvent over HTTP, or sends OTLP/HTTP traces that are converted to schema-2.0 events.
+2. **Ingest** validates the event, writes it to the schema-2.0 WAL, and — only if the WAL write succeeds — projects it into recent read models.
+3. **Derived read models** index events by event, trace, service, error family, and downstream call for `recent`, `errors`, `explain`, and `blast`.
 4. **Cold store** (SQLite, optional) persists events, deployments, and causal claims for historical queries.
 5. **Snapshot** writes the graph to disk every tick (default 5s) so restarts replay only the tail.
-6. **Read path** serves the dashboard, TUI, CLI, MCP, and agent APIs from the same graph.
+6. **Read path** serves the dashboard, CLI, MCP, and agent APIs from the same derived data.
 
 ## Durability model
 
-The event log is the **source of truth**. The in-memory graph is a derived, queryable view that can be rebuilt from the log.
+The event log is the **source of truth**. The in-memory graph and schema-2.0 read indexes are derived, queryable views that can be rebuilt from the log.
 
 ### Write path
 
@@ -87,10 +87,9 @@ Custom `prometheus.Registry` per server — no global. All metric calls are guar
 
 ## SDK contract
 
-See [`waylog-sdk-contract.md`](waylog-sdk-contract.md) for the complete WideEvent schema. Key points:
+See [`waylog-sdk-contract.md`](waylog-sdk-contract.md) for the schema-2.0 SDK contract. Key points:
 
-- `schema_version = "1.0"` (the ingest accepts any `1.x`)
-- Event naming: `<service>.request` (success) or `<service>.error` (failure)
+- `schema_version = "2.0"`
 - Trace ID: 32 hex chars. Span ID: 16 hex chars (W3C traceparent)
-- `outcome.status_code` must never be 0
-- If `success=false`, `error.code` must be non-empty
+- Failed events should include `anchor.step`, `anchor.error_code`, and a matching failed step
+- Suppressed events remain queryable only through explicit recent/search/direct trace surfaces and are excluded from errors/blast

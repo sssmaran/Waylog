@@ -5,14 +5,11 @@ import (
 	"compress/gzip"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/graph/build"
-	"github.com/sssmaran/WaylogCLI/internal/graph/store"
-	"github.com/sssmaran/WaylogCLI/internal/ingest"
-	"github.com/sssmaran/WaylogCLI/internal/sampler"
-	"github.com/sssmaran/WaylogCLI/pkg/event"
+	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -20,17 +17,25 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func testPipeline() *ingest.Pipeline {
-	return ingest.NewPipeline(ingest.PipelineConfig{
-		Store:     store.NewStore(),
-		Builder:   build.NewBuilder(),
-		Sampler:   sampler.New(sampler.Config{HappySampleRatePct: 100}),
-		Validator: ingest.OTLPValidator,
+func testV2Ingest(t *testing.T) *ingestv2.Handler {
+	t.Helper()
+	h, err := ingestv2.New(ingestv2.Config{
+		Dedup: ingestv2.NewDedup(ingestv2.DefaultDedupCapacity, nil),
+		WAL:   &fakeWAL{},
+		Index: ingestv2.NewRecentIndex(nil),
 	})
+	if err != nil {
+		t.Fatalf("ingestv2.New: %v", err)
+	}
+	return h
 }
 
 func strAttr(k, v string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}}
+}
+
+func intAttr(k string, v int64) *commonpb.KeyValue {
+	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: v}}}
 }
 
 func validOTLPRequest() *coltracepb.ExportTraceServiceRequest {
@@ -47,7 +52,12 @@ func validOTLPRequest() *coltracepb.ExportTraceServiceRequest {
 					Name:              "test-op",
 					StartTimeUnixNano: 1000000000,
 					EndTimeUnixNano:   1050000000,
-					Status:            &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
+					Attributes: []*commonpb.KeyValue{
+						strAttr("http.request.method", "GET"),
+						strAttr("http.route", "/test"),
+						intAttr("http.response.status_code", 200),
+					},
+					Status: &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
 				}},
 			}},
 		}},
@@ -68,7 +78,7 @@ func postOTLP(handler http.Handler, body []byte, contentType, contentEncoding st
 }
 
 func TestHandler_HappyPath(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20)
 	body, _ := proto.Marshal(validOTLPRequest())
 	rr := postOTLP(h, body, "application/x-protobuf", "")
 	if rr.Code != 200 {
@@ -84,7 +94,7 @@ func TestHandler_HappyPath(t *testing.T) {
 }
 
 func TestHandler_GzipCompressed(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20)
 	body, _ := proto.Marshal(validOTLPRequest())
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
@@ -97,7 +107,7 @@ func TestHandler_GzipCompressed(t *testing.T) {
 }
 
 func TestHandler_ContentTypeWithParams(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20)
 	body, _ := proto.Marshal(validOTLPRequest())
 	rr := postOTLP(h, body, "application/x-protobuf; charset=utf-8", "")
 	if rr.Code != 200 {
@@ -106,7 +116,7 @@ func TestHandler_ContentTypeWithParams(t *testing.T) {
 }
 
 func TestHandler_WrongContentType(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20)
 	rr := postOTLP(h, []byte("{}"), "application/json", "")
 	if rr.Code != http.StatusUnsupportedMediaType {
 		t.Errorf("status = %d, want 415", rr.Code)
@@ -114,7 +124,7 @@ func TestHandler_WrongContentType(t *testing.T) {
 }
 
 func TestHandler_UnsupportedContentEncoding(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20)
 	body, _ := proto.Marshal(validOTLPRequest())
 	rr := postOTLP(h, body, "application/x-protobuf", "deflate")
 	if rr.Code != http.StatusUnsupportedMediaType {
@@ -123,7 +133,7 @@ func TestHandler_UnsupportedContentEncoding(t *testing.T) {
 }
 
 func TestHandler_WrongMethod(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20)
 	req := httptest.NewRequest(http.MethodGet, "/v1/otlp/v1/traces", nil)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -133,7 +143,7 @@ func TestHandler_WrongMethod(t *testing.T) {
 }
 
 func TestHandler_MalformedProtobuf(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20)
 	rr := postOTLP(h, []byte("not protobuf"), "application/x-protobuf", "")
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rr.Code)
@@ -141,7 +151,7 @@ func TestHandler_MalformedProtobuf(t *testing.T) {
 }
 
 func TestHandler_BodyTooLarge(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 10)
+	h := NewHandler(testV2Ingest(t), nil, 10)
 	body, _ := proto.Marshal(validOTLPRequest())
 	rr := postOTLP(h, body, "application/x-protobuf", "")
 	if rr.Code != http.StatusRequestEntityTooLarge {
@@ -150,7 +160,7 @@ func TestHandler_BodyTooLarge(t *testing.T) {
 }
 
 func TestHandler_EmptyRequest(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20)
 	body, _ := proto.Marshal(&coltracepb.ExportTraceServiceRequest{})
 	rr := postOTLP(h, body, "application/x-protobuf", "")
 	if rr.Code != 200 {
@@ -158,8 +168,17 @@ func TestHandler_EmptyRequest(t *testing.T) {
 	}
 }
 
+func TestHandler_MissingV2IngestReturns503ForConvertedSpans(t *testing.T) {
+	h := NewHandler(nil, nil, 1<<20)
+	body, _ := proto.Marshal(validOTLPRequest())
+	rr := postOTLP(h, body, "application/x-protobuf", "")
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rr.Code)
+	}
+}
+
 func TestHandler_FutureTimestampDropped(t *testing.T) {
-	h := NewHandler(testPipeline(), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20)
 	req := validOTLPRequest()
 	// Stamp the span 10 minutes in the future — should be dropped with
 	// partial_success rather than skewing recent traces / overview.
@@ -188,6 +207,14 @@ func TestHandler_FutureTimestampDropped(t *testing.T) {
 	}
 }
 
-// Silence unused import; event types are used by helper functions in other
-// tests within this package in the future.
-var _ = event.SchemaVersion
+type fakeWAL struct {
+	mu     sync.Mutex
+	writes [][]byte
+}
+
+func (w *fakeWAL) WriteRaw(line []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writes = append(w.writes, append([]byte(nil), line...))
+	return nil
+}

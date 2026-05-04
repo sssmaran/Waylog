@@ -6,7 +6,7 @@ Reference for configuring the Waylog ingest server and SDK. All variables are re
 
 | Variable | Purpose |
 |---|---|
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Required for CLI LLM-backed Ask flows |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Required when server-side Ask/tool flows use Gemini |
 
 ## Auth
 
@@ -35,6 +35,16 @@ Scoped keys. See the Auth section of the [README](../README.md).
 | `IDLE_TIMEOUT` | `120s` | HTTP idle timeout |
 | `CORS_ORIGIN` | `*` | Allowed CORS origin for read APIs |
 
+## CLI
+
+The `waylog` CLI calls the running ingest server's v2 read APIs. The server must run with `WAYLOG_V2_READS=true`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `INGEST_ADDR` | `http://localhost:8080` | CLI target ingest base URL. Bare `host:port` values are normalized to `http://host:port` |
+| `WAYLOG_READ_KEY` | — | Read-scope API key sent as `Authorization: Bearer <key>` |
+| `WAYLOG_CLI_TIMEOUT` | `5s` | Per-request CLI HTTP timeout |
+
 ## Storage and persistence
 
 | Variable | Default | Purpose |
@@ -42,9 +52,12 @@ Scoped keys. See the Auth section of the [README](../README.md).
 | `SNAPSHOT_PATH` | `./data/graph_snapshot.json` | Graph snapshot location |
 | `SQLITE_PATH` | — | SQLite cold store path (optional; disabled if empty) |
 | `EVENT_LOG_DIR` | — | Append-only event log directory (disabled if empty) |
+| `EVENT_LOG_V2_DIR` | `${EVENT_LOG_DIR}/v2` or `./data/eventlog-v2` | Raw schema-2.0 WAL directory for `/v1/events` |
 | `EVENT_LOG_SYNC` | `true` | Per-write fsync. Set `false` for dev/load testing |
 | `EVENT_LOG_MAX_FILE_MB` | `50` | Rotation size. `0` disables rotation |
 | `EVENT_LOG_RETENTION` | `72h` | Event log retention. Must be positive |
+| `WAYLOG_V2_DEDUP_CAPACITY` | `65536` | Recent schema-2.0 `event_id` dedupe cache capacity |
+| `GRAPH_HOT_WINDOW` | `GRAPH_RETENTION` or `24h` | Recent in-memory graph/index retention window and max v2 read window |
 | `GRAPH_RETENTION` | `24h` | Hot graph retention. Nodes older than this are pruned every snapshot tick |
 
 See [Internals](internals.md) for the full durability model.
@@ -60,11 +73,27 @@ See [Internals](internals.md) for the full durability model.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GRAPH_UI` | `false` | Enable Graph topology tab in dashboard and `/v1/topology` endpoint |
+| `GRAPH_UI` | `false` | Enable optional graph topology endpoint `/v1/graph/topology` |
+| `WAYLOG_V2_READS` | `false` | Route v2 read endpoints to the schema-2.0 recent index |
 | `CAUSAL_ENABLED` | `false` | Enable shadow-mode causal inference |
 | `CAUSAL_INTERVAL` | `30s` | Causal inference ticker interval |
 | `HAPPY_SAMPLE_RATE_PCT` | `2` | Success-event sampling rate. Set `100` in dev profiles |
 | `MCP_STDIO` | — | Set to `1` to run MCP stdio server instead of REPL |
+
+## Schema-2.0 reference demo
+
+`make demo` sets these automatically for the detached local showcase. `make micro-demo` uses the same services in foreground debug mode.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `INGEST_URL` | `http://localhost:8080` | SDK delivery base URL used by the demo services |
+| `INGEST_ADDR` | `127.0.0.1:8080` in `make demo`; `:8080` in `make micro-demo` | Ingest server listen address |
+| `WAYLOG_WRITE_KEY` | `demo` | Write-scope key used by the demo SDK emitters |
+| `WAYLOG_READ_KEY` | `demo` | Read-scope key used by the printed CLI commands |
+| `DASHBOARD_AUTH` | `off` in `make demo`; `key:demo` in `make micro-demo` | Dashboard auth mode for the local demo surface |
+| `WAYLOG_V2_READS` | `true` in demo scripts | Enables v2 read APIs required by `waylog errors/explain/blast` |
+
+The embedded `/ui` dashboard is a schema-2.0 triage surface and renders a setup message unless `WAYLOG_V2_READS=true`.
 
 ## Dashboard links
 
@@ -79,7 +108,7 @@ Optional external links rendered in the dashboard header. Hidden if empty.
 
 Pre-baked `.env` files live in [`deploy/`](../deploy):
 
-- `deploy/dev.env` — 100% sampling, graph UI on, causal on, verbose logging
+- `deploy/dev.env` — 100% sampling, optional graph endpoints on, causal on, verbose logging
 - `deploy/prod.env` — 5% happy-path sampling, graph UI off by default, tighter retention
 
 Use with `make docker-dev` or `make docker-prod`.

@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stop Kafka (if running via compose)
-docker compose -f docker-compose.kafka.yml down -v >/dev/null 2>&1 || true
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 
-# Kill any demo processes still running
-pkill -f "go run ./cmd/checkout" >/dev/null 2>&1 || true
-pkill -f "go run ./cmd/bridge" >/dev/null 2>&1 || true
-pkill -f "go run ./cmd/ingest" >/dev/null 2>&1 || true
-pkill -f "curl -s http://localhost:9090/checkout" >/dev/null 2>&1 || true
+STATE_DIR="${WAYLOG_DEMO_STATE_DIR:-./data/demo-state}"
+
+if [[ -d "$STATE_DIR" ]]; then
+  for pid_file in "$STATE_DIR"/*.pid; do
+    [[ -e "$pid_file" ]] || continue
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ -n "${pid:-}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$pid_file"
+  done
+fi
+
+./scripts/micro-demo-stop.sh >/dev/null 2>&1 || true
+
+echo "Waylog demo stopped."

@@ -42,9 +42,10 @@ type Client struct {
 	queue  *queue
 	closed sync.Once
 
-	dropped  atomic.Int64
-	failures atomic.Int64
-	rejected atomic.Int64
+	dropped    atomic.Int64
+	failures   atomic.Int64
+	rejected   atomic.Int64
+	deprecated atomic.Int64
 }
 
 func New(cfg Config) (*Client, error) {
@@ -162,6 +163,7 @@ func (c *Client) submitSingle(ev *eventv2.Event) bool {
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		before := c.Rejected()
+		c.recordResponseHeaders(resp.Header)
 		c.recordEnvelope(respBody)
 		return c.Rejected() == before
 	}
@@ -192,6 +194,19 @@ func (c *Client) Rejected() int64 {
 		return 0
 	}
 	return c.rejected.Load()
+}
+
+func (c *Client) Deprecated() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.deprecated.Load()
+}
+
+func (c *Client) recordResponseHeaders(h http.Header) {
+	if h.Get("Deprecation") != "" || h.Get("Sunset") != "" {
+		c.deprecated.Add(1)
+	}
 }
 
 func (c *Client) recordDrop(n int) {

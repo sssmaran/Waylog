@@ -56,7 +56,7 @@ func TestV11BridgeSchemaAcceptsCurrentV1Event(t *testing.T) {
 		t.Fatalf("v1.1 schema missing at %s: %v", schemaPath, err)
 	}
 
-	sch, err := compileSchema(schemaPath)
+	sch, err := CompileSchema(schemaPath)
 	if err != nil {
 		t.Fatalf("compile v1.1 schema: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestV11BridgeSchemaRejectsMissingTraceID(t *testing.T) {
 	}
 
 	schemaPath, _ := filepath.Abs("../../../docs/schema/v1.1.json")
-	sch, err := compileSchema(schemaPath)
+	sch, err := CompileSchema(schemaPath)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestV20SchemaRequiresStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sch, err := compileSchema(schemaPath)
+	sch, err := CompileSchema(schemaPath)
 	if err != nil {
 		t.Fatalf("compile v2.0 schema: %v", err)
 	}

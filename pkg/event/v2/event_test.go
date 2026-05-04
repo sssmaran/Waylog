@@ -45,3 +45,17 @@ func TestStatusConstants(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusIsFailed(t *testing.T) {
+	failed := []Status{StatusError, StatusTimeout, StatusPartial, StatusAborted}
+	for _, status := range failed {
+		if !status.IsFailed() {
+			t.Fatalf("%s should be failed", status)
+		}
+	}
+	for _, status := range []Status{StatusOK, StatusSuppressed} {
+		if status.IsFailed() {
+			t.Fatalf("%s should not be failed", status)
+		}
+	}
+}

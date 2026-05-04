@@ -77,6 +77,18 @@ describe("v2 transport", () => {
     expect(t.rejectedCount()).toBe(1);
   });
 
+  it("counts deprecation headers even when the 2xx body is empty", async () => {
+    const t = new Transport({
+      service: "checkout",
+      env: "test",
+      ingestUrl: "http://x",
+      fetch: vi.fn(async () => new Response("", { status: 202, headers: { Deprecation: "true" } })) as unknown as typeof fetch,
+    });
+    t.submit(event("e1", "ok"));
+    await t.shutdown();
+    expect(t.deprecatedCount()).toBe(1);
+  });
+
   it("retries transient failures", async () => {
     let calls = 0;
     const t = new Transport({

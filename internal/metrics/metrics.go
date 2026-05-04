@@ -13,11 +13,28 @@ var defaultBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 
 type Metrics struct {
 	reg *prometheus.Registry
 
-	IngestLatency  prometheus.Histogram
-	MergeLatency   prometheus.Histogram
-	EventsAccepted prometheus.Counter
-	EventsRejected *prometheus.CounterVec
-	EventlogFails  prometheus.Counter
+	IngestLatency          prometheus.Histogram
+	IngestBatchSize        prometheus.Histogram
+	MergeLatency           prometheus.Histogram
+	EventsAccepted         prometheus.Counter
+	EventsDuplicate        prometheus.Counter
+	EventsRejected         *prometheus.CounterVec
+	EventlogFails          prometheus.Counter
+	EventDedupCacheSize    prometheus.Gauge
+	EventDedupReplayLoaded prometheus.Counter
+	V2EventsProjected      prometheus.Counter
+	V2IndexSize            *prometheus.GaugeVec
+	V2IndexPruned          prometheus.Counter
+	V2ReplayProjected      prometheus.Counter
+	V2ReplaySkipped        *prometheus.CounterVec
+	V2TypedDecodeFailed    prometheus.Counter
+	V2ProjectPanic         prometheus.Counter
+	V2ValidateLatency      prometheus.Histogram
+	V2WALWriteLatency      prometheus.Histogram
+	V2ProjectLatency       prometheus.Histogram
+	V2ReadLatency          *prometheus.HistogramVec
+	V2ReadEmpty            *prometheus.CounterVec
+	V2ReadNotFound         *prometheus.CounterVec
 
 	ReplayLagSeconds    prometheus.Gauge
 	ReplayInProgress    prometheus.Gauge
@@ -73,8 +90,13 @@ func New(reg *prometheus.Registry) *Metrics {
 
 	m.IngestLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "waylog_ingest_latency_seconds",
-		Help:    "Full Events handler latency.",
+		Help:    "Full Events handler latency, including parsing and response encoding. For v2 sub-step latency see waylog_v2_*_latency_seconds.",
 		Buckets: defaultBuckets,
+	})
+	m.IngestBatchSize = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_ingest_batch_size",
+		Help:    "Number of events parsed from each ingest request.",
+		Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256},
 	})
 	m.MergeLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "waylog_merge_latency_seconds",
@@ -83,16 +105,98 @@ func New(reg *prometheus.Registry) *Metrics {
 	})
 	m.EventsAccepted = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_events_accepted_total",
-		Help: "Events merged into graph.",
+		Help: "Events accepted after each ingest path's durability contract is satisfied.",
+	})
+	m.EventsDuplicate = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_events_duplicate_total",
+		Help: "Schema-2.0 ingest events skipped because event_id was already recently durably written.",
 	})
 	m.EventsRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "waylog_events_rejected_total",
 		Help: "Dropped events.",
 	}, []string{"reason"})
+	for _, reason := range []string{"validation", "sampling"} {
+		m.EventsRejected.WithLabelValues(reason).Add(0)
+	}
 	m.EventlogFails = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_eventlog_write_failures_total",
 		Help: "Failed eventlog writes.",
 	})
+	m.EventDedupCacheSize = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "waylog_event_dedup_cache_size",
+		Help: "Current schema-2.0 event_id dedup cache size.",
+	})
+	m.EventDedupReplayLoaded = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_event_dedup_replay_loaded_total",
+		Help: "Schema-2.0 event IDs loaded into dedup cache during WAL replay.",
+	})
+	m.V2EventsProjected = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_v2_events_projected_total",
+		Help: "Schema-2.0 events projected into the recent index from live ingest.",
+	})
+	m.V2IndexSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "waylog_v2_index_size",
+		Help: "Current schema-2.0 recent index size by kind.",
+	}, []string{"kind"})
+	for _, kind := range []string{"event", "trace", "service", "error", "call"} {
+		m.V2IndexSize.WithLabelValues(kind).Set(0)
+	}
+	m.V2IndexPruned = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_v2_index_pruned_total",
+		Help: "Schema-2.0 events pruned from the recent index.",
+	})
+	m.V2ReplayProjected = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_v2_replay_projected_total",
+		Help: "Schema-2.0 events projected into the recent index during WAL replay.",
+	})
+	m.V2ReplaySkipped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_v2_replay_skipped_total",
+		Help: "Schema-2.0 WAL replay lines skipped by reason.",
+	}, []string{"reason"})
+	for _, reason := range []string{"malformed_json", "schema_invalid", "typed_decode", "stale"} {
+		m.V2ReplaySkipped.WithLabelValues(reason).Add(0)
+	}
+	m.V2TypedDecodeFailed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_v2_typed_decode_failed_total",
+		Help: "Schema-2.0 events that passed raw schema validation but failed typed decode.",
+	})
+	m.V2ProjectPanic = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_v2_project_panic_total",
+		Help: "Recovered panics while projecting schema-2.0 events into the recent index.",
+	})
+	m.V2ValidateLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_v2_validate_latency_seconds",
+		Help:    "Schema-2.0 per-event raw validation and typed decode latency.",
+		Buckets: defaultBuckets,
+	})
+	m.V2WALWriteLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_v2_wal_write_latency_seconds",
+		Help:    "Schema-2.0 per-event WAL write latency.",
+		Buckets: defaultBuckets,
+	})
+	m.V2ProjectLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_v2_project_latency_seconds",
+		Help:    "Schema-2.0 per-event recent-index projection latency.",
+		Buckets: defaultBuckets,
+	})
+	m.V2ReadLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "waylog_v2_read_latency_seconds",
+		Help:    "Schema-2.0 read endpoint latency by handler.",
+		Buckets: defaultBuckets,
+	}, []string{"handler"})
+	m.V2ReadEmpty = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_v2_read_empty_total",
+		Help: "Schema-2.0 read endpoint 200 responses with empty result arrays by handler.",
+	}, []string{"handler"})
+	m.V2ReadNotFound = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_v2_read_not_found_total",
+		Help: "Schema-2.0 read endpoint 404 responses by handler.",
+	}, []string{"handler"})
+	for _, handler := range []string{"event_get", "event_search", "trace_get", "traces_recent", "trace_story", "errors", "blast_radius"} {
+		m.V2ReadLatency.WithLabelValues(handler).Observe(0)
+		m.V2ReadEmpty.WithLabelValues(handler).Add(0)
+		m.V2ReadNotFound.WithLabelValues(handler).Add(0)
+	}
 
 	m.ReplayLagSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "waylog_replay_lag_seconds",
@@ -270,8 +374,14 @@ func New(reg *prometheus.Registry) *Metrics {
 	})
 
 	reg.MustRegister(
-		m.IngestLatency, m.MergeLatency,
-		m.EventsAccepted, m.EventsRejected, m.EventlogFails,
+		m.IngestLatency, m.IngestBatchSize, m.MergeLatency,
+		m.EventsAccepted, m.EventsDuplicate, m.EventsRejected, m.EventlogFails,
+		m.EventDedupCacheSize, m.EventDedupReplayLoaded,
+		m.V2EventsProjected, m.V2IndexSize, m.V2IndexPruned, m.V2ReplayProjected,
+		m.V2ReplaySkipped,
+		m.V2TypedDecodeFailed, m.V2ProjectPanic,
+		m.V2ValidateLatency, m.V2WALWriteLatency, m.V2ProjectLatency,
+		m.V2ReadLatency, m.V2ReadEmpty, m.V2ReadNotFound,
 		m.ReplayLagSeconds, m.ReplayInProgress, m.ReplayFailuresTotal, m.Ready,
 		m.InFlightRequests,
 		m.SnapshotLastSuccess, m.SnapshotLastError,

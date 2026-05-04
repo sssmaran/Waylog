@@ -81,6 +81,7 @@ class SDK {
     eventsDropped: 0,
     deliveryFailures: 0,
     eventsRejected: 0,
+    deprecatedSchemaResponses: 0,
   };
 
   constructor(cfg: RequiredConfig) {
@@ -128,6 +129,7 @@ export function stats(): Stats {
     eventsDropped: sdk.stats.eventsDropped + (sdk.transport?.droppedCount() ?? 0),
     deliveryFailures: sdk.stats.deliveryFailures + (sdk.transport?.failureCount() ?? 0),
     eventsRejected: sdk.stats.eventsRejected + (sdk.transport?.rejectedCount() ?? 0),
+    deprecatedSchemaResponses: sdk.stats.deprecatedSchemaResponses + (sdk.transport?.deprecatedCount() ?? 0),
   };
 }
 
@@ -633,5 +635,6 @@ function emptyStats(): Stats {
     eventsDropped: 0,
     deliveryFailures: 0,
     eventsRejected: 0,
+    deprecatedSchemaResponses: 0,
   };
 }

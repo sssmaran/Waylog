@@ -1,34 +1,48 @@
 openapi: 3.0.3
 info:
   title: Waylog API
+  version: 0.2.0
   description: |
     HTTP API for the Waylog ingest server.
 
-    Write endpoints require authentication via API key.
-    Read endpoints are open (protected by CORS only).
+    The primary product path is schema-2.0 ingest plus the v2 read APIs used by
+    the operator CLI and embedded dashboard: recent traces, error families,
+    trace story, blast radius, event search, and direct trace/event lookup.
 
-    ## Metrics Contract v2
-
-    **Breaking changes from v1:**
-
-    - `waylog_dedup_cache_hits_total` renamed to `waylog_dedup_replay_total`
-      (now counts both cache-hit replays and inflight-wait replays).
-
-    **`waylog_ask_requests_total` error_code label bounded set:**
-    `INVALID_PARAMS`, `NOT_FOUND`, `EMPTY_RESULT`, `TIMEOUT`, `INTERNAL`,
-    `GRAPH_EMPTY`, `PROVIDER_ERROR`, `PAYLOAD_TOO_LARGE`, `CONFLICT`,
-    `SERVICE_UNAVAILABLE`, `METHOD_NOT_ALLOWED`, `UNAUTHORIZED`, `none`.
-    Any unlisted error code is normalized to `INTERNAL`.
-  version: 0.2.0
+    Write endpoints require write-scope auth when auth is configured. Read
+    endpoints require read-scope auth when read keys are configured.
 servers:
   - url: /
+
+tags:
+  - name: Ingest
+    description: Schema-2.0 event ingest and validation.
+  - name: OTLP
+    description: OTLP/HTTP trace ingest converted into schema-2.0 events.
+  - name: Events
+    description: Direct event lookup and search.
+  - name: Traces
+    description: Trace lookup, recent trace summaries, and trace stories.
+  - name: Triage
+    description: Error-family rollups and blast-radius analysis.
+  - name: Capabilities
+    description: Runtime capability discovery for CLI and UI clients.
+  - name: Operational
+    description: Secondary operational graph, tool, and agent endpoints.
+  - name: Health
+    description: Process health, readiness, and metrics endpoints.
+
 paths:
   /v1/events:
     post:
-      summary: Ingest a WideEvent
+      tags: [Ingest]
+      operationId: ingestEvents
+      summary: Ingest schema-2.0 WideEvents
       description: |
-        Accepts a WideEvent JSON payload, validates it against the schema,
-        and ingests it into the graph.
+        Accepts one schema-2.0 WideEvent as JSON or a batch as NDJSON. Accepted
+        events are written to the schema-2.0 WAL before projection into the v2
+        read models. Per-event schema failures are returned inside the ingest
+        envelope; infrastructure failures return 503.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -38,337 +52,387 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/WideEvent'
+          application/x-ndjson:
+            schema:
+              type: string
+              description: Newline-delimited schema-2.0 WideEvent JSON objects.
       responses:
-        '202':
-          description: Accepted
+        '200':
+          description: Ingest envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestEnvelope'
         '400':
-          description: Invalid request (validation failure)
+          description: Malformed body, missing content type, unsupported encoding, or invalid cursor/body framing
           content:
-            application/problem+json:
+            application/json:
               schema:
-                $ref: '#/components/schemas/Problem'
+                $ref: '#/components/schemas/IngestEnvelope'
         '401':
-          description: Unauthorized (missing or invalid API key)
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
+          description: Unauthorized
         '405':
           description: Method Not Allowed
         '413':
-          description: Request Entity Too Large
+          description: Body or batch too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestEnvelope'
+        '415':
+          description: Unsupported content type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestEnvelope'
         '503':
-          description: Event log unavailable
+          description: Durability or projection unavailable
 
   /v1/events/validate:
     post:
-      summary: Dry-run event validation
+      tags: [Ingest]
+      operationId: validateEvents
+      summary: Dry-run schema-2.0 event validation
       description: |
-        Validates a WideEvent payload without ingesting it.
-        Returns {valid: true} on success or {valid: false, errors: [...]} on failure.
+        Parses and validates JSON or NDJSON with the same contract as
+        /v1/events, but does not dedupe, write to WAL, or project events.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/WideEvent'
+          application/x-ndjson:
+            schema:
+              type: string
       responses:
         '200':
-          description: Valid event
+          description: Dry-run ingest envelope
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  valid:
-                    type: boolean
-                    example: true
+                $ref: '#/components/schemas/IngestEnvelope'
         '400':
-          description: Invalid event
+          description: Malformed body or unsupported encoding
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  valid:
-                    type: boolean
-                    example: false
-                  errors:
-                    type: array
-                    items:
-                      type: string
+                $ref: '#/components/schemas/IngestEnvelope'
         '405':
           description: Method Not Allowed
         '413':
-          description: Request Entity Too Large
-
-  /v1/events/search:
-    get:
-      summary: Search raw event log
-      description: |
-        Searches the append-only event log by filters.
-        At least one filter is required. Uses SQLite cold store when SQLITE_PATH
-        is configured, with JSONL event log fallback.
-      parameters:
-        - in: query
-          name: trace_id
-          schema:
-            type: string
-        - in: query
-          name: user_id
-          schema:
-            type: string
-        - in: query
-          name: service
-          schema:
-            type: string
-        - in: query
-          name: error_code
-          schema:
-            type: string
-        - in: query
-          name: start
-          schema:
-            type: string
-            format: date-time
-          description: RFC3339 start time filter
-        - in: query
-          name: end
-          schema:
-            type: string
-            format: date-time
-          description: RFC3339 end time filter
-        - in: query
-          name: limit
-          schema:
-            type: integer
-            default: 50
-            maximum: 200
-        - in: query
-          name: cursor
-          schema:
-            type: string
-          description: Opaque cursor for keyset pagination (from previous response next_cursor)
-      responses:
-        '200':
-          description: Search results
+          description: Body or batch too large
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  events:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/WideEvent'
-                  count:
-                    type: integer
-                  total_count:
-                    type: integer
-                    description: Total matching events (across all pages)
-                  next_cursor:
-                    type: string
-                    description: Cursor for next page (absent on last page)
-                  data_source:
-                    type: string
-                    enum: [sqlite, event_log_fallback]
+                $ref: '#/components/schemas/IngestEnvelope'
+        '415':
+          description: Unsupported content type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestEnvelope'
+
+  /v1/otlp/v1/traces:
+    post:
+      tags: [OTLP]
+      operationId: ingestOTLPTraces
+      summary: Ingest OTLP/HTTP traces
+      description: |
+        Accepts OTLP ExportTraceServiceRequest protobuf bodies. HTTP spans are
+        converted into schema-2.0 WideEvents and ingested through the same WAL
+        and projector as SDK events. Unsupported spans and validation rejects
+        are reported via OTLP partial_success.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-protobuf:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: OTLP ExportTraceServiceResponse protobuf
+          content:
+            application/x-protobuf:
+              schema:
+                type: string
+                format: binary
         '400':
-          description: No filters provided or invalid time format
+          description: Invalid gzip body, unreadable body, or invalid protobuf
+        '401':
+          description: Unauthorized
+        '405':
+          description: Method Not Allowed
+        '413':
+          description: Request body too large
+        '415':
+          description: Unsupported content type or content encoding
         '503':
-          description: Event log not configured
+          description: v2 ingest infrastructure unavailable
+
+  /v1/events/{event_id}:
+    get:
+      tags: [Events]
+      operationId: getEvent
+      summary: Get one schema-2.0 event
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/EventID'
+      responses:
+        '200':
+          description: Event wrapper
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventGetResponse'
+        '400':
+          $ref: '#/components/responses/ReadBadRequest'
+        '404':
+          $ref: '#/components/responses/ReadNotFound'
+
+  /v1/events/search:
+    get:
+      tags: [Events]
+      operationId: searchEvents
+      summary: Search schema-2.0 events
+      description: Searches the v2 recent index with cursor pagination.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Service'
+        - $ref: '#/components/parameters/StatusCSV'
+        - $ref: '#/components/parameters/ErrorCode'
+        - $ref: '#/components/parameters/TraceIDQuery'
+        - $ref: '#/components/parameters/Since'
+        - $ref: '#/components/parameters/Until'
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/IncludeSuppressed'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Event search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventSearchResponse'
+        '400':
+          $ref: '#/components/responses/ReadBadRequest'
+
+  /v1/traces/{trace_id}:
+    get:
+      tags: [Traces]
+      operationId: getTraceEvents
+      summary: Get all events for a trace
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TraceIDPath'
+      responses:
+        '200':
+          description: Trace events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceGetResponse'
+        '400':
+          $ref: '#/components/responses/ReadBadRequest'
+        '404':
+          $ref: '#/components/responses/ReadNotFound'
+
+  /v1/traces/recent:
+    get:
+      tags: [Traces]
+      operationId: listRecentTraces
+      summary: Recent traces
+      description: Returns recent trace summaries ordered by time descending with cursor pagination.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Service'
+        - $ref: '#/components/parameters/StatusCSV'
+        - $ref: '#/components/parameters/Since'
+        - $ref: '#/components/parameters/Until'
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/IncludeSuppressed'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Recent trace summaries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecentTracesResponse'
+        '400':
+          $ref: '#/components/responses/ReadBadRequest'
 
   /v1/traces/story:
     get:
-      summary: Trace story narrative
-      description: |
-        Returns a human-readable story narrative for the given trace,
-        built from the graph's span and service data.
+      tags: [Traces]
+      operationId: getTraceStory
+      summary: Explain a trace as an execution story
+      description: Returns the service, route, first failing step, contributing path, logs, downstream calls, and linkage mode for one trace or event.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       parameters:
         - in: query
-          name: trace_id
-          required: true
+          name: event_id
           schema:
             type: string
-          description: The trace ID to build a story for
+          description: Event ID to explain. Exactly one of event_id or trace_id is required.
+        - in: query
+          name: trace_id
+          schema:
+            type: string
+          description: Trace ID to explain. Exactly one of event_id or trace_id is required.
       responses:
         '200':
           description: Trace story
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  story:
-                    type: object
-                    properties:
-                      trace_id:
-                        type: string
-                      chain:
-                        type: array
-                        items:
-                          type: object
-                      success:
-                        type: boolean
-                      first_fail_hop:
-                        type: object
-                        nullable: true
-                      hop_count:
-                        type: integer
-                  context:
-                    type: object
+                $ref: '#/components/schemas/StoryResponse'
         '400':
-          description: Missing trace_id query parameter
+          $ref: '#/components/responses/ReadBadRequest'
         '404':
-          description: Trace not found
-        '503':
-          description: Service Unavailable (graph not ready)
+          $ref: '#/components/responses/ReadNotFound'
 
-  /v1/traces/recent:
+  /v1/errors:
     get:
-      summary: Recent traces
-      description: Returns recent trace summaries ordered by time descending with cursor pagination.
+      tags: [Triage]
+      operationId: listErrorFamilies
+      summary: Error family rollups
+      description: Groups failures by service, step, and error code. Suppressed events are excluded from error rollups.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       parameters:
-        - in: query
-          name: limit
-          required: false
-          schema:
-            type: integer
-            default: 20
-            minimum: 1
-            maximum: 100
-          description: Maximum number of traces to return (default 20, max 100)
-        - in: query
-          name: failures_only
-          required: false
-          schema:
-            type: boolean
-            default: false
-          description: When true, returns only failed requests.
-        - in: query
-          name: cursor
-          required: false
-          schema:
-            type: string
-          description: Opaque cursor for pagination (from previous response next_cursor)
+        - $ref: '#/components/parameters/Service'
+        - $ref: '#/components/parameters/ErrorStatusCSV'
+        - $ref: '#/components/parameters/Since'
+        - $ref: '#/components/parameters/Until'
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
       responses:
         '200':
-          description: Paginated trace summaries
+          description: Error family rows
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  traces:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        trace_id:
-                          type: string
-                        service:
-                          type: string
-                        failure_service:
-                          type: string
-                          description: First failing span service for the request when available.
-                        success:
-                          type: boolean
-                        status_code:
-                          type: integer
-                        latency_ms:
-                          type: integer
-                        event_name:
-                          type: string
-                        timestamp:
-                          type: string
-                          format: date-time
-                  total_count:
-                    type: integer
-                    description: Total matching traces in graph
-                  next_cursor:
-                    type: string
-                    description: Cursor for next page (absent on last page)
-        '503':
-          description: Service Unavailable (graph not ready)
+                $ref: '#/components/schemas/ErrorsResponse'
+        '400':
+          $ref: '#/components/responses/ReadBadRequest'
+
+  /v1/blast_radius:
+    get:
+      tags: [Triage]
+      operationId: getBlastRadius
+      summary: Blast radius for an error family or error code
+      description: |
+        Computes affected requests, users, and services for one error family or
+        for all families with the same error code.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Service'
+        - in: query
+          name: step
+          schema:
+            type: string
+          description: Step name. Use with service and error_code for single-family mode.
+        - $ref: '#/components/parameters/ErrorCode'
+        - in: query
+          name: error_family
+          schema:
+            type: string
+          description: Display form service:step:error_code.
+        - $ref: '#/components/parameters/Since'
+        - $ref: '#/components/parameters/Until'
+        - $ref: '#/components/parameters/Window'
+      responses:
+        '200':
+          description: Blast radius
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlastRadiusResponse'
+        '400':
+          $ref: '#/components/responses/ReadBadRequest'
+
+  /v1/capabilities:
+    get:
+      tags: [Capabilities]
+      operationId: getCapabilities
+      summary: Runtime capabilities
+      description: Returns runtime feature/configuration flags used by CLI and UI clients.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Capabilities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResponse'
+        '405':
+          description: Method Not Allowed
 
   /v1/overview:
     get:
-      summary: System overview
-      description: |
-        Returns an overview of the system including request counts,
-        error rates, top errors, and recent traces within the given window.
+      tags: [Operational]
+      operationId: getOperationalOverview
+      summary: Operational overview
+      description: Secondary graph-derived overview endpoint retained for operational tooling.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       parameters:
-        - in: query
-          name: window
-          schema:
-            type: string
-            default: 5m
-          description: Time window as a Go duration string (e.g. "5m", "1h")
-        - in: query
-          name: limit
-          schema:
-            type: integer
-            default: 20
-            maximum: 100
-          description: Max recent traces to include
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/Limit'
       responses:
         '200':
-          description: System overview stats
+          description: Overview object
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  window:
-                    type: string
-                  total_requests:
-                    type: integer
-                  total_failures:
-                    type: integer
-                  error_rate:
-                    type: number
-                  p50:
-                    type: integer
-                  p95:
-                    type: integer
-                  p99:
-                    type: integer
-                  sampled:
-                    type: boolean
-                  top_errors:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        code:
-                          type: string
-                        count:
-                          type: integer
-                  recent_traces:
-                    type: array
-                    items:
-                      type: object
+                additionalProperties: true
         '503':
-          description: Service Unavailable (graph not ready)
+          description: Graph store unavailable
 
   /v1/overview/timeseries:
     get:
-      summary: Overview timeseries
-      description: |
-        Returns bucketed timeseries data for request counts, error rates,
-        status class breakdown, and latency percentiles.
+      tags: [Operational]
+      operationId: getOperationalTimeseries
+      summary: Operational overview timeseries
+      description: Secondary graph-derived timeseries endpoint retained for operational tooling.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       parameters:
-        - in: query
-          name: window
-          schema:
-            type: string
-            default: 1h
-          description: Time window (max 24h)
+        - $ref: '#/components/parameters/Window'
         - in: query
           name: step
           schema:
             type: string
             default: 5m
-          description: Bucket size (min 15s, max 15m). window/step must be <= 1440.
       responses:
         '200':
           description: Timeseries buckets
@@ -376,69 +440,22 @@ paths:
             application/json:
               schema:
                 type: object
-                properties:
-                  sampled:
-                    type: boolean
-                  buckets:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        start:
-                          type: string
-                          format: date-time
-                        end:
-                          type: string
-                          format: date-time
-                        total:
-                          type: integer
-                        failures:
-                          type: integer
-                        error_rate:
-                          type: number
-                        status_2xx:
-                          type: integer
-                        status_4xx:
-                          type: integer
-                        status_5xx:
-                          type: integer
-                        p50:
-                          type: integer
-                        p95:
-                          type: integer
-                        p99:
-                          type: integer
+                additionalProperties: true
         '400':
-          description: Invalid parameters or guardrail violation
-        '503':
-          description: Service Unavailable (graph not ready)
+          $ref: '#/components/responses/ReadBadRequest'
 
   /v1/routes:
     get:
-      summary: Route statistics
-      description: |
-        Returns per-route statistics grouped by (service, event_name),
-        sorted by invocation count descending.
+      tags: [Operational]
+      operationId: listOperationalRoutes
+      summary: Operational route statistics
+      description: Secondary graph-derived route statistics endpoint retained for operational tooling.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       parameters:
-        - in: query
-          name: window
-          schema:
-            type: string
-            default: 5m
-          description: Time window
-        - in: query
-          name: limit
-          schema:
-            type: integer
-            default: 20
-            maximum: 100
-        - in: query
-          name: failures_only
-          required: false
-          schema:
-            type: boolean
-            default: false
-          description: When true, includes only failed requests.
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/Limit'
       responses:
         '200':
           description: Route statistics
@@ -446,166 +463,41 @@ paths:
             application/json:
               schema:
                 type: object
-                properties:
-                  sampled:
-                    type: boolean
-                  routes:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        service:
-                          type: string
-                        method:
-                          type: string
-                          description: HTTP method (e.g. GET, POST). UNKNOWN for legacy events.
-                        route_template:
-                          type: string
-                          description: Route template (e.g. /users/{id}). Falls back to event_name for legacy events.
-                        route:
-                          type: string
-                          description: "Deprecated: backward-compat alias for route_template."
-                          deprecated: true
-                        invocations:
-                          type: integer
-                        errors:
-                          type: integer
-                        error_rate:
-                          type: number
-                        status_2xx:
-                          type: integer
-                        status_4xx:
-                          type: integer
-                        status_5xx:
-                          type: integer
-                        p75_latency_ms:
-                          type: integer
-        '503':
-          description: Service Unavailable (graph not ready)
-
-  /v1/capabilities:
-    get:
-      summary: Runtime capabilities
-      description: |
-        Returns runtime feature/configuration flags used by UI clients.
-      responses:
-        '200':
-          description: Capabilities
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ask:
-                    type: object
-                    properties:
-                      enabled:
-                        type: boolean
-                      model:
-                        type: string
-                      tool_mode:
-                        type: string
-                      max_steps_default:
-                        type: integer
-                      max_steps_max:
-                        type: integer
-                  dashboard:
-                    type: object
-                    properties:
-                      refresh_interval_sec:
-                        type: integer
-                  links:
-                    type: object
-                    properties:
-                      prometheus:
-                        type: string
-                        description: Prometheus UI URL (empty if not configured)
-                      grafana:
-                        type: string
-                        description: Grafana UI URL (empty if not configured)
-                  graph:
-                    type: boolean
-                    description: Whether graph topology UI is enabled (GRAPH_UI=1)
-        '405':
-          description: Method Not Allowed
+                additionalProperties: true
 
   /v1/graph/topology:
     get:
-      summary: Service topology graph
-      description: |
-        Returns Cytoscape.js-formatted service topology with aggregate stats.
-        Only available when GRAPH_UI=1.
+      tags: [Operational]
+      operationId: getServiceTopology
+      summary: Optional service topology graph
+      description: Returns Cytoscape.js-formatted service topology when GRAPH_UI=1.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       parameters:
-        - in: query
-          name: window
-          schema:
-            type: string
-            default: 1h
-          description: Time window (max 24h)
+        - $ref: '#/components/parameters/Window'
       responses:
         '200':
-          description: Topology graph
+          description: Cytoscape topology graph
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  nodes:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        data:
-                          type: object
-                          properties:
-                            id:
-                              type: string
-                            label:
-                              type: string
-                            type:
-                              type: string
-                              enum: [service]
-                            invocations:
-                              type: integer
-                              description: Number of span invocations handled by this service
-                            errors:
-                              type: integer
-                            error_rate:
-                              type: number
-                  edges:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        data:
-                          type: object
-                          properties:
-                            source:
-                              type: string
-                            target:
-                              type: string
-                            label:
-                              type: string
-                            count:
-                              type: integer
+                additionalProperties: true
         '405':
           description: Method Not Allowed
         '503':
-          description: Service Unavailable (graph not ready)
+          description: Graph store unavailable or GRAPH_UI disabled
 
   /v1/ask:
     post:
-      summary: Ask Waylog (LLM + tools)
-      description: |
-        Executes a natural-language query against the live graph using the
-        configured Gemini provider and built-in graph tools.
-
-        **Idempotency:** Supports `Idempotency-Key` header for at-most-once
-        execution semantics. Scope is post-validation only — body parse errors
-        (400) and payload-too-large (413) are stateless and re-evaluated on
-        every request regardless of the key. Idempotency covers the execution
-        path: provider calls, tool calls, and result assembly.
-      x-idempotency-scope: post-validation
+      tags: [Operational]
+      operationId: askWaylog
+      summary: Ask Waylog
+      description: Executes a natural-language query through the configured LLM provider and tool registry.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       requestBody:
         required: true
         content:
@@ -616,12 +508,10 @@ paths:
               properties:
                 prompt:
                   type: string
-                  description: Natural-language question.
                 max_steps:
                   type: integer
                   minimum: 1
                   maximum: 8
-                  description: Optional tool-call iteration cap.
       responses:
         '200':
           description: Query answered
@@ -629,78 +519,31 @@ paths:
             application/json:
               schema:
                 type: object
-                properties:
-                  answer:
-                    type: string
-                  model:
-                    type: string
-                  tool_mode:
-                    type: string
-                  duration_ms:
-                    type: integer
-                  steps:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        index:
-                          type: integer
-                        tool:
-                          type: string
-                        duration_ms:
-                          type: integer
-                        params:
-                          description: Tool arguments as structured JSON.
-                          oneOf:
-                            - type: object
-                              additionalProperties: true
-                            - type: array
-                              items: {}
-                            - type: string
-                            - type: number
-                            - type: boolean
-                        result:
-                          description: Tool output as structured JSON when available.
-                          oneOf:
-                            - type: object
-                              additionalProperties: true
-                            - type: array
-                              items: {}
-                            - type: string
-                            - type: number
-                            - type: boolean
-                        error:
-                          type: string
+                additionalProperties: true
         '400':
-          description: Invalid request body or missing prompt
-        '405':
-          description: Method Not Allowed
+          description: Invalid request
         '413':
           description: Request Entity Too Large
         '502':
-          description: Upstream/provider/tool execution failure
+          description: Provider or tool execution failure
         '503':
-          description: LLM provider not configured or store unavailable
+          description: LLM provider unavailable
 
   /v1/tools/{name}:
     post:
+      tags: [Operational]
+      operationId: executeTool
       summary: Direct tool call
-      description: |
-        Executes a registered graph tool by name with the given parameters.
-        Returns the tool's structured output directly.
-
-        **Idempotency:** Supports `Idempotency-Key` header for at-most-once
-        execution semantics. Scope is post-validation only — body parse errors
-        (400) and payload-too-large (413) are stateless and re-evaluated on
-        every request regardless of the key.
-      x-idempotency-scope: post-validation
+      description: Executes a registered structured tool by name.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       parameters:
         - name: name
           in: path
           required: true
           schema:
             type: string
-          description: Tool name (e.g. graph_stats, explain_request)
       requestBody:
         required: false
         content:
@@ -708,36 +551,28 @@ paths:
             schema:
               type: object
               additionalProperties: true
-              description: Tool-specific parameters as a JSON object. Empty object or empty body for tools with no required params.
       responses:
         '200':
-          description: Tool executed successfully
+          description: Tool output
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: true
-                description: Tool-specific structured output. All tools include schema_version field.
         '400':
-          description: Invalid params or missing tool name
+          description: Invalid params
         '404':
           description: Tool not found
-        '405':
-          description: Method Not Allowed
-        '413':
-          description: Request Entity Too Large
         '422':
-          description: Tool execution failed (invalid params, empty result)
+          description: Tool execution failed
         '503':
-          description: Store not configured
+          description: Store unavailable
 
   /healthz:
     get:
-      summary: Health check (JSON)
-      description: |
-        Always returns HTTP 200 with a JSON status summary.
-        Shows "ok" or "degraded" status, uptime, store size, and replay state.
-        Use /readyz for traffic gating, /livez for liveness.
+      tags: [Health]
+      operationId: getHealth
+      summary: Health check
       responses:
         '200':
           description: Health status
@@ -745,47 +580,13 @@ paths:
             application/json:
               schema:
                 type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [ok, degraded]
-                  uptime:
-                    type: string
-                  ready:
-                    type: boolean
-                  store:
-                    type: object
-                    properties:
-                      configured:
-                        type: boolean
-                      nodes:
-                        type: integer
-                      edges:
-                        type: integer
-                  event_log:
-                    type: object
-                    properties:
-                      enabled:
-                        type: boolean
-                  replay:
-                    type: object
-                    properties:
-                      status:
-                        type: string
-                        enum: [none, ok, failed]
-                      error:
-                        type: string
-                      last_attempt:
-                        type: string
-                        format: date-time
-                      last_success:
-                        type: string
-                        format: date-time
+                additionalProperties: true
 
   /livez:
     get:
+      tags: [Health]
+      operationId: getLiveness
       summary: Liveness probe
-      description: Always returns 200 if the process is alive. Use for K8s livenessProbe.
       responses:
         '200':
           description: OK
@@ -797,10 +598,9 @@ paths:
 
   /readyz:
     get:
+      tags: [Health]
+      operationId: getReadiness
       summary: Readiness probe
-      description: |
-        Returns 200 when the server is ready to accept traffic, 503 otherwise.
-        Use for K8s readinessProbe.
       responses:
         '200':
           description: Ready
@@ -814,11 +614,12 @@ paths:
 
   /metrics:
     get:
+      tags: [Health]
+      operationId: getMetrics
       summary: Prometheus metrics
-      description: Returns all waylog_* metrics in Prometheus text exposition format.
       responses:
         '200':
-          description: Prometheus metrics
+          description: Prometheus exposition
           content:
             text/plain:
               schema:
@@ -830,142 +631,717 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-      description: API key passed via the X-API-Key header
+      description: API key supplied via X-API-Key. Required for write or read operations when the corresponding server key is configured.
     BearerAuth:
       type: http
       scheme: bearer
-      description: API key passed via the Authorization header as a Bearer token
+      description: Bearer token alternative to X-API-Key. Required for write or read operations when the corresponding server key is configured.
+
+  parameters:
+    EventID:
+      name: event_id
+      in: path
+      required: true
+      schema:
+        type: string
+    TraceIDPath:
+      name: trace_id
+      in: path
+      required: true
+      schema:
+        type: string
+    TraceIDQuery:
+      name: trace_id
+      in: query
+      schema:
+        type: string
+    Service:
+      name: service
+      in: query
+      schema:
+        type: string
+    StatusCSV:
+      name: status
+      in: query
+      schema:
+        type: string
+      description: "Comma-separated status list: ok,error,timeout,partial,aborted,suppressed."
+    ErrorStatusCSV:
+      name: status
+      in: query
+      schema:
+        type: string
+      description: "Comma-separated failure status list: error,timeout,partial,aborted."
+    ErrorCode:
+      name: error_code
+      in: query
+      schema:
+        type: string
+    Since:
+      name: since
+      in: query
+      schema:
+        type: string
+        format: date-time
+    Until:
+      name: until
+      in: query
+      schema:
+        type: string
+        format: date-time
+    Window:
+      name: window
+      in: query
+      schema:
+        type: string
+      description: Go duration string such as 15m or 1h.
+    IncludeSuppressed:
+      name: include_suppressed
+      in: query
+      schema:
+        type: boolean
+        default: false
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+      description: Opaque cursor from next_cursor.
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+
+  responses:
+    ReadBadRequest:
+      description: Invalid query or request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ReadError'
+    ReadNotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ReadError'
+
   schemas:
-    Problem:
+    IngestEnvelope:
       type: object
+      required: [accepted, duplicate, rejected, deprecations]
+      example:
+        accepted: 1
+        duplicate: 0
+        rejected: []
+        deprecations: {}
       properties:
-        type:
-          type: string
-        title:
-          type: string
-        status:
+        accepted:
           type: integer
+        duplicate:
+          type: integer
+        rejected:
+          type: array
+          items:
+            $ref: '#/components/schemas/RejectedEvent'
+        deprecations:
+          type: object
+          additionalProperties:
+            type: integer
+
+    RejectedEvent:
+      type: object
+      required: [index, reason]
+      properties:
+        index:
+          type: integer
+        event_id:
+          type: string
+        reason:
+          type: string
+          enum:
+            - invalid_json
+            - schema_validation_failed
+            - bridge_not_implemented
+            - batch_oversize
+            - body_oversize
+            - unsupported_content_type
+            - unsupported_content_encoding
+            - invalid_body
+            - durability_unavailable
         detail:
           type: string
-        instance:
-          type: string
+
+    ReadError:
+      type: object
+      required: [error]
+      example:
+        error:
+          code: invalid_query
+          message: window must be a valid duration
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            detail:
+              type: string
+
     WideEvent:
       type: object
-      required:
-        - schema_version
-        - event_name
-        - timestamp
-        - user
-        - request
-        - system
-        - outcome
-        - metrics
+      required: [schema_version, event_id, ts_start, ts_end, kind, service, env, trace_id, status]
+      example:
+        schema_version: "2.0"
+        event_id: 11111111-1111-4111-8111-111111111111
+        ts_start: "2026-05-04T10:00:00Z"
+        ts_end: "2026-05-04T10:00:00.042Z"
+        duration_ms: 42
+        kind: http
+        service: checkout
+        env: demo
+        version: local
+        trace_id: 7f3a2b9c000000000000000000000001
+        span_id: 0000000000000001
+        status: error
+        anchor:
+          step: payment.charge
+          error_code: PMT_502
+          kind: downstream
+        steps:
+          - name: cart.validate
+            start_ms: 0
+            duration_ms: 1
+            status: ok
+          - name: db.load_cart
+            start_ms: 1
+            duration_ms: 4
+            status: ok
+            downstream:
+              service: db
+              endpoint: /cart/X1
+              kind: http
+          - name: inventory.reserve
+            start_ms: 5
+            duration_ms: 2
+            status: ok
+          - name: payment.charge
+            start_ms: 7
+            duration_ms: 35
+            status: error
+            downstream:
+              service: payment
+              endpoint: /charge
+              kind: http
+            error:
+              code: PMT_502
+              reason: upstream gateway 5xx
+        logs:
+          - ts_offset_ms: 5
+            level: info
+            msg: inventory reserved
+          - ts_offset_ms: 41
+            level: error
+            msg: upstream gateway 5xx
+        fields:
+          demo:
+            scenario: payment_502
+            sku: X1
+        errors:
+          - code: PMT_502
+            reason: upstream gateway 5xx
       properties:
         schema_version:
           type: string
-          description: 'Schema version. Ingest accepts any 1.x. Current emitted: 1.1.'
-          example: "1.1"
-        event_name:
+          enum: ["2.0"]
+        event_id:
           type: string
-        timestamp:
+          format: uuid
+        ts_start:
           type: string
           format: date-time
-        user:
-          $ref: '#/components/schemas/UserContext'
-        request:
-          $ref: '#/components/schemas/RequestContext'
-        system:
-          $ref: '#/components/schemas/SystemContext'
-        outcome:
-          $ref: '#/components/schemas/OutcomeContext'
-        error:
-          $ref: '#/components/schemas/ErrorContext'
-        metrics:
-          $ref: '#/components/schemas/MetricsContext'
-        parent_request_id:
+        ts_end:
           type: string
-          description: 'Schema 1.1. Optional cross-trace link to a parent request (e.g. job → triggering HTTP request). Display-only.'
-        metadata:
+          format: date-time
+        duration_ms:
+          type: integer
+          minimum: 0
+        kind:
+          type: string
+          enum: [http]
+        service:
+          type: string
+        env:
+          type: string
+        version:
+          type: string
+        trace_id:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+        span_id:
+          type: string
+          pattern: '^([0-9a-f]{16})?$'
+        parent_span_id:
+          type: string
+          pattern: '^([0-9a-f]{16})?$'
+        status:
+          type: string
+          enum: [ok, error, timeout, partial, aborted, suppressed]
+        anchor:
+          $ref: '#/components/schemas/Anchor'
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventStep'
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventLog'
+        fields:
           type: object
           additionalProperties: true
-          description: 'Schema 1.1. Free-form application-specific attributes. Display-only.'
-        retry:
-          $ref: '#/components/schemas/RetryContext'
-    UserContext:
-      type: object
-      required: [id, tier, region, vip]
-      properties:
-        id: { type: string }
-        tier: { type: string }
-        region: { type: string }
-        vip: { type: boolean }
-    RequestContext:
-      type: object
-      required: [trace_id, flow, feature_flags]
-      properties:
-        trace_id: { type: string }
-        span_id: { type: string }
-        parent_span_id: { type: string }
-        http_method:
-          type: string
-          description: HTTP method (GET, POST, etc.). Optional; auto-captured by SDK middleware.
-        route_template:
-          type: string
-          description: Route template (e.g. /users/{id}). Optional; auto-captured from mux pattern or explicitly set.
-        flow: { type: string }
-        feature_flags:
+        errors:
           type: array
-          items: { type: string }
-        correlation_id:
+          items:
+            $ref: '#/components/schemas/ErrorRef'
+
+    Anchor:
+      type: object
+      required: [step, error_code]
+      properties:
+        step:
           type: string
-          description: Optional correlation ID for cross-request tracing.
-        attempt:
+        error_code:
+          type: string
+        kind:
+          type: string
+
+    EventStep:
+      type: object
+      required: [name, start_ms, duration_ms, status]
+      properties:
+        name:
+          type: string
+        span_id:
+          type: string
+        start_ms:
           type: integer
-          description: Optional retry attempt number.
-        transport_kind:
+          minimum: 0
+        duration_ms:
+          type: integer
+          minimum: 0
+        status:
           type: string
-          description: Optional transport type indicator (e.g. "http", "kafka").
-    SystemContext:
+          enum: [ok, error]
+        downstream:
+          $ref: '#/components/schemas/Downstream'
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            reason:
+              type: string
+            cause:
+              type: string
+
+    Downstream:
       type: object
-      required: [service, version, deployment_id, env]
       properties:
-        service: { type: string }
-        version: { type: string }
-        deployment_id: { type: string }
-        env: { type: string }
-        downstream_service: { type: string }
-        caller_service: { type: string }
-    OutcomeContext:
-      type: object
-      required: [success, status_code, kind]
-      properties:
-        success: { type: boolean }
-        status_code: { type: integer }
-        kind: { type: string }
-    ErrorContext:
-      type: object
-      required: [code, message]
-      properties:
-        code: { type: string }
-        path:
+        service:
           type: string
-          description: 'Schema 1.1. Runbook URL or doc path operators can open to triage this code.'
-        message: { type: string }
+        endpoint:
+          type: string
+        kind:
+          type: string
+
+    EventLog:
+      type: object
+      required: [ts_offset_ms, level, msg]
+      properties:
+        ts_offset_ms:
+          type: integer
+          minimum: 0
+        level:
+          type: string
+          enum: [info, warn, error]
+        msg:
+          type: string
+        fields:
+          type: object
+          additionalProperties: true
+
+    ErrorRef:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
         reason:
           type: string
-          description: 'Schema 1.1. Short operator-facing explanation of the failure.'
-    RetryContext:
+
+    EventGetResponse:
       type: object
-      description: 'Schema 1.1. Retry metadata. Attempt number lives in request.attempt; together they read "attempt N of M". Validation: retry.of must be 0 or >= request.attempt.'
+      required: [event]
       properties:
-        of:
-          type: integer
-          description: 'Total expected attempts. 0 means unknown total.'
-        previous_attempt_id:
+        event:
+          $ref: '#/components/schemas/WideEvent'
+
+    EventSearchResponse:
+      type: object
+      required: [events]
+      example:
+        events:
+          - schema_version: "2.0"
+            event_id: 11111111-1111-4111-8111-111111111111
+            ts_start: "2026-05-04T10:00:00Z"
+            ts_end: "2026-05-04T10:00:00.042Z"
+            kind: http
+            service: checkout
+            env: demo
+            trace_id: 7f3a2b9c000000000000000000000001
+            status: error
+        next_cursor: cur_01
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/WideEvent'
+        next_cursor:
           type: string
-          description: 'Span/request ID of the previous attempt for sibling linking.'
-    MetricsContext:
+          nullable: true
+
+    TraceGetResponse:
       type: object
-      required: [latency_ms]
+      required: [trace_id, events, linkage]
+      example:
+        trace_id: 7f3a2b9c000000000000000000000001
+        events: []
+        linkage: causal
       properties:
-        latency_ms: { type: integer }
+        trace_id:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/WideEvent'
+        linkage:
+          type: string
+          enum: [causal, timestamp_fallback, direct]
+
+    TraceSummary:
+      type: object
+      required: [trace_id, ts_start, duration_ms, services, status]
+      properties:
+        trace_id:
+          type: string
+        ts_start:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        services:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [ok, error, timeout, partial, aborted, suppressed]
+        anchor_summary:
+          type: string
+          nullable: true
+
+    RecentTracesResponse:
+      type: object
+      required: [traces]
+      example:
+        traces:
+          - trace_id: 7f3a2b9c000000000000000000000001
+            ts_start: "2026-05-04T10:00:00Z"
+            duration_ms: 42
+            services: [api-gateway, checkout, payment]
+            status: error
+            anchor_summary: checkout:payment.charge:PMT_502
+        next_cursor: cur_01
+      properties:
+        traces:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraceSummary'
+        next_cursor:
+          type: string
+          nullable: true
+
+    StoryResponse:
+      type: object
+      required: [trace_id, service, route, status, path, logs, downstream, linkage]
+      example:
+        trace_id: 7f3a2b9c000000000000000000000001
+        service: checkout
+        route: /purchase
+        status: error
+        anchor:
+          step: payment.charge
+          error_code: PMT_502
+        path:
+          - name: cart.validate
+            start_ms: 0
+            duration_ms: 1
+            status: ok
+          - name: db.load_cart
+            start_ms: 1
+            duration_ms: 4
+            status: ok
+          - name: inventory.reserve
+            start_ms: 5
+            duration_ms: 2
+            status: ok
+          - name: payment.charge
+            start_ms: 7
+            duration_ms: 35
+            status: error
+            error_code: PMT_502
+            error_msg: upstream gateway 5xx
+        logs:
+          - ts_offset_ms: 5
+            level: info
+            msg: inventory reserved
+            step: inventory.reserve
+          - ts_offset_ms: 41
+            level: error
+            msg: upstream gateway 5xx
+            step: payment.charge
+        downstream:
+          - step: db.load_cart
+            service: db
+            endpoint: /cart/X1
+          - step: payment.charge
+            service: payment
+            endpoint: /charge
+        linkage: causal
+      properties:
+        trace_id:
+          type: string
+        service:
+          type: string
+        route:
+          type: string
+        status:
+          type: string
+          enum: [ok, error, timeout, partial, aborted, suppressed]
+        anchor:
+          $ref: '#/components/schemas/StoryAnchor'
+        path:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoryStep'
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoryLog'
+        downstream:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoryDownstream'
+        linkage:
+          type: string
+          enum: [causal, timestamp_fallback, direct]
+
+    StoryAnchor:
+      type: object
+      required: [step, error_code]
+      properties:
+        step:
+          type: string
+        error_code:
+          type: string
+
+    StoryStep:
+      type: object
+      required: [name, start_ms, duration_ms, status]
+      properties:
+        name:
+          type: string
+        start_ms:
+          type: integer
+        duration_ms:
+          type: integer
+        status:
+          type: string
+          enum: [ok, error]
+        error_code:
+          type: string
+        error_msg:
+          type: string
+
+    StoryLog:
+      type: object
+      required: [ts_offset_ms, level, msg]
+      properties:
+        ts_offset_ms:
+          type: integer
+        level:
+          type: string
+          enum: [info, warn, error]
+        msg:
+          type: string
+        step:
+          type: string
+
+    StoryDownstream:
+      type: object
+      required: [step, service]
+      properties:
+        step:
+          type: string
+        service:
+          type: string
+        endpoint:
+          type: string
+
+    ErrorFamily:
+      type: object
+      required: [service, step, error_code]
+      properties:
+        service:
+          type: string
+        step:
+          type: string
+        error_code:
+          type: string
+
+    ErrorRow:
+      type: object
+      required: [error_family, count, affected_traces, sample_traces]
+      properties:
+        error_family:
+          $ref: '#/components/schemas/ErrorFamily'
+        count:
+          type: integer
+        affected_users:
+          type: integer
+          nullable: true
+        affected_traces:
+          type: integer
+        sample_traces:
+          type: array
+          items:
+            type: string
+
+    ErrorsResponse:
+      type: object
+      required: [window, rows]
+      example:
+        window: 15m
+        rows:
+          - error_family:
+              service: checkout
+              step: payment.charge
+              error_code: PMT_502
+            count: 12
+            affected_users: 8
+            affected_traces: 12
+            sample_traces:
+              - 7f3a2b9c000000000000000000000001
+        next_cursor: null
+      properties:
+        window:
+          type: string
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ErrorRow'
+        next_cursor:
+          type: string
+          nullable: true
+
+    BlastKey:
+      type: object
+      required: [error_code]
+      properties:
+        service:
+          type: string
+        step:
+          type: string
+        error_code:
+          type: string
+
+    BlastRadiusResponse:
+      type: object
+      required: [key, view_mode, window, affected_requests, affected_services, top_services, sample_traces]
+      example:
+        key:
+          service: checkout
+          step: payment.charge
+          error_code: PMT_502
+        view_mode: single_family
+        window: 15m
+        affected_requests: 12
+        affected_users: 8
+        affected_services: 3
+        top_services: [api-gateway, checkout, payment]
+        sample_traces:
+          - 7f3a2b9c000000000000000000000001
+      properties:
+        key:
+          $ref: '#/components/schemas/BlastKey'
+        view_mode:
+          type: string
+          enum: [single_family, cross_family]
+        window:
+          type: string
+        affected_requests:
+          type: integer
+        affected_users:
+          type: integer
+          nullable: true
+        affected_services:
+          type: integer
+        top_services:
+          type: array
+          items:
+            type: string
+        sample_traces:
+          type: array
+          items:
+            type: string
+
+    CapabilitiesResponse:
+      type: object
+      example:
+        otlp:
+          http_traces: true
+        v2_reads:
+          enabled: true
+        graph: false
+      properties:
+        ask:
+          type: object
+          additionalProperties: true
+        dashboard:
+          type: object
+          additionalProperties: true
+        links:
+          type: object
+          additionalProperties: true
+        graph:
+          type: boolean
+        otlp:
+          type: object
+          properties:
+            http_traces:
+              type: boolean
+        v2_reads:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+        architecture:
+          type: object
+          additionalProperties: true

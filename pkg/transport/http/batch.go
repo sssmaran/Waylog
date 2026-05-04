@@ -67,6 +67,7 @@ func (c *Client) flushBatch(batch []*eventv2.Event) deliveryResult {
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		c.recordResponseHeaders(resp.Header)
 		c.recordEnvelope(respBody)
 		return deliveryResult{success: true}
 	case isRetryableStatus(resp.StatusCode):
