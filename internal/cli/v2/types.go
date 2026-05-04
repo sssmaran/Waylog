@@ -32,6 +32,10 @@ type ErrorsResponse = apiv2.ErrorsResponse
 type BlastKey = apiv2.BlastKey
 type BlastRadiusResponse = apiv2.BlastRadiusResponse
 
+type eventGetResponse struct {
+	Event *Event `json:"event"`
+}
+
 type ErrorsParams struct {
 	Window  string
 	Service string

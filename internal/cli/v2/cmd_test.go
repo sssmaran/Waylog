@@ -84,7 +84,7 @@ func TestRunCLIEventEscapesIDAndRequiresV2Reads(t *testing.T) {
 			_, _ = w.Write([]byte(`{"v2_reads":{"enabled":true}}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"event_id":"event/1","trace_id":"trace","service":"checkout","status":"ok","duration_ms":3}`))
+		_, _ = w.Write([]byte(`{"event":{"event_id":"event/1","trace_id":"trace","service":"checkout","status":"ok","duration_ms":3}}`))
 	}))
 	defer srv.Close()
 

@@ -113,9 +113,9 @@ func (c *Client) Recent(ctx context.Context, p RecentParams) (RecentTracesRespon
 }
 
 func (c *Client) Event(ctx context.Context, eventID string) (*Event, error) {
-	var out Event
+	var out eventGetResponse
 	err := c.do(ctx, "/v1/events/"+url.PathEscape(eventID), nil, &out)
-	return &out, err
+	return out.Event, err
 }
 
 func (c *Client) Trace(ctx context.Context, traceID string) (TraceGetResponse, error) {
