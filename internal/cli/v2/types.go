@@ -4,15 +4,22 @@ import (
 	"time"
 
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
+	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
 type CapabilitiesResponse struct {
 	V2Reads struct {
 		Enabled bool `json:"enabled"`
 	} `json:"v2_reads"`
+	OTLP struct {
+		HTTPTraces bool `json:"http_traces"`
+	} `json:"otlp"`
 }
 
 type EventSearchResponse = apiv2.EventSearchResponse
+type Event = eventv2.Event
+type RecentTracesResponse = apiv2.RecentTracesResponse
+type TraceSummary = apiv2.TraceSummary
 type TraceGetResponse = apiv2.TraceGetResponse
 type StoryResponse = apiv2.StoryResponse
 type StoryAnchor = apiv2.StoryAnchor
@@ -30,6 +37,15 @@ type ErrorsParams struct {
 	Service string
 	Limit   int
 	Cursor  string
+}
+
+type RecentParams struct {
+	Window            string
+	Service           string
+	Status            string
+	Limit             int
+	Cursor            string
+	IncludeSuppressed bool
 }
 
 type StoryQuery struct {

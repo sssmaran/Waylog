@@ -44,8 +44,14 @@ func RunCLI(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 
 	switch rest[0] {
+	case "capabilities":
+		return runCapabilities(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "recent":
+		return runRecent(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "errors":
 		return runErrors(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "event":
+		return runEvent(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "trace":
 		return runTrace(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "explain":
@@ -133,6 +139,14 @@ func requireV2Reads(ctx context.Context, client *Client, stderr io.Writer) int {
 	return 0
 }
 
+func runCapabilities(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 0 {
+		return usage(stderr, "usage: waylog capabilities [--json]")
+	}
+	resp, err := client.Capabilities(ctx)
+	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderCapabilities)
+}
+
 func runErrors(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("errors", stderr)
 	window := fs.String("window", "", "")
@@ -147,6 +161,35 @@ func runErrors(ctx context.Context, client *Client, cfg cliConfig, args []string
 	}
 	resp, err := client.Errors(ctx, ErrorsParams{Window: *window, Service: *service, Limit: *limit, Cursor: *cursor})
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderErrors)
+}
+
+func runRecent(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("recent", stderr)
+	window := fs.String("window", "", "")
+	service := fs.String("service", "", "")
+	status := fs.String("status", "", "")
+	limit := fs.Int("limit", 0, "")
+	cursor := fs.String("cursor", "", "")
+	includeSuppressed := fs.Bool("include-suppressed", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		return usage(stderr, "usage: waylog recent [--window <dur>] [--service <svc>] [--status <csv>] [--limit <n>] [--cursor <c>] [--include-suppressed] [--json]")
+	}
+	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
+		return gate
+	}
+	resp, err := client.Recent(ctx, RecentParams{Window: *window, Service: *service, Status: *status, Limit: *limit, Cursor: *cursor, IncludeSuppressed: *includeSuppressed})
+	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderRecent)
+}
+
+func runEvent(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		return usage(stderr, "usage: waylog event <event_id> [--json]")
+	}
+	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
+		return gate
+	}
+	resp, err := client.Event(ctx, args[0])
+	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderEvent)
 }
 
 func runTrace(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
@@ -282,11 +325,20 @@ func usage(stderr io.Writer, msg string) int {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
+  waylog capabilities [--json]
+  waylog recent [--window <dur>] [--service <svc>] [--status <csv>] [--limit <n>] [--cursor <c>] [--include-suppressed] [--json]
   waylog errors [--window <dur>] [--service <svc>] [--limit <n>] [--cursor <c>] [--json]
+  waylog event <event_id> [--json]
   waylog trace <trace_id> [--json]
   waylog explain <event_id|trace_id> [--json]
   waylog blast (--service <svc> --step <step> --code <code> | --code <code> | <service:step:code>) [--window <dur>] [--json]
   waylog search <query> [--service <svc>] [--status <csv>] [--window <dur>] [--limit <n>] [--cursor <c>] [--json]
+
+Recommended loop:
+  waylog recent
+  waylog errors --window 15m
+  waylog blast checkout:payment.charge:PMT_502 --window 15m
+  waylog explain <trace_id>
 
 Global flags:
   --addr <url>       ingest base URL (default INGEST_ADDR or http://localhost:8080)

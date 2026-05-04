@@ -150,14 +150,17 @@ Runs only the ingest server. Point your own services at it via an SDK or OTLP. F
 ```bash
 WAYLOG_V2_READS=true ./ingest
 
+waylog capabilities
+waylog recent --limit 5
 waylog errors --window 15m
+waylog blast checkout:payment.charge:PMT_502 --window 15m
 waylog explain trace_01HX...
 waylog trace trace_01HX...
-waylog blast --service checkout --step payment.charge --code PMT_502
+waylog event event_01HX...
 waylog search PMT_502 --window 1h
 ```
 
-The `waylog` binary is now the v2 operator CLI over the running ingest server's read APIs. It requires the server to advertise `v2_reads.enabled=true` from `/v1/capabilities` and uses `INGEST_ADDR`, `WAYLOG_READ_KEY`, and `WAYLOG_CLI_TIMEOUT` by default. Add `--json` to any verb for machine-readable output.
+The `waylog` binary is now the v2 operator CLI over the running ingest server's read APIs. Most verbs require the server to advertise `v2_reads.enabled=true` from `/v1/capabilities`; `waylog capabilities` is intentionally ungated so it can diagnose server setup. The CLI uses `INGEST_ADDR`, `WAYLOG_READ_KEY`, and `WAYLOG_CLI_TIMEOUT` by default. Add `--json` to any verb for machine-readable output.
 
 ### REST (direct tool call)
 

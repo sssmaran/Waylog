@@ -48,6 +48,80 @@ func TestRunCLIErrorsHappyPath(t *testing.T) {
 	}
 }
 
+func TestRunCLIRecentSerializesFilters(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			_, _ = w.Write([]byte(`{"v2_reads":{"enabled":true}}`))
+			return
+		}
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"traces":[],"next_cursor":null}`))
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := RunCLI([]string{"--addr", srv.URL, "recent", "--window", "15m", "--service", "checkout", "--status", "error,timeout", "--limit", "5", "--cursor", "abc", "--include-suppressed"}, nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"window=15m", "service=checkout", "status=error%2Ctimeout", "limit=5", "cursor=abc", "include_suppressed=true"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query=%q missing %q", gotQuery, want)
+		}
+	}
+	if gotPath != "/v1/traces/recent" {
+		t.Fatalf("path=%q", gotPath)
+	}
+}
+
+func TestRunCLIEventEscapesIDAndRequiresV2Reads(t *testing.T) {
+	calls := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.String())
+		if r.URL.Path == "/v1/capabilities" {
+			_, _ = w.Write([]byte(`{"v2_reads":{"enabled":true}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"event_id":"event/1","trace_id":"trace","service":"checkout","status":"ok","duration_ms":3}`))
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := RunCLI([]string{"--addr", srv.URL, "event", "event/1"}, nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if len(calls) != 2 || calls[1] != "/v1/events/event%2F1" {
+		t.Fatalf("calls=%v", calls)
+	}
+	if !strings.Contains(stdout.String(), "event_id: event/1") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
+func TestRunCLICapabilitiesDoesNotRequireV2Reads(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"v2_reads":{"enabled":false},"otlp":{"http_traces":true}}`))
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := RunCLI([]string{"--addr", srv.URL, "capabilities"}, nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if gotPath != "/v1/capabilities" {
+		t.Fatalf("path=%q", gotPath)
+	}
+	if !strings.Contains(stdout.String(), "v2_reads: disabled") || !strings.Contains(stdout.String(), "otlp_http_traces: enabled") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
 func TestRunCLIExplainFallsBackToTraceID(t *testing.T) {
 	calls := []string{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

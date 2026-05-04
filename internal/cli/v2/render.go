@@ -42,6 +42,55 @@ func RenderErrors(w io.Writer, resp ErrorsResponse) {
 	renderNextCursor(w, resp.NextCursor)
 }
 
+func RenderRecent(w io.Writer, resp RecentTracesResponse) {
+	if len(resp.Traces) == 0 {
+		fmt.Fprintln(w, "No recent traces found.")
+		renderNextCursor(w, resp.NextCursor)
+		return
+	}
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "TRACE\tSTATUS\tSERVICES\tDURATION\tANCHOR\tSTART")
+	for _, trace := range resp.Traces {
+		anchor := ""
+		if trace.AnchorSummary != nil {
+			anchor = *trace.AnchorSummary
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d ms\t%s\t%s\n",
+			truncateID(trace.TraceID),
+			trace.Status,
+			strings.Join(trace.Services, " -> "),
+			trace.DurationMS,
+			anchor,
+			formatTime(trace.TsStart),
+		)
+	}
+	_ = tw.Flush()
+	renderNextCursor(w, resp.NextCursor)
+}
+
+func RenderEvent(w io.Writer, ev *Event) {
+	if ev == nil {
+		fmt.Fprintln(w, "No event found.")
+		return
+	}
+	fmt.Fprintf(w, "event_id: %s\n", ev.EventID)
+	fmt.Fprintf(w, "trace_id: %s\n", ev.TraceID)
+	fmt.Fprintf(w, "service: %s\n", ev.Service)
+	fmt.Fprintf(w, "status: %s\n", ev.Status)
+	fmt.Fprintf(w, "duration_ms: %d\n", ev.DurationMS)
+	if route := eventRoute(ev); route != "" {
+		fmt.Fprintf(w, "route: %s\n", route)
+	}
+	if ev.Anchor == nil {
+		fmt.Fprintln(w, "anchor: none")
+	} else {
+		fmt.Fprintf(w, "anchor: %s -> %s\n", ev.Anchor.Step, ev.Anchor.ErrorCode)
+	}
+	fmt.Fprintf(w, "steps: %d\n", len(ev.Steps))
+	fmt.Fprintf(w, "logs: %d\n", len(ev.Logs))
+	fmt.Fprintf(w, "downstream: %d\n", countEventDownstream(ev))
+}
+
 func RenderTrace(w io.Writer, resp TraceGetResponse) {
 	fmt.Fprintf(w, "trace_id: %s\n", resp.TraceID)
 	fmt.Fprintf(w, "linkage: %s\n\n", resp.Linkage)
@@ -136,6 +185,43 @@ func RenderSearch(w io.Writer, resp EventSearchResponse) {
 	}
 	_ = tw.Flush()
 	renderNextCursor(w, resp.NextCursor)
+}
+
+func RenderCapabilities(w io.Writer, resp CapabilitiesResponse) {
+	fmt.Fprintf(w, "v2_reads: %s\n", enabledLabel(resp.V2Reads.Enabled))
+	fmt.Fprintf(w, "otlp_http_traces: %s\n", enabledLabel(resp.OTLP.HTTPTraces))
+}
+
+func eventRoute(ev *Event) string {
+	if ev == nil || ev.Fields == nil {
+		return ""
+	}
+	httpFields, ok := ev.Fields["http"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	route, _ := httpFields["route"].(string)
+	return route
+}
+
+func countEventDownstream(ev *Event) int {
+	if ev == nil {
+		return 0
+	}
+	total := 0
+	for _, step := range ev.Steps {
+		if step.Downstream != nil {
+			total++
+		}
+	}
+	return total
+}
+
+func enabledLabel(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func renderNextCursor(w io.Writer, cursor *string) {

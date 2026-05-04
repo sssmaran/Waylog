@@ -97,6 +97,27 @@ func (c *Client) Errors(ctx context.Context, p ErrorsParams) (ErrorsResponse, er
 	return out, err
 }
 
+func (c *Client) Recent(ctx context.Context, p RecentParams) (RecentTracesResponse, error) {
+	q := url.Values{}
+	addQuery(q, "window", p.Window)
+	addQuery(q, "service", p.Service)
+	addQuery(q, "status", p.Status)
+	addQuery(q, "cursor", p.Cursor)
+	addLimit(q, p.Limit)
+	if p.IncludeSuppressed {
+		q.Set("include_suppressed", "true")
+	}
+	var out RecentTracesResponse
+	err := c.do(ctx, "/v1/traces/recent", q, &out)
+	return out, err
+}
+
+func (c *Client) Event(ctx context.Context, eventID string) (*Event, error) {
+	var out Event
+	err := c.do(ctx, "/v1/events/"+url.PathEscape(eventID), nil, &out)
+	return &out, err
+}
+
 func (c *Client) Trace(ctx context.Context, traceID string) (TraceGetResponse, error) {
 	var out TraceGetResponse
 	err := c.do(ctx, "/v1/traces/"+url.PathEscape(traceID), nil, &out)
