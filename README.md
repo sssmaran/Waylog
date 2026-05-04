@@ -71,13 +71,13 @@ Prefer Docker? Use `make docker-dev` / `make docker-down`. Prefer foreground ser
 
 ## How it works
 
-1. **Capture** — services emit [WideEvents](docs/waylog-sdk-contract.md) via the Go or TypeScript SDK, or push OpenTelemetry spans to `/v1/otlp/v1/traces`. Every event is durably logged (WAL + fsync) before it enters the graph.
-2. **Analyze** — the ingest server flattens spans into a hot in-memory graph (requests · services · errors · users · deployments). A dedicated trace store keeps span-level detail for drill-down. Deterministic tools walk the graph to answer specific questions: propagation chain, blast radius, what-changed, deploy correlation.
-3. **Operator** — CLI, REST, MCP, TUI, and the embedded dashboard all query the same graph through the same tool registry. Every answer is also callable by agents as a structured tool with idempotency keys.
+1. **Capture** — services emit [WideEvents](docs/waylog-sdk-contract.md) via the Go or TypeScript SDK, or push OpenTelemetry spans to `/v1/otlp/v1/traces`. Every event is durably logged (WAL + fsync) before it enters the derived read models.
+2. **Analyze** — the ingest server projects completed execution segments into request, service, error, user, and trace views. Deterministic tools answer specific questions: propagation chain, blast radius, what-changed, deploy correlation.
+3. **Operator** — CLI, REST, MCP, TUI, and the embedded dashboard query the same derived views through the same tool registry. Every answer is also callable by agents as a structured tool with idempotency keys.
 
 ## Get traces in
 
-All three paths feed the same hot graph. Pick whichever matches your stack.
+All three paths feed the same schema-2.0 ingest and read APIs. Pick whichever matches your stack.
 
 ### TypeScript SDK
 
@@ -133,7 +133,7 @@ The recommended SDK path is framework middleware plus `waylog.From(ctx)` / `useL
 
 ### OTLP/HTTP traces
 
-Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1/traces`. Protobuf bodies are accepted (gzip optional) and spans convert to WideEvents on the way in. **Phase A covers traces over HTTP.** gRPC, logs, and metrics are not yet shipping.
+Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1/traces`. Protobuf bodies are accepted (gzip optional) and HTTP spans convert to schema-2.0 WideEvents on the way in, then show up in the same errors, explain, blast, and recent-trace APIs as SDK events when `WAYLOG_V2_READS=true`. **Phase A covers traces over HTTP.** gRPC, logs, and metrics are not yet shipping.
 
 ### Alternative: local ingest server (no Docker)
 
@@ -236,12 +236,11 @@ The embedded dashboard at `/ui` is a v2 triage surface over the same read APIs a
 
 ```text
 Go / TS services (SDK) · OTLP/HTTP collectors
-        │  WideEvents (HTTP or Kafka) · OTLP traces
+        │  schema-2.0 WideEvents · OTLP/HTTP traces
         ▼
   ingest server
     ├─ event log (append-only WAL, source of truth)
-    ├─ hot graph  (requests · services · errors · users · deploys)
-    ├─ trace store (span-level detail, time-bucketed)
+    ├─ derived read models (errors · explain · blast · recent traces)
     ├─ SQLite cold store (events · deployments · causal claims)
     ├─ tool registry · Ask · plan execution
     └─ v2 dashboard · health · metrics · OpenAPI
@@ -251,7 +250,7 @@ Go / TS services (SDK) · OTLP/HTTP collectors
         └──▶ CLI · TUI · MCP · agents
 ```
 
-The hot graph is a flattened 3-node-type model (request, service, error); span detail lives in a dedicated trace store. Events are durably logged before entering the graph — if the process crashes, replay rebuilds the graph from the WAL on next boot.
+Events are durably logged before projection — if the process crashes, replay rebuilds the read models from the WAL on next boot.
 
 Durability model, retention, merge semantics, readiness policy, and counter buffer: [`docs/internals.md`](docs/internals.md). Full HTTP contract: [`docs/openapi.yaml`](docs/openapi.yaml).
 

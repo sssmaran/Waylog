@@ -1,7 +1,9 @@
 package ingestv2
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -71,6 +73,11 @@ func New(cfg Config) (*Handler, error) {
 	return &Handler{schema: sch, metrics: m, dedup: dedup, wal: cfg.WAL, project: projector}, nil
 }
 
+var (
+	errDurabilityUnavailable = errors.New("durability unavailable")
+	errProjectionUnavailable = errors.New("projection unavailable")
+)
+
 var rejectionReasons = []string{
 	ReasonInvalidJSON,
 	ReasonSchemaValidationFailed,
@@ -114,12 +121,34 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, durable bool) {
 		h.writeError(w, reqErr)
 		return
 	}
-	if h.metrics != nil {
-		h.metrics.IngestBatchSize.Observe(float64(len(parsed.events)))
+	env, err := h.IngestRaw(r.Context(), parsed.events, durable)
+	if err != nil {
+		switch {
+		case errors.Is(err, errDurabilityUnavailable):
+			http.Error(w, "durability unavailable", http.StatusServiceUnavailable)
+		case errors.Is(err, errProjectionUnavailable):
+			http.Error(w, "projection unavailable", http.StatusServiceUnavailable)
+		default:
+			http.Error(w, "ingest unavailable", http.StatusServiceUnavailable)
+		}
+		return
 	}
+	writeEnvelope(w, http.StatusOK, env)
+}
 
+// IngestRaw validates already-framed schema-2.0 JSON events and optionally
+// writes accepted events through the same dedupe, WAL, and projection path used
+// by POST /v1/events. Per-event validation failures are represented in the
+// returned envelope; infrastructure failures are returned as errors.
+func (h *Handler) IngestRaw(ctx context.Context, eventBodies [][]byte, durable bool) (IngestEnvelope, error) {
 	env := newEnvelope()
-	for i, eventBody := range parsed.events {
+	if h.metrics != nil {
+		h.metrics.IngestBatchSize.Observe(float64(len(eventBodies)))
+	}
+	for i, eventBody := range eventBodies {
+		if err := ctx.Err(); err != nil {
+			return env, err
+		}
 		validateStart := time.Now()
 		result := h.validateEvent(i, eventBody)
 		if h.metrics != nil {
@@ -136,8 +165,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, durable bool) {
 		}
 		if h.wal == nil {
 			h.recordRejected(ReasonDurabilityUnavailable)
-			http.Error(w, "durability unavailable", http.StatusServiceUnavailable)
-			return
+			return env, errDurabilityUnavailable
 		}
 		var duplicate bool
 		var err error
@@ -150,8 +178,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, durable bool) {
 		}
 		if err != nil {
 			h.recordRejected(ReasonDurabilityUnavailable)
-			http.Error(w, "durability unavailable", http.StatusServiceUnavailable)
-			return
+			return env, errDurabilityUnavailable
 		}
 		if duplicate {
 			env.Duplicate++
@@ -160,15 +187,15 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, durable bool) {
 			}
 			continue
 		}
-		if !h.projectEvent(w, result.eventID, result.event) {
-			return
+		if err := h.projectEvent(result.eventID, result.event); err != nil {
+			return env, err
 		}
 		if h.metrics != nil {
 			h.metrics.EventsAccepted.Inc()
 		}
 		env.Accepted++
 	}
-	writeEnvelope(w, http.StatusOK, env)
+	return env, nil
 }
 
 type validationResult struct {
@@ -236,8 +263,7 @@ func (h *Handler) writeWAL(eventBody []byte) error {
 	return err
 }
 
-func (h *Handler) projectEvent(w http.ResponseWriter, eventID string, ev *eventv2.Event) (ok bool) {
-	ok = false
+func (h *Handler) projectEvent(eventID string, ev *eventv2.Event) (err error) {
 	start := time.Now()
 	defer func() {
 		if h.metrics != nil {
@@ -251,8 +277,7 @@ func (h *Handler) projectEvent(w http.ResponseWriter, eventID string, ev *eventv
 				h.dedup.Remove(eventID)
 			}
 			slog.Error("ingestv2: projection panic", "event_id", eventID, "panic", recovered)
-			http.Error(w, "projection unavailable", http.StatusServiceUnavailable)
-			ok = false
+			err = errProjectionUnavailable
 		}
 	}()
 	if h.project != nil {
@@ -261,7 +286,7 @@ func (h *Handler) projectEvent(w http.ResponseWriter, eventID string, ev *eventv
 	if h.metrics != nil {
 		h.metrics.V2EventsProjected.Inc()
 	}
-	return true
+	return nil
 }
 
 func writeEnvelope(w http.ResponseWriter, status int, env IngestEnvelope) {

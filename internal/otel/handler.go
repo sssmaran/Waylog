@@ -1,11 +1,13 @@
 // Package otel contains the HTTP handler that accepts OTLP/HTTP traces and
-// feeds them through the shared ingest Pipeline. The protobuf decoding and
+// feeds them through the schema-2.0 ingest handler. The protobuf decoding and
 // span→WideEvent conversion live in internal/otel/convert; this package only
 // deals with the HTTP transport contract.
 package otel
 
 import (
 	"compress/gzip"
+	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"mime"
@@ -13,28 +15,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/ingest"
+	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/otel/convert"
+	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
 
 // Handler serves POST /v1/otlp/v1/traces. It decodes the protobuf body,
-// converts spans to WideEvents, and delegates ingestion to the shared
-// Pipeline. The handler responds with an ExportTraceServiceResponse per
+// converts spans to WideEvents, and delegates ingestion to the v2 ingest
+// handler. The handler responds with an ExportTraceServiceResponse per
 // the OTLP/HTTP spec — partial_success is set when any span was dropped
 // by conversion or rejected by validation.
 type Handler struct {
-	pipeline     *ingest.Pipeline
+	v2Ingest     *ingestv2.Handler
 	metrics      *metrics.Metrics
 	maxBodyBytes int64
 }
 
 // NewHandler constructs an OTLP traces handler.
-func NewHandler(pipeline *ingest.Pipeline, m *metrics.Metrics, maxBodyBytes int64) *Handler {
+func NewHandler(v2Ingest *ingestv2.Handler, m *metrics.Metrics, maxBodyBytes int64) *Handler {
 	return &Handler{
-		pipeline:     pipeline,
+		v2Ingest:     v2Ingest,
 		metrics:      m,
 		maxBodyBytes: maxBodyBytes,
 	}
@@ -110,10 +113,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	futureCutoff := time.Now().Add(5 * time.Minute)
 	kept := convResult.Events[:0]
 	for _, ev := range convResult.Events {
-		if ev.Timestamp.After(futureCutoff) {
+		if ev.TsStart.After(futureCutoff) {
 			convResult.Dropped++
 			convResult.Drops = append(convResult.Drops, convert.DropEntry{
-				SpanName: ev.EventName,
+				SpanName: spanName(ev),
 				Reason:   convert.DropFutureTimestamp,
 			})
 			continue
@@ -131,28 +134,49 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var batchResult ingest.BatchResult
-	if len(convResult.Events) > 0 && h.pipeline != nil {
-		batchResult, err = h.pipeline.ValidateAndIngestBatch(r.Context(), convResult.Events)
-		if err != nil {
-			slog.Error("otlp: pipeline infrastructure failure", "err", err)
+	var env ingestv2.IngestEnvelope
+	if len(convResult.Events) > 0 {
+		if h.v2Ingest == nil {
+			slog.Error("otlp: v2 ingest handler unavailable")
 			if h.metrics != nil {
 				h.metrics.OTLPInfraFailures.Inc()
 			}
 			h.respondStatus(w, "5xx", http.StatusServiceUnavailable, "infrastructure error")
 			return
 		}
-		if h.metrics != nil && batchResult.Rejected > 0 {
-			h.metrics.OTLPValidationRejects.Add(float64(batchResult.Rejected))
+		bodies, err := marshalEvents(convResult.Events)
+		if err != nil {
+			slog.Error("otlp: marshal converted v2 events", "err", err)
+			if h.metrics != nil {
+				h.metrics.OTLPInfraFailures.Inc()
+			}
+			h.respondStatus(w, "5xx", http.StatusServiceUnavailable, "infrastructure error")
+			return
+		}
+		env, err = h.v2Ingest.IngestRaw(r.Context(), bodies, true)
+		if err != nil {
+			if err == context.Canceled || err == context.DeadlineExceeded {
+				h.respondStatus(w, "5xx", http.StatusServiceUnavailable, "request canceled")
+				return
+			}
+			slog.Error("otlp: v2 ingest infrastructure failure", "err", err)
+			if h.metrics != nil {
+				h.metrics.OTLPInfraFailures.Inc()
+			}
+			h.respondStatus(w, "5xx", http.StatusServiceUnavailable, "infrastructure error")
+			return
+		}
+		if h.metrics != nil && len(env.Rejected) > 0 {
+			h.metrics.OTLPValidationRejects.Add(float64(len(env.Rejected)))
 		}
 	}
 
 	resp := &coltracepb.ExportTraceServiceResponse{}
-	totalRejected := int64(convResult.Dropped + batchResult.Rejected)
+	totalRejected := int64(convResult.Dropped + len(env.Rejected))
 	if totalRejected > 0 {
 		resp.PartialSuccess = &coltracepb.ExportTracePartialSuccess{
 			RejectedSpans: totalRejected,
-			ErrorMessage:  buildPartialSuccessMessage(convResult.Drops, batchResult.Errors),
+			ErrorMessage:  buildPartialSuccessMessage(convResult.Drops, env.Rejected),
 		}
 	}
 
@@ -178,9 +202,33 @@ func (h *Handler) respondStatus(w http.ResponseWriter, bucket string, code int, 
 	http.Error(w, msg, code)
 }
 
+func marshalEvents(events []*eventv2.Event) ([][]byte, error) {
+	out := make([][]byte, 0, len(events))
+	for _, ev := range events {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, raw)
+	}
+	return out, nil
+}
+
+func spanName(ev *eventv2.Event) string {
+	if ev == nil || ev.Fields == nil {
+		return ""
+	}
+	otelFields, ok := ev.Fields["otel"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := otelFields["span_name"].(string)
+	return name
+}
+
 // buildPartialSuccessMessage produces a short human-readable summary of the
 // first few drops and validation rejects, capped to avoid runaway size.
-func buildPartialSuccessMessage(drops []convert.DropEntry, errs []ingest.EventError) string {
+func buildPartialSuccessMessage(drops []convert.DropEntry, rejects []ingestv2.RejectedEvent) string {
 	const limit = 5
 	var parts []string
 	for i, d := range drops {
@@ -193,11 +241,15 @@ func buildPartialSuccessMessage(drops []convert.DropEntry, errs []ingest.EventEr
 		}
 		parts = append(parts, msg)
 	}
-	for i, e := range errs {
+	for i, e := range rejects {
 		if i >= limit {
 			break
 		}
-		parts = append(parts, e.Reason)
+		msg := e.Reason
+		if e.Detail != "" {
+			msg += " (" + e.Detail + ")"
+		}
+		parts = append(parts, msg)
 	}
 	return strings.Join(parts, "; ")
 }

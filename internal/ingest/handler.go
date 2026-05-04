@@ -378,15 +378,15 @@ func (s *Server) Builder() *build.Builder {
 	return s.builder
 }
 
-// Sampler returns the server's sampler so external wiring (e.g., OTLP
-// pipeline construction in main.go) can share the same sampling policy.
+// Sampler returns the server's sampler so external schema-1.x pipeline wiring
+// can share the same sampling policy.
 func (s *Server) Sampler() *sampler.Sampler { return s.sampler }
 
 // SSEHub returns the server's SSE hub for reuse as a Pipeline Notifier.
 func (s *Server) SSEHub() *SSEHub { return s.sseHub }
 
-// Counters returns the shared unsampled windowed counters. Used so the
-// OTLP pipeline contributes to the same windowed error rate as the SDK path.
+// Counters returns the shared unsampled windowed counters for schema-1.x
+// pipeline wiring.
 func (s *Server) Counters() *unsampledCounters { return &s.counters }
 
 // AcceptedPtr returns a pointer to the accepted-events atomic counter so the

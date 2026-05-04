@@ -50,6 +50,11 @@ func main() {
 						EndTimeUnixNano:   now + 50_000_000,
 						Kind:              tracepb.Span_SPAN_KIND_SERVER,
 						Status:            &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
+						Attributes: []*commonpb.KeyValue{
+							strAttr("http.request.method", "GET"),
+							strAttr("http.route", "/api"),
+							intAttr("http.response.status_code", 200),
+						},
 					},
 					{
 						TraceId:           traceBytes,
@@ -60,6 +65,12 @@ func main() {
 						EndTimeUnixNano:   now + 45_000_000,
 						Kind:              tracepb.Span_SPAN_KIND_CLIENT,
 						Status:            &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
+						Attributes: []*commonpb.KeyValue{
+							strAttr("http.request.method", "GET"),
+							strAttr("http.route", "/db/query"),
+							intAttr("http.response.status_code", 200),
+							strAttr("peer.service", "db"),
+						},
 					},
 				},
 			}},
@@ -89,4 +100,8 @@ func main() {
 
 func strAttr(k, v string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}}
+}
+
+func intAttr(k string, v int64) *commonpb.KeyValue {
+	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: v}}}
 }

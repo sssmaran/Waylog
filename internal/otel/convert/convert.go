@@ -1,15 +1,16 @@
 // Package convert translates OTLP ExportTraceServiceRequest payloads into
-// WideEvents. It is a pure function package — no I/O, no dependencies beyond
-// pkg/event and the OTLP proto types — so it can be reused by a future
-// OpenTelemetry Collector exporter without dragging in the ingest stack.
+// schema-2.0 WideEvents. It is a pure function package — no I/O, no ingest
+// dependency — so it can be reused by future OTLP entrypoints.
 package convert
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/pkg/event"
+	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -24,6 +25,7 @@ const (
 	DropMissingService  DropReason = "missing_service"
 	DropMissingTraceID  DropReason = "missing_trace_id"
 	DropInvalidSpan     DropReason = "invalid_span"
+	DropUnsupportedKind DropReason = "unsupported_kind"
 	DropFutureTimestamp DropReason = "future_timestamp"
 )
 
@@ -33,68 +35,31 @@ type DropEntry struct {
 	Reason   DropReason
 }
 
-// Result is what SpansToEvents returns. Events are not yet validated; the
-// caller runs them through the ingest pipeline's validator.
+// Result is what SpansToEvents returns. Events are not yet written; callers run
+// them through the schema-2.0 ingest handler.
 type Result struct {
-	Events  []*event.WideEvent
+	Events  []*eventv2.Event
 	Dropped int
 	Drops   []DropEntry
 }
 
-// spanKey is the (trace_id, span_id) key used to resolve caller service
-// across the resource_spans boundary in a single request.
-type spanKey struct {
-	TraceID string
-	SpanID  string
-}
-
-// SpansToEvents converts an OTLP ExportTraceServiceRequest into WideEvents.
-// Best-effort: spans that can't be meaningfully converted are dropped and
-// counted. The parent-span index is scoped to this request only.
+// SpansToEvents converts OTLP spans into schema-2.0 WideEvents. HTTP spans are
+// supported in this slice; non-HTTP spans are dropped until their v2 semantics
+// are explicitly defined.
 func SpansToEvents(req *coltracepb.ExportTraceServiceRequest) Result {
 	var res Result
 	if req == nil {
 		return res
 	}
-
-	// First pass: build (trace_id, span_id) → service_name index so child
-	// spans can discover their parent's service for caller_service.
-	idx := make(map[spanKey]string)
-	for _, rs := range req.GetResourceSpans() {
-		svc := resourceAttr(rs.GetResource(), "service.name")
-		if svc == "" {
-			continue
-		}
-		for _, ss := range rs.GetScopeSpans() {
-			for _, span := range ss.GetSpans() {
-				tid := hex.EncodeToString(span.GetTraceId())
-				sid := hex.EncodeToString(span.GetSpanId())
-				if tid != "" && sid != "" {
-					idx[spanKey{TraceID: tid, SpanID: sid}] = svc
-				}
-			}
-		}
-	}
-
-	// Second pass: convert each span.
 	for _, rs := range req.GetResourceSpans() {
 		rc := extractResourceContext(rs.GetResource())
 		if rc.service == "" {
-			for _, ss := range rs.GetScopeSpans() {
-				for _, span := range ss.GetSpans() {
-					res.Dropped++
-					res.Drops = append(res.Drops, DropEntry{
-						SpanName: span.GetName(),
-						Reason:   DropMissingService,
-					})
-				}
-			}
+			dropResourceSpans(&res, rs, DropMissingService)
 			continue
 		}
-
 		for _, ss := range rs.GetScopeSpans() {
 			for _, span := range ss.GetSpans() {
-				ev, drop := convertSpan(span, rc, idx)
+				ev, drop := convertSpan(span, rc)
 				if drop != nil {
 					res.Dropped++
 					res.Drops = append(res.Drops, *drop)
@@ -104,8 +69,16 @@ func SpansToEvents(req *coltracepb.ExportTraceServiceRequest) Result {
 			}
 		}
 	}
-
 	return res
+}
+
+func dropResourceSpans(res *Result, rs *tracepb.ResourceSpans, reason DropReason) {
+	for _, ss := range rs.GetScopeSpans() {
+		for _, span := range ss.GetSpans() {
+			res.Dropped++
+			res.Drops = append(res.Drops, DropEntry{SpanName: span.GetName(), Reason: reason})
+		}
+	}
 }
 
 type resourceContext struct {
@@ -119,7 +92,6 @@ func extractResourceContext(r *resourcepb.Resource) resourceContext {
 		service: resourceAttr(r, "service.name"),
 		version: resourceAttr(r, "service.version"),
 	}
-	// Prefer new semconv (deployment.environment.name) over legacy (deployment.environment).
 	rc.env = resourceAttr(r, "deployment.environment.name")
 	if rc.env == "" {
 		rc.env = resourceAttr(r, "deployment.environment")
@@ -130,99 +102,90 @@ func extractResourceContext(r *resourcepb.Resource) resourceContext {
 	return rc
 }
 
-func convertSpan(span *tracepb.Span, rc resourceContext, idx map[spanKey]string) (*event.WideEvent, *DropEntry) {
+func convertSpan(span *tracepb.Span, rc resourceContext) (*eventv2.Event, *DropEntry) {
 	if allZeros(span.GetTraceId()) {
 		return nil, &DropEntry{SpanName: span.GetName(), Reason: DropMissingTraceID}
 	}
-	// Reject empty/zero span IDs: the graph builder skips span records when
-	// Request.SpanID is empty, which would leave trace drill-down incomplete
-	// for a request the overview now counts as accepted.
 	if allZeros(span.GetSpanId()) {
 		return nil, &DropEntry{SpanName: span.GetName(), Reason: DropInvalidSpan}
 	}
+	attrs := spanAttrs(span)
+	statusCode, success, hasHTTP := deriveHTTPOutcome(span, attrs)
+	if !hasHTTP {
+		return nil, &DropEntry{SpanName: span.GetName(), Reason: DropUnsupportedKind}
+	}
+
 	traceID := hex.EncodeToString(span.GetTraceId())
 	spanID := hex.EncodeToString(span.GetSpanId())
-
 	parentSpanID := ""
 	if !allZeros(span.GetParentSpanId()) {
 		parentSpanID = hex.EncodeToString(span.GetParentSpanId())
 	}
 
-	attrs := spanAttrs(span)
-	statusCode, success, hasHTTP := deriveOutcome(span, attrs)
+	start := time.Unix(0, int64(span.GetStartTimeUnixNano())).UTC()
+	end := time.Unix(0, int64(span.GetEndTimeUnixNano())).UTC()
+	if end.Before(start) {
+		end = start
+	}
+	durationMS := int64(end.Sub(start) / time.Millisecond)
 
-	kind := "internal"
-	if hasHTTP {
-		kind = "http"
-	} else if _, ok := attrs["rpc.system"]; ok {
-		kind = "rpc"
+	stepName := stepName(span, attrs)
+	errorCode, errorReason := errorInfo(span, attrs, statusCode)
+	step := eventv2.Step{
+		Name:       stepName,
+		SpanID:     spanID,
+		StartMS:    0,
+		DurationMS: durationMS,
+		Status:     eventv2.StepStatusOK,
+	}
+	if downstream := downstreamFromSpan(span, attrs); downstream != nil {
+		step.Downstream = downstream
 	}
 
-	eventName := rc.service + ".request"
+	status := eventv2.StatusOK
+	var anchor *eventv2.Anchor
+	var errors []eventv2.ErrorRef
+	var logs []eventv2.Log
 	if !success {
-		eventName = rc.service + ".error"
+		status = eventv2.StatusError
+		step.Status = eventv2.StepStatusError
+		step.Error = &eventv2.StepError{Code: errorCode, Reason: errorReason, Cause: "otlp"}
+		anchor = &eventv2.Anchor{Step: stepName, ErrorCode: errorCode, Kind: "otlp"}
+		errors = []eventv2.ErrorRef{{Code: errorCode, Reason: errorReason}}
+		logs = errorLogs(span, errorCode, errorReason)
 	}
 
-	var errCtx *event.ErrorContext
-	if !success {
-		errCtx = extractError(span)
-	}
-
-	httpMethod, _ := attrs["http.request.method"].(string)
-	httpRoute, _ := attrs["http.route"].(string)
-
-	var downstream string
-	if span.GetKind() == tracepb.Span_SPAN_KIND_CLIENT || span.GetKind() == tracepb.Span_SPAN_KIND_PRODUCER {
-		downstream = resolveDownstream(attrs)
-	}
-
-	var caller string
-	if parentSpanID != "" {
-		if parentSvc, ok := idx[spanKey{TraceID: traceID, SpanID: parentSpanID}]; ok && parentSvc != rc.service {
-			caller = parentSvc
-		}
-	}
-
-	startNano := span.GetStartTimeUnixNano()
-	endNano := span.GetEndTimeUnixNano()
-	var latencyMs int64
-	if endNano > startNano {
-		latencyMs = int64((endNano - startNano) / 1_000_000)
-	}
-
-	ev := &event.WideEvent{
-		SchemaVersion: event.SchemaVersion,
-		EventName:     eventName,
-		Timestamp:     time.Unix(0, int64(startNano)),
-		Request: event.RequestContext{
-			TraceID:       traceID,
-			SpanID:        spanID,
-			ParentSpanID:  parentSpanID,
-			HTTPMethod:    httpMethod,
-			RouteTemplate: httpRoute,
-		},
-		System: event.SystemContext{
-			Service:           rc.service,
-			Version:           rc.version,
-			Env:               rc.env,
-			CallerService:     caller,
-			DownstreamService: downstream,
-		},
-		Outcome: event.OutcomeContext{
-			Success:    success,
-			StatusCode: statusCode,
-			Kind:       kind,
-		},
-		Error:   errCtx,
-		Metrics: event.MetricsContext{LatencyMs: latencyMs},
-	}
-	return ev, nil
+	return &eventv2.Event{
+		SchemaVersion: eventv2.SchemaVersion2,
+		EventID:       deterministicEventID(traceID, spanID),
+		TsStart:       start,
+		TsEnd:         end,
+		DurationMS:    durationMS,
+		Kind:          "http",
+		Service:       rc.service,
+		Env:           rc.env,
+		Version:       rc.version,
+		TraceID:       traceID,
+		SpanID:        spanID,
+		ParentSpanID:  parentSpanID,
+		Status:        status,
+		Anchor:        anchor,
+		Steps:         []eventv2.Step{step},
+		Logs:          logs,
+		Fields:        fields(span, attrs, statusCode),
+		Errors:        errors,
+	}, nil
 }
 
-// deriveOutcome follows the spec: HTTP status code first, then gRPC, then
-// OTLP status. Any OTLP ERROR or exception event forces failure even when
-// HTTP indicated success.
-func deriveOutcome(span *tracepb.Span, attrs map[string]any) (statusCode int, success bool, hasHTTP bool) {
+func deterministicEventID(traceID, spanID string) string {
+	sum := sha256.Sum256([]byte(traceID + ":" + spanID))
+	b := append([]byte(nil), sum[:16]...)
+	b[6] = (b[6] & 0x0f) | 0x50
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func deriveHTTPOutcome(span *tracepb.Span, attrs map[string]any) (statusCode int, success bool, hasHTTP bool) {
 	if v, ok := attrs["http.response.status_code"]; ok {
 		if code, ok := v.(int64); ok && code > 0 {
 			statusCode = int(code)
@@ -234,21 +197,13 @@ func deriveOutcome(span *tracepb.Span, attrs map[string]any) (statusCode int, su
 			return
 		}
 	}
-
 	if _, ok := attrs["http.request.method"]; ok {
 		hasHTTP = true
 	}
-
-	if v, ok := attrs["rpc.grpc.status_code"]; ok {
-		if code, ok := v.(int64); ok {
-			statusCode = grpcToHTTP(int(code))
-			success = code == 0
-			return
-		}
+	if _, ok := attrs["http.route"]; ok {
+		hasHTTP = true
 	}
-
-	status := span.GetStatus()
-	if status != nil && status.GetCode() == tracepb.Status_STATUS_CODE_ERROR {
+	if isOTLPError(span) {
 		return 500, false, hasHTTP
 	}
 	return 200, true, hasHTTP
@@ -266,78 +221,120 @@ func isOTLPError(span *tracepb.Span) bool {
 	return false
 }
 
-func extractError(span *tracepb.Span) *event.ErrorContext {
+func stepName(span *tracepb.Span, attrs map[string]any) string {
+	if v, ok := attrs["waylog.step"].(string); ok && v != "" {
+		return v
+	}
+	if v, ok := attrs["http.route"].(string); ok && v != "" {
+		return v
+	}
+	if span.GetName() != "" {
+		return span.GetName()
+	}
+	return "otlp.span"
+}
+
+func errorInfo(span *tracepb.Span, attrs map[string]any, statusCode int) (code, reason string) {
+	if v, ok := attrs["waylog.error_code"].(string); ok && v != "" {
+		return v, errorReason(span)
+	}
 	for _, e := range span.GetEvents() {
 		if e.GetName() != "exception" {
 			continue
 		}
-		code := eventAttr(e, "exception.type")
-		msg := eventAttr(e, "exception.message")
-		if code != "" {
-			return &event.ErrorContext{Code: code, Message: msg}
+		if code := eventAttr(e, "exception.type"); code != "" {
+			return code, eventAttr(e, "exception.message")
+		}
+	}
+	if statusCode > 0 {
+		return fmt.Sprintf("HTTP_%d", statusCode), errorReason(span)
+	}
+	return "OTLP_ERROR", errorReason(span)
+}
+
+func errorReason(span *tracepb.Span) string {
+	for _, e := range span.GetEvents() {
+		if e.GetName() == "exception" {
+			if msg := eventAttr(e, "exception.message"); msg != "" {
+				return msg
+			}
 		}
 	}
 	if s := span.GetStatus(); s != nil && s.GetMessage() != "" {
-		return &event.ErrorContext{Code: "OTEL_ERROR", Message: s.GetMessage()}
+		return s.GetMessage()
 	}
-	return &event.ErrorContext{Code: "OTEL_ERROR"}
+	return "otlp span reported error"
+}
+
+func errorLogs(span *tracepb.Span, code, reason string) []eventv2.Log {
+	msg := reason
+	if msg == "" {
+		msg = code
+	}
+	return []eventv2.Log{{
+		TsOffsetMS: 0,
+		Level:      eventv2.LogLevelError,
+		Msg:        msg,
+		Fields:     map[string]any{"error_code": code},
+	}}
+}
+
+func downstreamFromSpan(span *tracepb.Span, attrs map[string]any) *eventv2.Downstream {
+	if span.GetKind() != tracepb.Span_SPAN_KIND_CLIENT && span.GetKind() != tracepb.Span_SPAN_KIND_PRODUCER {
+		return nil
+	}
+	service := resolveDownstream(attrs)
+	if service == "" {
+		return nil
+	}
+	return &eventv2.Downstream{
+		Service:  service,
+		Endpoint: downstreamEndpoint(attrs),
+		Kind:     "http",
+	}
 }
 
 func resolveDownstream(attrs map[string]any) string {
-	if v, ok := attrs["peer.service"].(string); ok && v != "" {
-		return v
-	}
-	if v, ok := attrs["server.address"].(string); ok && v != "" {
-		host := strings.TrimPrefix(v, "http://")
-		host = strings.TrimPrefix(host, "https://")
-		if i := strings.LastIndex(host, ":"); i > 0 {
-			host = host[:i]
+	for _, key := range []string{"peer.service", "server.address", "net.peer.name"} {
+		if v, ok := attrs[key].(string); ok && v != "" {
+			return stripHostPort(v)
 		}
-		return host
 	}
 	return ""
 }
 
-// grpcToHTTP maps gRPC status codes to approximate HTTP equivalents so the
-// outcome status code stays consistent across transports.
-func grpcToHTTP(code int) int {
-	switch code {
-	case 0:
-		return 200
-	case 1:
-		return 499
-	case 2:
-		return 500
-	case 3:
-		return 400
-	case 4:
-		return 504
-	case 5:
-		return 404
-	case 6:
-		return 409
-	case 7:
-		return 403
-	case 8:
-		return 429
-	case 9:
-		return 400
-	case 10:
-		return 409
-	case 11:
-		return 400
-	case 12:
-		return 501
-	case 13:
-		return 500
-	case 14:
-		return 503
-	case 15:
-		return 500
-	case 16:
-		return 401
-	default:
-		return 500
+func downstreamEndpoint(attrs map[string]any) string {
+	for _, key := range []string{"http.route", "url.path", "http.target"} {
+		if v, ok := attrs[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func stripHostPort(v string) string {
+	host := strings.TrimPrefix(v, "http://")
+	host = strings.TrimPrefix(host, "https://")
+	if i := strings.LastIndex(host, ":"); i > 0 {
+		host = host[:i]
+	}
+	return host
+}
+
+func fields(span *tracepb.Span, attrs map[string]any, statusCode int) map[string]any {
+	httpFields := map[string]any{"status": statusCode}
+	if v, ok := attrs["http.request.method"].(string); ok && v != "" {
+		httpFields["method"] = v
+	}
+	if v, ok := attrs["http.route"].(string); ok && v != "" {
+		httpFields["route"] = v
+	}
+	return map[string]any{
+		"http": httpFields,
+		"otel": map[string]any{
+			"span_name": span.GetName(),
+			"span_kind": span.GetKind().String(),
+		},
 	}
 }
 

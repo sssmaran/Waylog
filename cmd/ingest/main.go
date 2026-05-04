@@ -356,25 +356,9 @@ func main() {
 	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(eventsV2.Events)))
 	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(eventsV2.Validate)))
 
-	// OTLP/HTTP traces — routed through a dedicated pipeline that reuses the
-	// same store, builder, sampler, WAL, cold store, and SSE hub as the SDK
-	// path so counters and /v1/overview reflect OTLP traffic too.
+	// OTLP/HTTP traces reuse the same schema-2.0 WAL and projector as the SDK path.
 	if otlpEnabled {
-		otlpPipeline := ingest.NewPipeline(ingest.PipelineConfig{
-			Store:      graphStore,
-			TraceStore: traceStore,
-			Builder:    ingestServer.Builder(),
-			Sampler:    ingestServer.Sampler(),
-			EventLog:   ingestServer.EventLog,
-			ColdWriter: coldWriter,
-			ColdStore:  coldDB,
-			Counters:   ingestServer.Counters(),
-			Accepted:   ingestServer.AcceptedPtr(),
-			Metrics:    m,
-			Notifier:   ingestServer.SSEHub(),
-			Validator:  ingest.OTLPValidator,
-		})
-		otlpHandler := otelhttp.NewHandler(otlpPipeline, m, maxBody)
+		otlpHandler := otelhttp.NewHandler(eventsV2, m, maxBody)
 		mux.Handle("/v1/otlp/v1/traces", writeAuth(http.HandlerFunc(otlpHandler.ServeHTTP)))
 		slog.Info("otlp enabled", "endpoint", "/v1/otlp/v1/traces")
 	}

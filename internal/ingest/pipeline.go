@@ -25,8 +25,8 @@ type Notifier interface {
 }
 
 // Validator is the per-event validation function the Pipeline applies before
-// any durable work. SDK pipeline uses event.WideEvent.Validate; OTLP pipeline
-// uses OTLPValidator which suppresses user.id-only failures.
+// any durable work. The default path uses event.WideEvent.Validate; specialized
+// callers may provide a narrower validator.
 type Validator func(ev *event.WideEvent) error
 
 // PipelineConfig holds all dependencies for a Pipeline instance.
@@ -47,8 +47,8 @@ type PipelineConfig struct {
 	Validator  Validator
 }
 
-// Pipeline is the protocol-agnostic ingest core shared by the SDK HTTP handler
-// and the OTLP handler. Order of operations per event:
+// Pipeline is the schema-1.x ingest core for old graph-derived APIs. Order of
+// operations per event:
 //
 //	validate → WAL → counters → cold store → deployment upsert → sample →
 //	build → merge graph + tracestore → notify (once per batch)
@@ -240,9 +240,9 @@ func (p *Pipeline) IngestBatch(ctx context.Context, events []*event.WideEvent) (
 	return result, nil
 }
 
-// OTLPValidator is the Validator the OTLP pipeline uses. It runs the full
-// event.WideEvent.Validate and then suppresses the result if the ONLY failing
-// field is user.id — because OTLP has no standard way to carry end-user id.
+// OTLPValidator is kept for callers that ingest schema-1.x events converted
+// from telemetry without end-user identity. It runs event.WideEvent.Validate
+// and then suppresses the result if the ONLY failing field is user.id.
 // Any other validation failure (including multi-field errors that happen to
 // include user.id) is returned unchanged.
 func OTLPValidator(ev *event.WideEvent) error {

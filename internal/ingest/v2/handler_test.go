@@ -3,7 +3,9 @@ package ingestv2
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -460,6 +462,96 @@ func TestEventsProjectionPanicReturns503AndRollsBackDedup(t *testing.T) {
 	}
 	if got := counterValue(fm["waylog_v2_project_panic_total"]); got != 1 {
 		t.Fatalf("project_panic=%v want 1", got)
+	}
+}
+
+func TestIngestRawMatchesHTTPEnvelope(t *testing.T) {
+	index := NewRecentIndex(nil)
+	h, wal := newTestHandlerWithIndex(t, nil, index)
+	raw := validEventMap("00000000-0000-4000-8000-000000000002")
+	delete(raw, "service")
+	bodies := [][]byte{
+		[]byte(validEventJSON("00000000-0000-4000-8000-000000000001")),
+		[]byte(validEventJSON("00000000-0000-4000-8000-000000000001")),
+		[]byte(mustJSON(t, raw)),
+	}
+
+	env, err := h.IngestRaw(context.Background(), bodies, true)
+	if err != nil {
+		t.Fatalf("IngestRaw: %v", err)
+	}
+	if env.Accepted != 1 || env.Duplicate != 1 || len(env.Rejected) != 1 {
+		t.Fatalf("env=%+v", env)
+	}
+	if env.Rejected[0].Index != 2 || env.Rejected[0].Reason != ReasonSchemaValidationFailed {
+		t.Fatalf("rejected=%+v", env.Rejected[0])
+	}
+	if wal.Count() != 1 {
+		t.Fatalf("wal writes=%d want 1", wal.Count())
+	}
+	if index.Sizes().Events != 1 {
+		t.Fatalf("indexed events=%d want 1", index.Sizes().Events)
+	}
+}
+
+func TestIngestRawDryRunDoesNotMutateDurableState(t *testing.T) {
+	dedup := NewDedup(10, nil)
+	wal := &fakeWAL{}
+	index := NewRecentIndex(nil)
+	h := newTestHandlerWithConfig(t, Config{Dedup: dedup, WAL: wal, Index: index})
+
+	env, err := h.IngestRaw(context.Background(), [][]byte{[]byte(validEventJSON("00000000-0000-4000-8000-000000000001"))}, false)
+	if err != nil {
+		t.Fatalf("IngestRaw: %v", err)
+	}
+	if env.Accepted != 1 || env.Duplicate != 0 || len(env.Rejected) != 0 {
+		t.Fatalf("env=%+v", env)
+	}
+	if wal.Count() != 0 {
+		t.Fatalf("wal writes=%d want 0", wal.Count())
+	}
+	if dedup.Size() != 0 {
+		t.Fatalf("dedup size=%d want 0", dedup.Size())
+	}
+	if index.Sizes().Events != 0 {
+		t.Fatalf("indexed events=%d want 0", index.Sizes().Events)
+	}
+}
+
+func TestIngestRawWALFailureReturnsError(t *testing.T) {
+	wal := &fakeWAL{failAt: 1}
+	h := newTestHandlerWithWAL(t, nil, wal)
+
+	env, err := h.IngestRaw(context.Background(), [][]byte{[]byte(validEventJSON("00000000-0000-4000-8000-000000000001"))}, true)
+	if !errors.Is(err, errDurabilityUnavailable) {
+		t.Fatalf("err=%v want durability unavailable", err)
+	}
+	if env.Accepted != 0 || len(env.Rejected) != 0 {
+		t.Fatalf("env=%+v", env)
+	}
+	if wal.Count() != 0 {
+		t.Fatalf("wal writes=%d want 0", wal.Count())
+	}
+}
+
+func TestIngestRawProjectionFailureReturnsErrorAndRollsBackDedup(t *testing.T) {
+	dedup := NewDedup(10, nil)
+	h := newTestHandlerWithConfig(t, Config{
+		Dedup:   dedup,
+		WAL:     &fakeWAL{},
+		Project: panicProjector{},
+	})
+	eventID := "00000000-0000-4000-8000-000000000001"
+
+	env, err := h.IngestRaw(context.Background(), [][]byte{[]byte(validEventJSON(eventID))}, true)
+	if !errors.Is(err, errProjectionUnavailable) {
+		t.Fatalf("err=%v want projection unavailable", err)
+	}
+	if env.Accepted != 0 || len(env.Rejected) != 0 {
+		t.Fatalf("env=%+v", env)
+	}
+	if dedup.Seen(eventID) {
+		t.Fatal("dedup entry should be rolled back")
 	}
 }
 
