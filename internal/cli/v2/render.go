@@ -68,6 +68,102 @@ func RenderRecent(w io.Writer, resp RecentTracesResponse) {
 	renderNextCursor(w, resp.NextCursor)
 }
 
+func RenderIncidents(w io.Writer, resp IncidentListResponse) {
+	if len(resp.Incidents) == 0 {
+		fmt.Fprintln(w, "No active incidents.")
+		return
+	}
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "INCIDENT\tSTATUS\tCAUSE\tCONF\tSEVERITY\tFAMILY\tAFFECTED\tSTARTED")
+	for _, inc := range resp.Incidents {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%d req / %d svc\t%s\n",
+			truncateID(inc.IncidentID),
+			inc.Status,
+			inc.Cause,
+			inc.Confidence,
+			inc.Severity,
+			apiv2.FormatErrorFamily(inc.ErrorFamily),
+			inc.AffectedRequests,
+			inc.AffectedServices,
+			formatTime(inc.StartedAt),
+		)
+	}
+	_ = tw.Flush()
+}
+
+func RenderIncident(w io.Writer, resp IncidentDetailResponse) {
+	renderIncidentBody(w, resp.Incident)
+}
+
+func RenderIncidentSnapshot(w io.Writer, resp IncidentSnapshotResponse) {
+	if resp.Snapshot != "" {
+		fmt.Fprintln(w, resp.Snapshot)
+	}
+}
+
+func renderIncidentBody(w io.Writer, inc Incident) {
+	fmt.Fprintf(w, "incident_id: %s\n", inc.IncidentID)
+	fmt.Fprintf(w, "status: %s\n", inc.Status)
+	fmt.Fprintf(w, "family: %s\n", apiv2.FormatErrorFamily(inc.ErrorFamily))
+	fmt.Fprintf(w, "cause: %s (%s confidence)\n", inc.Cause, inc.Confidence)
+	fmt.Fprintf(w, "severity: %d\n", inc.Severity)
+	fmt.Fprintf(w, "started_at: %s\n", formatTime(inc.StartedAt))
+	fmt.Fprintf(w, "updated_at: %s\n", formatTime(inc.UpdatedAt))
+	if inc.ResolvedAt != nil {
+		fmt.Fprintf(w, "resolved_at: %s\n", formatTime(*inc.ResolvedAt))
+	}
+	fmt.Fprintf(w, "affected_requests: %d\n", inc.AffectedRequests)
+	if inc.AffectedUsers == nil {
+		fmt.Fprintln(w, "affected_users: null")
+	} else {
+		fmt.Fprintf(w, "affected_users: %d\n", *inc.AffectedUsers)
+	}
+	fmt.Fprintf(w, "affected_services: %d\n", inc.AffectedServices)
+	fmt.Fprintf(w, "top_services: %s\n", strings.Join(inc.TopServices, ","))
+	fmt.Fprintf(w, "lift: %.2f\n", inc.Lift)
+	fmt.Fprintf(w, "baseline_count: %d\n", inc.BaselineCount)
+	fmt.Fprintf(w, "current_count: %d\n", inc.CurrentCount)
+
+	fmt.Fprintln(w, "\nevidence:")
+	if len(inc.Evidence) == 0 {
+		fmt.Fprintln(w, "  none")
+	} else {
+		for _, ev := range inc.Evidence {
+			detail := ev.Detail
+			if detail == "" {
+				detail = ev.Service
+			}
+			fmt.Fprintf(w, "  - %s: %s", ev.Kind, ev.Title)
+			if detail != "" {
+				fmt.Fprintf(w, " (%s)", detail)
+			}
+			if ev.TraceID != "" {
+				fmt.Fprintf(w, " trace=%s", truncateID(ev.TraceID))
+			}
+			fmt.Fprintln(w)
+		}
+	}
+
+	fmt.Fprintln(w, "\nnext_checks:")
+	if len(inc.NextChecks) == 0 {
+		fmt.Fprintln(w, "  none")
+	} else {
+		for _, check := range inc.NextChecks {
+			fmt.Fprintf(w, "  - %s\n", check)
+		}
+	}
+
+	if len(inc.InstrumentationWarnings) > 0 {
+		fmt.Fprintln(w, "\ninstrumentation_warnings:")
+		for _, warning := range inc.InstrumentationWarnings {
+			fmt.Fprintf(w, "  - %s\n", warning)
+		}
+	}
+	if len(inc.SampleTraces) > 0 {
+		fmt.Fprintf(w, "\nsample_traces: %s\n", truncateList(inc.SampleTraces))
+	}
+}
+
 func RenderEvent(w io.Writer, ev *Event) {
 	if ev == nil {
 		fmt.Fprintln(w, "No event found.")

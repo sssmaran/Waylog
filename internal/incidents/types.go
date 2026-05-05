@@ -79,19 +79,6 @@ type Incident struct {
 	CurrentCount            int               `json:"current_count"`
 }
 
-type ActiveResponse struct {
-	Incidents []Incident `json:"incidents"`
-}
-
-type DetailResponse struct {
-	Incident Incident `json:"incident"`
-}
-
-type SnapshotResponse struct {
-	Snapshot string   `json:"snapshot"`
-	Incident Incident `json:"incident"`
-}
-
 type Deployment struct {
 	ID        string
 	Service   string

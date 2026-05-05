@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 )
 
 func TestHandlerActiveDetailAndSnapshot(t *testing.T) {
@@ -28,7 +30,7 @@ func TestHandlerActiveDetailAndSnapshot(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("active status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var active ActiveResponse
+	var active apiv2.IncidentListResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &active); err != nil {
 		t.Fatal(err)
 	}

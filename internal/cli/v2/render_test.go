@@ -84,6 +84,54 @@ func TestRenderEventPrintsSummaryCounts(t *testing.T) {
 	}
 }
 
+func TestRenderIncidentsAndDetail(t *testing.T) {
+	start := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	inc := Incident{
+		IncidentID:       "inc_1234567890abcdef",
+		Env:              "prod",
+		Service:          "checkout",
+		ErrorFamily:      ErrorFamily{Service: "checkout", Step: "payment.charge", ErrorCode: "PMT_502"},
+		Status:           "active",
+		Cause:            "dependency",
+		Confidence:       "medium",
+		Severity:         8,
+		StartedAt:        start,
+		UpdatedAt:        start.Add(time.Minute),
+		LastSeenAt:       start.Add(time.Minute),
+		AffectedRequests: 12,
+		AffectedServices: 3,
+		TopServices:      []string{"checkout", "payment"},
+		SampleTraces:     []string{"trace-1234567890"},
+		Evidence:         []IncidentEvidence{{Kind: "trace", Title: "First failing trace sample", Detail: "payment.charge/PMT_502", TraceID: "trace-1234567890", OccurredAt: start}},
+		NextChecks:       []string{"Check payment health."},
+		Lift:             6,
+		BaselineCount:    2,
+		CurrentCount:     12,
+	}
+
+	var out bytes.Buffer
+	RenderIncidents(&out, IncidentListResponse{Incidents: []Incident{inc}})
+	for _, want := range []string{"INCIDENT", "dependency", "medium", "checkout:payment.charge:PMT_502", "12 req / 3 svc"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("list output missing %q:\n%s", want, out.String())
+		}
+	}
+
+	out.Reset()
+	RenderIncident(&out, IncidentDetailResponse{Incident: inc})
+	for _, want := range []string{"incident_id: inc_1234567890abcdef", "cause: dependency (medium confidence)", "evidence:", "next_checks:", "sample_traces:"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("detail output missing %q:\n%s", want, out.String())
+		}
+	}
+
+	out.Reset()
+	RenderIncidents(&out, IncidentListResponse{})
+	if !strings.Contains(out.String(), "No active incidents.") {
+		t.Fatalf("empty output=%q", out.String())
+	}
+}
+
 func TestRenderCapabilitiesPrintsReadableFlags(t *testing.T) {
 	var out bytes.Buffer
 	resp := CapabilitiesResponse{}

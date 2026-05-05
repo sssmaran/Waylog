@@ -49,6 +49,10 @@ func RunCLI(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return runCapabilities(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "recent":
 		return runRecent(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "incidents":
+		return runIncidents(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "incident":
+		return runIncident(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "errors":
 		return runErrors(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "event":
@@ -180,6 +184,64 @@ func runRecent(ctx context.Context, client *Client, cfg cliConfig, args []string
 	}
 	resp, err := client.Recent(ctx, RecentParams{Window: *window, Service: *service, Status: *status, Limit: *limit, Cursor: *cursor, IncludeSuppressed: *includeSuppressed})
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderRecent)
+}
+
+func runIncidents(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 0 {
+		return usage(stderr, "usage: waylog incidents [--json]")
+	}
+	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
+		return gate
+	}
+	resp, err := client.Incidents(ctx)
+	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderIncidents)
+}
+
+func runIncident(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
+	incidentID, snapshot, err := parseIncidentArgs(args)
+	if err != nil {
+		return usage(stderr, err.Error())
+	}
+	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
+		return gate
+	}
+	if snapshot {
+		if cfg.json {
+			resp, err := client.IncidentSnapshotJSON(ctx, incidentID)
+			return renderOrError(stdout, stderr, true, resp, err, RenderIncidentSnapshot)
+		}
+		text, err := client.IncidentSnapshotText(ctx, incidentID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitCodeForError(err)
+		}
+		fmt.Fprint(stdout, text)
+		return 0
+	}
+	resp, err := client.Incident(ctx, incidentID)
+	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderIncident)
+}
+
+func parseIncidentArgs(args []string) (string, bool, error) {
+	incidentID := ""
+	snapshot := false
+	for _, arg := range args {
+		switch {
+		case arg == "--snapshot":
+			snapshot = true
+		case strings.HasPrefix(arg, "-"):
+			return "", false, fmt.Errorf("unknown flag: %s", arg)
+		default:
+			if incidentID != "" {
+				return "", false, errors.New("usage: waylog incident <incident_id> [--snapshot] [--json]")
+			}
+			incidentID = arg
+		}
+	}
+	if incidentID == "" {
+		return "", false, errors.New("usage: waylog incident <incident_id> [--snapshot] [--json]")
+	}
+	return incidentID, snapshot, nil
 }
 
 func runEvent(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
@@ -423,6 +485,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   waylog capabilities [--json]
   waylog recent [--window <dur>] [--service <svc>] [--status <csv>] [--limit <n>] [--cursor <c>] [--include-suppressed] [--json]
+  waylog incidents [--json]
+  waylog incident <incident_id> [--snapshot] [--json]
   waylog errors [--window <dur>] [--service <svc>] [--limit <n>] [--cursor <c>] [--json]
   waylog event <event_id> [--json]
   waylog trace <trace_id> [--json]
@@ -431,6 +495,8 @@ func printUsage(w io.Writer) {
   waylog search <query> [--service <svc>] [--status <csv>] [--window <dur>] [--limit <n>] [--cursor <c>] [--json]
 
 Recommended loop:
+  waylog incidents
+  waylog incident <incident_id>
   waylog recent
   waylog errors --window 15m
   waylog blast checkout:payment.charge:PMT_502 --window 15m

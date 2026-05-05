@@ -31,6 +31,11 @@ type ErrorRow = apiv2.ErrorRow
 type ErrorsResponse = apiv2.ErrorsResponse
 type BlastKey = apiv2.BlastKey
 type BlastRadiusResponse = apiv2.BlastRadiusResponse
+type Incident = apiv2.Incident
+type IncidentEvidence = apiv2.IncidentEvidence
+type IncidentListResponse = apiv2.IncidentListResponse
+type IncidentDetailResponse = apiv2.IncidentDetailResponse
+type IncidentSnapshotResponse = apiv2.IncidentSnapshotResponse
 
 type eventGetResponse struct {
 	Event *Event `json:"event"`
