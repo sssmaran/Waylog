@@ -56,6 +56,7 @@ The `waylog` CLI calls the running ingest server's v2 read APIs. The server must
 | `EVENT_LOG_SYNC` | `true` | Per-write fsync. Set `false` for dev/load testing |
 | `EVENT_LOG_MAX_FILE_MB` | `50` | Rotation size. `0` disables rotation |
 | `EVENT_LOG_RETENTION` | `72h` | Event log retention. Must be positive |
+| `WAYLOG_SIGNAL_RETENTION` | `72h` | Production-context signal retention. Must be positive. `/v1/signals` requires `SQLITE_PATH` |
 | `WAYLOG_V2_DEDUP_CAPACITY` | `65536` | Recent schema-2.0 `event_id` dedupe cache capacity |
 | `GRAPH_HOT_WINDOW` | `GRAPH_RETENTION` or `24h` | Recent in-memory graph/index retention window and max v2 read window |
 | `GRAPH_RETENTION` | `24h` | Hot graph retention. Nodes older than this are pruned every snapshot tick |

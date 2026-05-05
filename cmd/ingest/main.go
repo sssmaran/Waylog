@@ -32,6 +32,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	otelhttp "github.com/sssmaran/WaylogCLI/internal/otel"
 	"github.com/sssmaran/WaylogCLI/internal/persist"
+	"github.com/sssmaran/WaylogCLI/internal/signals"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 )
@@ -124,6 +125,11 @@ func main() {
 	graphUI := config.GetenvBool("GRAPH_UI", false)
 	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
 	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", false)
+	signalRetention := config.GetenvDuration("WAYLOG_SIGNAL_RETENTION", 72*time.Hour)
+	if signalRetention <= 0 {
+		slog.Error("WAYLOG_SIGNAL_RETENTION must be positive", "value", signalRetention)
+		os.Exit(1)
+	}
 
 	causalEnabled := config.GetenvBool("CAUSAL_ENABLED", false)
 	causalInterval := config.GetenvDuration("CAUSAL_INTERVAL", 30*time.Second)
@@ -188,6 +194,7 @@ func main() {
 	// Optional SQLite cold store
 	var coldDB coldstore.ManagedStore
 	var coldWriter *coldstore.BatchWriter
+	var signalStore signals.Store = signals.UnavailableStore{}
 	if sqlitePath != "" {
 		if eventLogDir == "" {
 			slog.Warn("SQLITE_PATH set without EVENT_LOG_DIR — cold store is async-only, " +
@@ -207,6 +214,7 @@ func main() {
 			FlushInterval: config.GetenvDuration("SQLITE_FLUSH_INTERVAL", 500*time.Millisecond),
 		}, m)
 		coldWriter.Start()
+		signalStore = coldstore.NewSignalStore(coldDB.(*coldstore.SQLiteStore))
 
 		slog.Info("coldstore enabled", "path", sqlitePath)
 	}
@@ -355,6 +363,8 @@ func main() {
 	}
 	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(eventsV2.Events)))
 	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(eventsV2.Validate)))
+	signalHandler := signals.NewHandler(signalStore, m)
+	mux.Handle("/v1/signals", writeAuth(http.HandlerFunc(signalHandler.Signals)))
 
 	// OTLP/HTTP traces reuse the same schema-2.0 WAL and projector as the SDK path.
 	if otlpEnabled {
@@ -452,6 +462,10 @@ func main() {
 		syscall.SIGTERM,
 	)
 	defer stop()
+
+	if _, ok := signalStore.(*coldstore.SignalStore); ok {
+		go signals.RunRetention(ctx, signalStore, signalRetention, 5*time.Minute, m, slog.Default())
+	}
 
 	go func() {
 		slog.Info("ingest listening", "addr", addr, "graph_hot_window", graphHotWindow)

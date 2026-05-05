@@ -67,6 +67,10 @@ type Metrics struct {
 	DeployUpsertsTotal prometheus.Counter
 	DeployUpsertErrors prometheus.Counter
 
+	SignalsAccepted       prometheus.Counter
+	SignalsRejected       *prometheus.CounterVec
+	SignalRetentionPruned prometheus.Counter
+
 	CausalRunsTotal   prometheus.Counter
 	CausalRunDuration prometheus.Histogram
 	CausalRunFailures prometheus.Counter
@@ -316,6 +320,26 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help: "Failed deployment upserts (non-env-conflict).",
 	})
 
+	m.SignalsAccepted = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_signals_accepted_total",
+		Help: "Production-context signals accepted into durable storage.",
+	})
+	m.SignalsRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_signals_rejected_total",
+		Help: "Production-context signals rejected by reason.",
+	}, []string{"reason"})
+	for _, reason := range []string{
+		"invalid_field", "unknown_type", "unknown_severity", "timestamp_too_far_in_future",
+		"body_oversize", "invalid_body", "invalid_json", "unsupported_method",
+		"durability_unavailable", "internal_error",
+	} {
+		m.SignalsRejected.WithLabelValues(reason).Add(0)
+	}
+	m.SignalRetentionPruned = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_signal_retention_pruned_total",
+		Help: "Production-context signals pruned by retention.",
+	})
+
 	m.CausalRunsTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_causal_runs_total",
 		Help: "Total causal inference runs.",
@@ -392,6 +416,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
 		m.ColdEventsWritten, m.ColdEventsDropped, m.ColdBatchLatency,
 		m.DeployUpsertsTotal, m.DeployUpsertErrors,
+		m.SignalsAccepted, m.SignalsRejected, m.SignalRetentionPruned,
 		m.CausalRunsTotal, m.CausalRunDuration, m.CausalRunFailures, m.CausalClaimsTotal,
 		m.OTLPRequestsTotal, m.OTLPSpansReceived, m.OTLPSpansConverted,
 		m.OTLPSpansDropped, m.OTLPValidationRejects, m.OTLPDecodeFailures,
