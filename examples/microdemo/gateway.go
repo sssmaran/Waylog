@@ -30,6 +30,7 @@ type GatewayHandler struct {
 	checkoutURL string
 	client      *http.Client
 	purchase    http.Handler
+	signals     SignalPoster
 }
 
 type PurchaseRequest struct {
@@ -59,6 +60,11 @@ func (h *GatewayHandler) PurchaseHandler() http.Handler {
 // SetPurchaseHandler overrides the handler used by /demo/burst. Test seam.
 func (h *GatewayHandler) SetPurchaseHandler(handler http.Handler) {
 	h.purchase = handler
+}
+
+// SetSignalPoster overrides the signal poster used by /demo/burst. Test seam.
+func (h *GatewayHandler) SetSignalPoster(poster SignalPoster) {
+	h.signals = poster
 }
 
 func (h *GatewayHandler) ServeDemo(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +142,12 @@ func (h *GatewayHandler) ServeBurst(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var signalResults []SignalResult
+	if h.signals != nil {
+		signalResults = h.signals.PostDemoSignals(r.Context())
+	}
 	summary := runBurst(r.Context(), h.purchase, req)
+	summary.Signals = signalResults
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary)
 }

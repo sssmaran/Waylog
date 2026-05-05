@@ -31,6 +31,7 @@ else
   export WAYLOG_READ_KEY="${WAYLOG_READ_KEY:-demo}"
 fi
 export WAYLOG_V2_READS="${WAYLOG_V2_READS:-true}"
+export WAYLOG_INCIDENT_TICK_INTERVAL="${WAYLOG_INCIDENT_TICK_INTERVAL:-5s}"
 export EVENT_LOG_DIR="${EVENT_LOG_DIR:-${STATE_DIR}/eventlog}"
 export EVENT_LOG_V2_DIR="${EVENT_LOG_V2_DIR:-${STATE_DIR}/eventlog-v2}"
 export SNAPSHOT_PATH="${SNAPSHOT_PATH:-${STATE_DIR}/graph_snapshot.json}"
@@ -142,14 +143,16 @@ Open:
 
 How to demo it:
   1. Open Demo controls and click "Run traffic burst".
-  2. Open Dashboard and inspect errors, impact, and trace explanation.
+  2. Open Dashboard and inspect the active incident, errors, impact, and trace explanation.
   3. Or run: make demo-acceptance
 
 Useful CLI checks:
   ./waylog capabilities
   ./waylog recent --limit 5
+  ./waylog incidents
   ./waylog errors --window 15m
   ./waylog blast --service checkout --step payment.charge --code PMT_502 --window 15m
+  ./waylog incident <incident_id> --snapshot
 
 Logs:
   ${LOG_DIR}

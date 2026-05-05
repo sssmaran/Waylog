@@ -27,6 +27,8 @@ func TestDemoUIProductShowcaseCopy(t *testing.T) {
 		"Run checkout 500",
 		"Run traffic burst",
 		"Production-like traffic mix",
+		"posts demo deploy/dependency signals",
+		"active incident",
 		"Burst captured",
 		"Open dashboard",
 		"Explain this trace",

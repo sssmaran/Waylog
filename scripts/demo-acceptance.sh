@@ -31,6 +31,18 @@ json_first_event_id() {
   "$JSON_BIN" first-event-id
 }
 
+json_burst_signals_accepted() {
+  "$JSON_BIN" burst-signals-accepted
+}
+
+json_has_dependency_incident() {
+  "$JSON_BIN" has-dependency-incident
+}
+
+json_first_incident_id() {
+  "$JSON_BIN" first-incident-id
+}
+
 if [[ "$(http_code "${GATEWAY_URL}/demo")" != "200" ]] || [[ "$(http_code "${INGEST_URL}/healthz")" != "200" ]]; then
   fail "demo stack is not running. Start it with: make demo"
 fi
@@ -65,6 +77,9 @@ burst_status="$(curl -s -o /tmp/waylog-demo-burst.json -w "%{http_code}" \
 [[ "$burst_status" == "200" ]] || fail "traffic burst failed: HTTP $burst_status"
 echo "PASS: traffic burst captured (${REQUESTS} requests / ${CONCURRENCY} concurrency)"
 
+json_burst_signals_accepted </tmp/waylog-demo-burst.json || fail "demo burst did not accept deploy and dependency signals"
+echo "PASS: demo signals accepted"
+
 errors_json=""
 for _ in $(seq 1 12); do
   errors_json="$("${CLI[@]}" --json errors --window 15m --limit 10)" || fail "waylog errors failed"
@@ -94,5 +109,26 @@ event_id="$(json_first_event_id <<<"$search_json")"
 
 "${CLI[@]}" --json event "$event_id" >/dev/null || fail "waylog event failed for event $event_id"
 echo "PASS: waylog event"
+
+incidents_json=""
+for _ in $(seq 1 20); do
+  incidents_json="$("${CLI[@]}" --json incidents)" || fail "waylog incidents failed"
+  if json_has_dependency_incident <<<"$incidents_json"; then
+    break
+  fi
+  sleep 1
+done
+json_has_dependency_incident <<<"$incidents_json" || fail "dependency incident did not appear in /v1/incidents/active"
+echo "PASS: waylog incidents contains active dependency incident"
+
+incident_id="$(json_first_incident_id <<<"$incidents_json")"
+[[ -n "$incident_id" ]] || fail "no incident_id found for payment dependency incident"
+
+"${CLI[@]}" --json incident "$incident_id" >/dev/null || fail "waylog incident failed for incident $incident_id"
+echo "PASS: waylog incident"
+
+snapshot="$("${CLI[@]}" incident "$incident_id" --snapshot)" || fail "waylog incident snapshot failed for incident $incident_id"
+[[ "$snapshot" == *"payment.charge"* ]] || fail "incident snapshot did not mention payment.charge"
+echo "PASS: waylog incident snapshot"
 
 echo "Demo acceptance passed."

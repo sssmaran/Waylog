@@ -17,6 +17,10 @@ func main() {
 
 	checkoutURL := config.Getenv("CHECKOUT_URL", "http://localhost:9082")
 	gateway := microdemo.NewGatewayHandler(checkoutURL)
+	gateway.SetSignalPoster(microdemo.NewDemoSignalPoster(
+		config.Getenv("INGEST_URL", "http://localhost:8080"),
+		config.Getenv("WAYLOG_WRITE_KEY", ""),
+	))
 
 	mux := http.NewServeMux()
 	mux.Handle("/purchase", gateway.PurchaseHandler())

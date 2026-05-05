@@ -217,7 +217,7 @@ func (e *Engine) buildIncident(ctx context.Context, row apiv2.ErrorRow, baseline
 		SearchFilter{Since: since, Until: now},
 		apiv2.BlastKey{Service: row.ErrorFamily.Service, Step: row.ErrorFamily.Step, ErrorCode: row.ErrorFamily.ErrorCode},
 	)
-	sigs, err := e.querySignals(ctx, row.ErrorFamily.Service, env, now.Add(-e.cfg.DeployCorrelationWindow), now)
+	sigs, err := e.querySignals(ctx, env, now.Add(-e.cfg.DeployCorrelationWindow), now)
 	if err != nil && !errors.Is(err, signals.ErrUnavailable) {
 		return Incident{}, err
 	}
@@ -325,11 +325,11 @@ func (e *Engine) sampleEvents(f apiv2.ErrorFamily, since, until time.Time, limit
 	return out
 }
 
-func (e *Engine) querySignals(ctx context.Context, service, env string, since, until time.Time) ([]signals.Signal, error) {
+func (e *Engine) querySignals(ctx context.Context, env string, since, until time.Time) ([]signals.Signal, error) {
 	if e.signals == nil {
 		return nil, nil
 	}
-	return e.signals.Query(ctx, signals.Filter{Service: service, Env: env, Since: since, Until: until, Limit: 200})
+	return e.signals.Query(ctx, signals.Filter{Env: env, Since: since, Until: until, Limit: 200})
 }
 
 func (e *Engine) queryDeploys(ctx context.Context, service string, since, until time.Time) ([]Deployment, error) {

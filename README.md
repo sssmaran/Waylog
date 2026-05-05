@@ -41,12 +41,12 @@ Run `make demo` and see it yourself.
 make demo
 ```
 
-This starts the ingest server plus four real Go demo services wired through the schema-2.0 Go SDK (`api-gateway → checkout → db/payment`), enables `WAYLOG_V2_READS=true`, and does not require Docker, Kafka, or the bridge process.
+This starts the ingest server plus four real Go demo services wired through the schema-2.0 Go SDK (`api-gateway → checkout → db/payment`), enables `WAYLOG_V2_READS=true`, stores demo signals/incidents in local SQLite, and does not require Docker, Kafka, or the bridge process.
 
 Once the stack is up:
 
 1. Open demo controls at <http://localhost:9081/demo>, or open the dashboard at <http://localhost:8080/ui/>. The local demo disables dashboard login.
-2. Click **Run traffic burst** to fire a production-like mix through the checkout chain. For a focused single-trace look, click **Run payment outage** instead, or run:
+2. Click **Run traffic burst** to post demo deploy/dependency signals and fire a production-like mix through the checkout chain. For a focused single-trace look, click **Run payment outage** instead, or run:
    ```bash
    curl -s -X POST http://localhost:9081/purchase \
      -H 'Content-Type: application/json' \
@@ -54,6 +54,8 @@ Once the stack is up:
    ```
 3. Investigate with the v2 CLI:
    ```bash
+   ./waylog incidents
+   ./waylog incident <incident_id> --snapshot
    ./waylog errors --window 15m
    ./waylog explain <trace_id>
    ./waylog blast --service checkout --step payment.charge --code PMT_502 --window 15m
@@ -315,4 +317,4 @@ Public alpha. APIs may break before 1.0.
 - No built-in alerting or paging. Waylog answers questions, it doesn't wake you up.
 - No multi-tenancy. One instance = one trust boundary.
 
-**Fastest walkthrough:** `make demo`, open <http://localhost:9081/demo>, click **Run traffic burst**, then use the dashboard or `waylog recent`, `waylog errors`, `waylog explain`, and `waylog blast` to answer what failed, which downstream was involved, and how broad the impact is.
+**Fastest walkthrough:** `make demo`, open <http://localhost:9081/demo>, click **Run traffic burst**, then use the dashboard or `waylog incidents`, `waylog recent`, `waylog errors`, `waylog explain`, and `waylog blast` to answer what failed, which downstream was involved, and how broad the impact is.

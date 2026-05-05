@@ -542,7 +542,7 @@
     <section class="section burst-row" aria-labelledby="burst-title">
       <div class="burst-meta">
         <h2 id="burst-title">Production-like traffic mix</h2>
-        <p class="muted small">Fires concurrent purchases through the same chain, with realistic checkout steps and failure cutoffs.</p>
+        <p class="muted small">Fires concurrent purchases, posts demo deploy/dependency signals, and creates incident context for the dashboard.</p>
       </div>
       <form id="burst-form" class="burst-form">
         <label><span>Requests</span><input type="number" name="requests" value="50" min="1" max="250" required></label>
@@ -671,7 +671,7 @@
       };
       const result = document.getElementById("result");
       result.className = "result-empty";
-      result.textContent = "Running production-like traffic mix through the demo chain…";
+      result.textContent = "Posting demo signals and running production-like traffic through the checkout chain…";
       try {
         const resp = await fetch("/demo/burst", {
           method: "POST",
@@ -770,6 +770,11 @@
       const samples = (summary.sample_trace_ids || []).slice(0, 3)
         .map(id => `<a class="button" href="${dashboardURL}#/explain/${encodeURIComponent(id)}">Explain ${esc(id.slice(0, 12))}…</a>`)
         .join("");
+      const signals = (summary.signals || []).map(signal => {
+        const cls = signal.accepted ? "" : "warn";
+        const label = signal.accepted ? "accepted" : (signal.error ? "unavailable" : "skipped");
+        return `<span class="burst-count"><span class="burst-dot ${cls}" aria-hidden="true"></span>${esc(signal.type)}:${esc(signal.service)} <strong>${esc(label)}</strong></span>`;
+      }).join("");
 
       const result = document.getElementById("result");
       result.className = "bracketed";
@@ -777,10 +782,12 @@
         <div>
           <div class="eyebrow">Burst captured</div>
           <p class="muted mono">${reqLabel} · ${summary.accepted.concurrency}× · ${summary.duration_ms}ms</p>
+          <p class="muted small">Dashboard should now show an active incident with dependency evidence after the next incident tick.</p>
         </div>
         <div class="burst-counts">${counts}</div>
+        ${signals ? `<div class="burst-counts" aria-label="Signals">${signals}</div>` : ""}
         <div class="links">
-          <a class="button primary" href="${dashboardURL}#/errors">Open dashboard</a>
+          <a class="button primary" href="${dashboardURL}">Open dashboard</a>
           ${blastLinks}
           ${samples}
         </div>

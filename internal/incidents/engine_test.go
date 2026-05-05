@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/signals"
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
@@ -78,6 +79,52 @@ func TestEngineLifecycleAndSampleStability(t *testing.T) {
 	}
 }
 
+func TestEngineUsesDownstreamDependencySignal(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	reader := &fakeReader{
+		current: ErrorsResult{Rows: []apiv2.ErrorRow{{
+			ErrorFamily:    testFamily(),
+			Count:          6,
+			AffectedTraces: 6,
+			SampleTraces:   []string{"trace-a"},
+		}}},
+		blast: apiv2.BlastRadiusResponse{AffectedRequests: 6, AffectedServices: 2, TopServices: []string{"checkout", "payment"}},
+		events: []*eventv2.Event{
+			testIncidentEvent("e1", "trace-a", now.Add(-time.Minute), "checkout", "payment.charge", "PMT_502", "payment"),
+		},
+	}
+	signalStore := &fakeSignalStore{rows: []signals.Signal{{
+		SignalID:  "sig_payment",
+		Type:      signals.TypeDependency,
+		Service:   "payment",
+		Env:       "prod",
+		Severity:  signals.SeverityCritical,
+		Reason:    "payment_gateway_5xx",
+		Timestamp: now.Add(-2 * time.Minute),
+	}}}
+	engine := NewEngine(reader, signalStore, nil, NewMemoryStore(), Config{MinCount: 5, SampleLimit: 2}, nil, nil)
+	engine.now = func() time.Time { return now }
+	if err := engine.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := engine.Active(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("active incidents = %d, want 1", len(rows))
+	}
+	if rows[0].Cause != CauseDependency || rows[0].Confidence != ConfidenceHigh {
+		t.Fatalf("classification = %s/%s, want dependency/high", rows[0].Cause, rows[0].Confidence)
+	}
+	if len(signalStore.filters) != 1 || signalStore.filters[0].Service != "" || signalStore.filters[0].Env != "prod" {
+		t.Fatalf("signal filters = %+v", signalStore.filters)
+	}
+}
+
 type fakeReader struct {
 	current ErrorsResult
 	base    ErrorsResult
@@ -102,4 +149,14 @@ func (r *fakeReader) BlastRadius(_ SearchFilter, key apiv2.BlastKey) apiv2.Blast
 
 func (r *fakeReader) SearchEvents(_ SearchFilter, _ int) []*eventv2.Event {
 	return r.events
+}
+
+type fakeSignalStore struct {
+	rows    []signals.Signal
+	filters []signals.Filter
+}
+
+func (s *fakeSignalStore) Query(_ context.Context, f signals.Filter) ([]signals.Signal, error) {
+	s.filters = append(s.filters, f)
+	return s.rows, nil
 }
