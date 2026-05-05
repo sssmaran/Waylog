@@ -57,6 +57,14 @@ The `waylog` CLI calls the running ingest server's v2 read APIs. The server must
 | `EVENT_LOG_MAX_FILE_MB` | `50` | Rotation size. `0` disables rotation |
 | `EVENT_LOG_RETENTION` | `72h` | Event log retention. Must be positive |
 | `WAYLOG_SIGNAL_RETENTION` | `72h` | Production-context signal retention. Must be positive. `/v1/signals` requires `SQLITE_PATH` |
+| `WAYLOG_INCIDENTS_ENABLED` | `true` | Enable the v2.1 incident engine when `SQLITE_PATH` is set and `WAYLOG_V2_READS=true` |
+| `WAYLOG_INCIDENT_TICK_INTERVAL` | `30s` | Incident engine evaluation interval |
+| `WAYLOG_INCIDENT_WINDOW` | `10m` | Current error-family spike window |
+| `WAYLOG_INCIDENT_MIN_COUNT` | `5` | Minimum current-window failures needed to open an incident |
+| `WAYLOG_INCIDENT_MIN_LIFT` | `3.0` | Minimum current-vs-baseline lift when the family already exists in the baseline window |
+| `WAYLOG_INCIDENT_RESOLVE_AFTER` | `2m` | Time without renewed matching failures before a recovering incident resolves |
+| `WAYLOG_DEPLOY_CORRELATION_WINDOW` | `15m` | Window used to attach deploy signals and deployment records as incident evidence |
+| `WAYLOG_INCIDENT_SAMPLE_LIMIT` | `5` | Maximum persisted sample traces per incident |
 | `WAYLOG_V2_DEDUP_CAPACITY` | `65536` | Recent schema-2.0 `event_id` dedupe cache capacity |
 | `GRAPH_HOT_WINDOW` | `GRAPH_RETENTION` or `24h` | Recent in-memory graph/index retention window and max v2 read window |
 | `GRAPH_RETENTION` | `24h` | Hot graph retention. Nodes older than this are pruned every snapshot tick |

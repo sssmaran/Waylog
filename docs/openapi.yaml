@@ -435,6 +435,79 @@ paths:
         '400':
           $ref: '#/components/responses/ReadBadRequest'
 
+  /v1/incidents/active:
+    get:
+      tags: [Triage]
+      operationId: listActiveIncidents
+      summary: Active v2.1 incidents
+      description: Returns active and recovering incidents derived from v2 error-family spikes, signals, and deployment context.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Active incidents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentListResponse'
+        '401':
+          description: Unauthorized
+        '405':
+          description: Method Not Allowed
+
+  /v1/incidents/{id}:
+    get:
+      tags: [Triage]
+      operationId: getIncident
+      summary: Get one incident
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+      responses:
+        '200':
+          description: Incident detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetailResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          $ref: '#/components/responses/ReadNotFound'
+        '405':
+          description: Method Not Allowed
+
+  /v1/incidents/{id}/snapshot:
+    get:
+      tags: [Triage]
+      operationId: getIncidentSnapshot
+      summary: Render an incident snapshot
+      description: Defaults to text/plain. Send Accept: application/json to receive the snapshot text plus the incident object.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+      responses:
+        '200':
+          description: Incident snapshot
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentSnapshotResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          $ref: '#/components/responses/ReadNotFound'
+        '405':
+          description: Method Not Allowed
+
   /v1/capabilities:
     get:
       tags: [Capabilities]
@@ -706,6 +779,12 @@ components:
         type: string
     TraceIDPath:
       name: trace_id
+      in: path
+      required: true
+      schema:
+        type: string
+    IncidentID:
+      name: id
       in: path
       required: true
       schema:
@@ -1429,6 +1508,186 @@ components:
           type: array
           items:
             type: string
+
+    IncidentEvidence:
+      type: object
+      required: [kind, title, occurred_at]
+      properties:
+        kind:
+          type: string
+          enum: [signal, deployment, trace, metric]
+        title:
+          type: string
+        detail:
+          type: string
+        service:
+          type: string
+        signal_id:
+          type: string
+        deployment_id:
+          type: string
+        trace_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        fields:
+          type: object
+          additionalProperties: true
+
+    Incident:
+      type: object
+      required:
+        - incident_id
+        - env
+        - service
+        - error_family
+        - status
+        - cause
+        - confidence
+        - severity
+        - started_at
+        - updated_at
+        - last_seen_at
+        - affected_requests
+        - affected_services
+        - top_services
+        - sample_traces
+        - evidence
+        - next_checks
+        - lift
+        - baseline_count
+        - current_count
+      example:
+        incident_id: inc_7d0b0b3d5a52d891
+        env: prod
+        service: checkout
+        error_family:
+          service: checkout
+          step: payment.charge
+          error_code: PMT_502
+        status: active
+        cause: dependency
+        confidence: medium
+        severity: 8
+        started_at: '2026-05-04T16:00:00Z'
+        updated_at: '2026-05-04T16:02:00Z'
+        last_seen_at: '2026-05-04T16:02:00Z'
+        affected_requests: 12
+        affected_users: 8
+        affected_services: 3
+        top_services: [api-gateway, checkout, payment]
+        sample_traces: [7f3a2b9c000000000000000000000001]
+        evidence:
+          - kind: trace
+            title: First failing trace sample
+            detail: payment.charge/PMT_502
+            service: checkout
+            trace_id: 7f3a2b9c000000000000000000000001
+            occurred_at: '2026-05-04T16:00:00Z'
+        next_checks:
+          - Check the downstream service health and recent deploys.
+        lift: 6
+        baseline_count: 2
+        current_count: 12
+      properties:
+        incident_id:
+          type: string
+        env:
+          type: string
+        service:
+          type: string
+        error_family:
+          $ref: '#/components/schemas/ErrorFamily'
+        status:
+          type: string
+          enum: [active, recovering, resolved]
+        cause:
+          type: string
+          enum: [deploy, app, dependency, unknown]
+        confidence:
+          type: string
+          enum: [high, medium, low]
+        severity:
+          type: integer
+          minimum: 1
+          maximum: 10
+        started_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        recovering_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        affected_requests:
+          type: integer
+        affected_users:
+          type: integer
+          nullable: true
+        affected_services:
+          type: integer
+        top_services:
+          type: array
+          items:
+            type: string
+        sample_traces:
+          type: array
+          items:
+            type: string
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/IncidentEvidence'
+        next_checks:
+          type: array
+          items:
+            type: string
+        instrumentation_warnings:
+          type: array
+          items:
+            type: string
+        lift:
+          type: number
+          format: double
+        baseline_count:
+          type: integer
+        current_count:
+          type: integer
+
+    IncidentListResponse:
+      type: object
+      required: [incidents]
+      properties:
+        incidents:
+          type: array
+          items:
+            $ref: '#/components/schemas/Incident'
+
+    IncidentDetailResponse:
+      type: object
+      required: [incident]
+      properties:
+        incident:
+          $ref: '#/components/schemas/Incident'
+
+    IncidentSnapshotResponse:
+      type: object
+      required: [snapshot, incident]
+      properties:
+        snapshot:
+          type: string
+        incident:
+          $ref: '#/components/schemas/Incident'
 
     CapabilitiesResponse:
       type: object

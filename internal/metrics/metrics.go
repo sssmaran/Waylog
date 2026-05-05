@@ -71,6 +71,14 @@ type Metrics struct {
 	SignalsRejected       *prometheus.CounterVec
 	SignalRetentionPruned prometheus.Counter
 
+	IncidentOpened          prometheus.Counter
+	IncidentUpdated         prometheus.Counter
+	IncidentRecovered       prometheus.Counter
+	IncidentResolved        prometheus.Counter
+	IncidentTickLatency     prometheus.Histogram
+	IncidentActive          prometheus.Gauge
+	IncidentClassifications *prometheus.CounterVec
+
 	CausalRunsTotal   prometheus.Counter
 	CausalRunDuration prometheus.Histogram
 	CausalRunFailures prometheus.Counter
@@ -340,6 +348,41 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help: "Production-context signals pruned by retention.",
 	})
 
+	m.IncidentOpened = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incidents_opened_total",
+		Help: "Incidents opened by the v2.1 incident engine.",
+	})
+	m.IncidentUpdated = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incidents_updated_total",
+		Help: "Incidents updated by the v2.1 incident engine.",
+	})
+	m.IncidentRecovered = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incidents_recovered_total",
+		Help: "Incidents moved to recovering by the v2.1 incident engine.",
+	})
+	m.IncidentResolved = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incidents_resolved_total",
+		Help: "Incidents resolved by the v2.1 incident engine.",
+	})
+	m.IncidentTickLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_incident_tick_latency_seconds",
+		Help:    "Incident engine tick duration.",
+		Buckets: defaultBuckets,
+	})
+	m.IncidentActive = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "waylog_incidents_active",
+		Help: "Active or recovering incidents currently tracked by the v2.1 incident engine.",
+	})
+	m.IncidentClassifications = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_incident_classifications_total",
+		Help: "Incident classifications by cause and confidence.",
+	}, []string{"cause", "confidence"})
+	for _, cause := range []string{"deploy", "app", "dependency", "unknown"} {
+		for _, confidence := range []string{"high", "medium", "low"} {
+			m.IncidentClassifications.WithLabelValues(cause, confidence).Add(0)
+		}
+	}
+
 	m.CausalRunsTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_causal_runs_total",
 		Help: "Total causal inference runs.",
@@ -417,6 +460,8 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.ColdEventsWritten, m.ColdEventsDropped, m.ColdBatchLatency,
 		m.DeployUpsertsTotal, m.DeployUpsertErrors,
 		m.SignalsAccepted, m.SignalsRejected, m.SignalRetentionPruned,
+		m.IncidentOpened, m.IncidentUpdated, m.IncidentRecovered, m.IncidentResolved,
+		m.IncidentTickLatency, m.IncidentActive, m.IncidentClassifications,
 		m.CausalRunsTotal, m.CausalRunDuration, m.CausalRunFailures, m.CausalClaimsTotal,
 		m.OTLPRequestsTotal, m.OTLPSpansReceived, m.OTLPSpansConverted,
 		m.OTLPSpansDropped, m.OTLPValidationRejects, m.OTLPDecodeFailures,

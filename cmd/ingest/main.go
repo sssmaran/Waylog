@@ -26,6 +26,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/incidents"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
@@ -35,6 +36,8 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/signals"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 	"github.com/sssmaran/WaylogCLI/internal/tracestore"
+	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
+	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
 
 var graphStore *graphstore.Store
@@ -126,6 +129,16 @@ func main() {
 	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
 	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", false)
 	signalRetention := config.GetenvDuration("WAYLOG_SIGNAL_RETENTION", 72*time.Hour)
+	incidentsEnabled := config.GetenvBool("WAYLOG_INCIDENTS_ENABLED", true)
+	incidentCfg := incidents.Config{
+		TickInterval:            config.GetenvDuration("WAYLOG_INCIDENT_TICK_INTERVAL", 30*time.Second),
+		Window:                  config.GetenvDuration("WAYLOG_INCIDENT_WINDOW", 10*time.Minute),
+		MinCount:                config.GetenvInt("WAYLOG_INCIDENT_MIN_COUNT", 5),
+		MinLift:                 config.GetenvFloat("WAYLOG_INCIDENT_MIN_LIFT", 3.0),
+		ResolveAfter:            config.GetenvDuration("WAYLOG_INCIDENT_RESOLVE_AFTER", 2*time.Minute),
+		DeployCorrelationWindow: config.GetenvDuration("WAYLOG_DEPLOY_CORRELATION_WINDOW", 15*time.Minute),
+		SampleLimit:             config.GetenvInt("WAYLOG_INCIDENT_SAMPLE_LIMIT", 5),
+	}
 	if signalRetention <= 0 {
 		slog.Error("WAYLOG_SIGNAL_RETENTION must be positive", "value", signalRetention)
 		os.Exit(1)
@@ -380,8 +393,11 @@ func main() {
 			func(w http.ResponseWriter, r *http.Request) { inner.ServeHTTP(w, r) }))
 	}
 	mux.Handle("/v1/overview", readCORS(ingestServer.Overview))
+	var v2Reader *ingestv2.Reader
+	var incidentEngine *incidents.Engine
+	incidentRunning := false
 	if v2ReadsEnabled {
-		v2Reader := ingestv2.NewReader(v2Index)
+		v2Reader = ingestv2.NewReader(v2Index)
 		v2ReadHandler := ingestv2.NewReadHandler(v2Reader, m, graphHotWindow)
 		mux.Handle("/v1/events/search", readCORS(v2ReadHandler.EventSearch))
 		mux.Handle("/v1/errors", readCORS(v2ReadHandler.Errors))
@@ -393,6 +409,32 @@ func main() {
 		mux.Handle("/v1/events/", readCORS(v2ReadHandler.EventByID))
 		mux.Handle("/v1/traces/", readCORS(v2ReadHandler.TraceByID))
 		slog.Info("v2 read endpoints enabled")
+		if incidentsEnabled {
+			if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
+				incidentStore := coldstore.NewIncidentStore(sqlite)
+				incidentEngine = incidents.NewEngine(
+					incidentReaderAdapter{reader: v2Reader},
+					signalStore,
+					coldDeployAdapter{store: sqlite},
+					incidentStore,
+					incidentCfg,
+					m,
+					slog.Default(),
+				)
+				if err := incidentEngine.Bootstrap(context.Background()); err != nil {
+					slog.Error("incident engine bootstrap failed", "err", err)
+					os.Exit(1)
+				}
+				incidentHandler := incidents.NewHandler(incidentEngine)
+				mux.Handle("/v1/incidents/active", readCORS(incidentHandler.Active))
+				mux.Handle("/v1/incidents/", readCORS(incidentHandler.Incident))
+				ingestServer.SetDetector(incidentInsightAdapter{engine: incidentEngine})
+				incidentRunning = true
+				slog.Info("incident engine enabled", "interval", incidentCfg.TickInterval, "window", incidentCfg.Window)
+			} else {
+				slog.Info("incident engine disabled: SQLITE_PATH is not set")
+			}
+		}
 	} else {
 		mux.Handle("/v1/traces/story", readCORS(ingestServer.TraceStory))
 		mux.Handle("/v1/blast_radius", readCORS(ingestServer.BlastRadius))
@@ -465,6 +507,9 @@ func main() {
 
 	if _, ok := signalStore.(*coldstore.SignalStore); ok {
 		go signals.RunRetention(ctx, signalStore, signalRetention, 5*time.Minute, m, slog.Default())
+	}
+	if incidentRunning {
+		go incidentEngine.Run(ctx)
 	}
 
 	go func() {
@@ -609,7 +654,7 @@ func main() {
 	// ---------------- Anomaly detection ticker ----------------
 
 	detectCfg := detect.ParseConfig()
-	if detectCfg.Enabled {
+	if detectCfg.Enabled && !incidentRunning {
 		var deploySrc detect.DeploySource
 		if coldDB != nil {
 			deploySrc = coldDB
@@ -617,6 +662,8 @@ func main() {
 		detector := detect.NewDetector(detectCfg, graphStore, traceStore, deploySrc)
 		ingestServer.SetDetector(detector)
 		go detector.Run(ctx)
+	} else if incidentRunning {
+		slog.Info("legacy anomaly detector disabled because v2.1 incident engine is running")
 	}
 
 	// ---------------- Causal inference ticker ----------------
@@ -792,6 +839,116 @@ func printHelp() {
 	os.Stdout.WriteString("  waylog \"\033[33msummarize trace <trace-id>\033[0m\"\n")
 	os.Stdout.WriteString("  waylog \"\033[33mexplain request <request-id>\033[0m\"\n")
 	os.Stdout.WriteString("\n\033[2mnotes: MCP stdio: run with MCP_STDIO=1\033[0m\n")
+}
+
+type coldDeployAdapter struct {
+	store *coldstore.SQLiteStore
+}
+
+func (a coldDeployAdapter) DeploymentsInWindow(ctx context.Context, start, end time.Time, serviceFilter string) ([]incidents.Deployment, error) {
+	rows, err := a.store.DeploymentsInWindow(ctx, start, end, serviceFilter)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]incidents.Deployment, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, incidents.Deployment{
+			ID:        row.ID,
+			Service:   row.Service,
+			Version:   row.Version,
+			Env:       row.Env,
+			FirstSeen: row.FirstSeen,
+			LastSeen:  row.LastSeen,
+			Metadata:  row.Metadata,
+		})
+	}
+	return out, nil
+}
+
+type incidentReaderAdapter struct {
+	reader *ingestv2.Reader
+}
+
+func (a incidentReaderAdapter) Errors(f incidents.SearchFilter, limit int) incidents.ErrorsResult {
+	res := a.reader.Errors(toV2SearchFilter(f), nil, limit)
+	return incidents.ErrorsResult{Rows: res.Rows}
+}
+
+func (a incidentReaderAdapter) BlastRadius(f incidents.SearchFilter, key apiv2.BlastKey) apiv2.BlastRadiusResponse {
+	return a.reader.BlastRadius(toV2SearchFilter(f), ingestv2.BlastKeyMode{Key: key})
+}
+
+func (a incidentReaderAdapter) SearchEvents(f incidents.SearchFilter, limit int) []*eventv2.Event {
+	res := a.reader.SearchEvents(toV2SearchFilter(f), nil, limit)
+	return res.Events
+}
+
+func toV2SearchFilter(f incidents.SearchFilter) ingestv2.SearchFilter {
+	return ingestv2.SearchFilter{
+		Service:   f.Service,
+		Statuses:  f.Statuses,
+		ErrorCode: f.ErrorCode,
+		Since:     f.Since,
+		Until:     f.Until,
+	}
+}
+
+type incidentInsightAdapter struct {
+	engine *incidents.Engine
+}
+
+func (a incidentInsightAdapter) Current() *detect.Insight {
+	if a.engine == nil {
+		return nil
+	}
+	inc, err := a.engine.TopActive(context.Background())
+	if err != nil || inc == nil {
+		return nil
+	}
+	return projectIncidentInsight(*inc, time.Now().UTC())
+}
+
+func projectIncidentInsight(inc incidents.Incident, detectedAt time.Time) *detect.Insight {
+	affectedUsers := 0
+	if inc.AffectedUsers != nil {
+		affectedUsers = *inc.AffectedUsers
+	}
+	out := &detect.Insight{
+		DetectedAt:       detectedAt,
+		TopErrorCode:     inc.ErrorFamily.ErrorCode,
+		Lift:             inc.Lift,
+		CurrentCount:     inc.CurrentCount,
+		BaselineCount:    inc.BaselineCount,
+		AffectedRequests: inc.AffectedRequests,
+		AffectedUsers:    affectedUsers,
+		Services:         append([]string(nil), inc.TopServices...),
+		SeverityScore:    float64(inc.Severity),
+	}
+	if len(out.Services) == 0 {
+		out.Services = []string{inc.Service}
+	}
+	for _, ev := range inc.Evidence {
+		if ev.Kind == incidents.EvidenceDeployment && ev.DeployID != "" {
+			out.DeployCorrelation = &detect.DeployCorrelation{
+				DeploymentID: ev.DeployID,
+				Service:      ev.Service,
+				Confidence:   incidentConfidenceFloat(inc.Confidence),
+			}
+			break
+		}
+	}
+	return out
+}
+
+func incidentConfidenceFloat(c incidents.Confidence) float64 {
+	switch c {
+	case incidents.ConfidenceHigh:
+		return 0.9
+	case incidents.ConfidenceMedium:
+		return 0.65
+	default:
+		return 0.35
+	}
 }
 
 func parseSlogLevel(s string) slog.Level {
