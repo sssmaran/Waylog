@@ -54,9 +54,13 @@ type incident struct {
 	Status      string      `json:"status"`
 }
 
+type triageReport struct {
+	ReportHash string `json:"report_hash"`
+}
+
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: demo-acceptance-json <has-payment-error|first-payment-trace|first-event-id|burst-signals-accepted|has-dependency-incident|first-incident-id>")
+		fmt.Fprintln(os.Stderr, "usage: demo-acceptance-json <has-payment-error|first-payment-trace|first-event-id|burst-signals-accepted|has-dependency-incident|first-incident-id|triage-report-hash>")
 		os.Exit(2)
 	}
 
@@ -85,6 +89,8 @@ func main() {
 		}
 	case "first-incident-id":
 		fmt.Println(firstIncidentID(body))
+	case "triage-report-hash":
+		fmt.Println(triageReportHash(body))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		os.Exit(2)
@@ -182,4 +188,12 @@ func isPaymentFamily(f errorFamily) bool {
 	return f.Service == "checkout" &&
 		f.Step == "payment.charge" &&
 		f.ErrorCode == "PMT_502"
+}
+
+func triageReportHash(body []byte) string {
+	var rep triageReport
+	if err := json.Unmarshal(body, &rep); err != nil {
+		return ""
+	}
+	return rep.ReportHash
 }

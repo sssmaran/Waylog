@@ -309,3 +309,34 @@ func TestRunCLIUsage(t *testing.T) {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 }
+
+func TestParseTriageArgs(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       []string
+		wantID   string
+		wantSnap bool
+		wantWin  string
+		wantErr  bool
+	}{
+		{"id only", []string{"inc_abc"}, "inc_abc", false, "", false},
+		{"id + snapshot", []string{"inc_abc", "--snapshot"}, "inc_abc", true, "", false},
+		{"id + window", []string{"inc_abc", "--window", "30m"}, "inc_abc", false, "30m", false},
+		{"id + window=30m", []string{"inc_abc", "--window=30m"}, "inc_abc", false, "30m", false},
+		{"missing id", []string{}, "", false, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, win, snap, err := parseTriageArgs(tc.in)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if id != tc.wantID || snap != tc.wantSnap || win != tc.wantWin {
+				t.Fatalf("got id=%q win=%q snap=%v want %q %q %v", id, win, snap, tc.wantID, tc.wantWin, tc.wantSnap)
+			}
+		})
+	}
+}

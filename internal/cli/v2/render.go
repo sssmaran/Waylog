@@ -357,3 +357,41 @@ func formatTime(t time.Time) string {
 	}
 	return t.Format(time.RFC3339)
 }
+
+func RenderTriage(w io.Writer, rep *TriageReport) int {
+	fmt.Fprintf(w, "Triage report  incident=%s  window=%s  confidence=%s\n",
+		rep.IncidentRef.ID, rep.IncidentRef.Window, rep.Confidence)
+	fmt.Fprintf(w, "  hash: %s\n\n", rep.ReportHash)
+
+	fmt.Fprintln(w, "Blast")
+	fmt.Fprintf(w, "  requests=%d  users=%d  services=%d\n",
+		rep.BlastSnapshot.Requests, rep.BlastSnapshot.Users, rep.BlastSnapshot.Services)
+	for _, f := range rep.BlastSnapshot.TopErrorFamilies {
+		fmt.Fprintf(w, "  %s/%s/%s  count=%d\n", f.Service, f.Step, f.ErrorCode, f.Count)
+	}
+	fmt.Fprintln(w)
+
+	if len(rep.SampleTraces) > 0 {
+		fmt.Fprintln(w, "Sample traces")
+		for _, s := range rep.SampleTraces {
+			fmt.Fprintf(w, "  %s  %s\n", s.TraceID, s.Summary)
+		}
+		fmt.Fprintln(w)
+	}
+
+	if len(rep.Signals) > 0 {
+		fmt.Fprintln(w, "Signals")
+		for _, s := range rep.Signals {
+			fmt.Fprintf(w, "  %s  type=%s  evidence=%v\n", s.ID, s.Type, s.EvidenceIDs)
+		}
+		fmt.Fprintln(w)
+	}
+
+	if len(rep.NextChecks) > 0 {
+		fmt.Fprintln(w, "Next checks")
+		for _, c := range rep.NextChecks {
+			fmt.Fprintf(w, "  - %s\n", c.Prompt)
+		}
+	}
+	return 0
+}

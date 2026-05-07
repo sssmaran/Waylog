@@ -7,7 +7,9 @@ info:
 
     The primary product path is schema-2.0 ingest plus the v2 read APIs used by
     the operator CLI and embedded dashboard: recent traces, error families,
-    trace story, blast radius, event search, and direct trace/event lookup.
+    trace story, blast radius, incidents, event search, and direct trace/event
+    lookup. `/v1/insight` is a compatibility endpoint; new clients should use
+    `/v1/incidents/*`.
 
     Write endpoints require write-scope auth when auth is configured. Read
     endpoints require read-scope auth when read keys are configured.
@@ -485,7 +487,9 @@ paths:
       tags: [Triage]
       operationId: getIncidentSnapshot
       summary: Render an incident snapshot
-      description: Defaults to text/plain. Send Accept: application/json to receive the snapshot text plus the incident object.
+      description: |
+        Defaults to text/plain. Send Accept: application/json to receive the
+        snapshot text plus the incident object.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -505,6 +509,81 @@ paths:
           description: Unauthorized
         '404':
           $ref: '#/components/responses/ReadNotFound'
+        '405':
+          description: Method Not Allowed
+
+  /v1/triage/{incident_id}:
+    get:
+      tags: [Triage]
+      operationId: getTriageReport
+      summary: Build a deterministic TriageReport for an open incident
+      description: |
+        Returns a structured TriageReport v1 (incident_ref, blast_snapshot,
+        first_failure, sample_traces, signals, next_checks, confidence,
+        report_hash). Same builder backs `POST /v1/tools/triage_incident`;
+        both surfaces produce identical `report_hash` for the same input.
+        Read-scope auth.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: window
+          in: query
+          required: false
+          schema: {type: string, default: "15m"}
+          description: Go duration string (e.g. 15m, 1h). Default 15m.
+        - name: snapshot
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+          description: |
+            When true, freeze evaluation bounds to the incident's started_at
+            and updated_at instead of using wall-clock now.
+      responses:
+        '200':
+          description: TriageReport v1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageReport'
+        '400':
+          description: Missing or invalid parameters
+        '401':
+          description: Unauthorized
+        '500':
+          description: Triage build failed
+
+  /v1/insight:
+    get:
+      tags: [Operational]
+      operationId: getCompatibilityInsight
+      summary: Compatibility anomaly insight
+      deprecated: true
+      description: |
+        Compatibility endpoint for older dashboard/tool consumers. When the
+        v2.1 incident engine is running, this projects the top active incident
+        into the legacy insight shape. Otherwise it falls back to the legacy
+        detector. New clients should use `/v1/incidents/active` and
+        `/v1/incidents/{id}`.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Compatibility insight object
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '204':
+          description: No active insight
+        '401':
+          description: Unauthorized
         '405':
           description: Method Not Allowed
 
@@ -1688,6 +1767,75 @@ components:
           type: string
         incident:
           $ref: '#/components/schemas/Incident'
+
+    TriageReport:
+      type: object
+      required: [schema_version, incident_ref, blast_snapshot, confidence, generated_at, report_hash]
+      description: |
+        Deterministic triage artifact for an open incident. Versioned via
+        schema_version. report_hash is sha256 over the canonical JSON
+        excluding generated_at, plan_run_id, and report_hash itself.
+      properties:
+        schema_version:
+          type: string
+          enum: ["triage.v1"]
+        incident_ref:
+          type: object
+          required: [id]
+          properties:
+            id: {type: string}
+            window: {type: string, description: "Go duration string e.g. 15m0s"}
+        blast_snapshot:
+          type: object
+          properties:
+            requests: {type: integer}
+            users: {type: integer}
+            services: {type: integer}
+            top_error_families:
+              type: array
+              items:
+                type: object
+                properties:
+                  service: {type: string}
+                  step: {type: string}
+                  error_code: {type: string}
+                  count: {type: integer}
+        first_failure:
+          type: object
+          additionalProperties: true
+          description: Full /v1/traces/story payload for the first observed failing step.
+        sample_traces:
+          type: array
+          items:
+            type: object
+            properties:
+              trace_id: {type: string}
+              summary: {type: string}
+        signals:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              type: {type: string}
+              evidence_ids: {type: array, items: {type: string}}
+        next_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              prompt: {type: string}
+        confidence:
+          type: string
+          enum: [low, medium, high]
+        generated_at: {type: string}
+        plan_run_id:
+          type: string
+          description: Set only when produced via /v1/plans/execute.
+        report_hash:
+          type: string
+          description: "sha256:<hex>"
 
     CapabilitiesResponse:
       type: object

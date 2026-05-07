@@ -43,6 +43,10 @@ json_first_incident_id() {
   "$JSON_BIN" first-incident-id
 }
 
+json_triage_report_hash() {
+  "$JSON_BIN" triage-report-hash
+}
+
 if [[ "$(http_code "${GATEWAY_URL}/demo")" != "200" ]] || [[ "$(http_code "${INGEST_URL}/healthz")" != "200" ]]; then
   fail "demo stack is not running. Start it with: make demo"
 fi
@@ -130,5 +134,16 @@ echo "PASS: waylog incident"
 snapshot="$("${CLI[@]}" incident "$incident_id" --snapshot)" || fail "waylog incident snapshot failed for incident $incident_id"
 [[ "$snapshot" == *"payment.charge"* ]] || fail "incident snapshot did not mention payment.charge"
 echo "PASS: waylog incident snapshot"
+
+triage_a="$("${CLI[@]}" --json triage "$incident_id" --snapshot)" || fail "waylog triage failed for incident $incident_id"
+hash_a="$(json_triage_report_hash <<<"$triage_a")"
+[[ -n "$hash_a" ]] || fail "triage report_hash A is empty"
+
+triage_b="$("${CLI[@]}" --json triage "$incident_id" --snapshot)" || fail "waylog triage second run failed for incident $incident_id"
+hash_b="$(json_triage_report_hash <<<"$triage_b")"
+[[ -n "$hash_b" ]] || fail "triage report_hash B is empty"
+
+[[ "$hash_a" == "$hash_b" ]] || fail "triage report_hash unstable across runs: A=$hash_a B=$hash_b"
+echo "PASS: waylog triage stable report_hash=$hash_a"
 
 echo "Demo acceptance passed."

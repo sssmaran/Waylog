@@ -9,6 +9,7 @@ import (
 
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
+	triage "github.com/sssmaran/WaylogCLI/pkg/triage"
 )
 
 func TestRenderStoryPinsObservableLanguage(t *testing.T) {
@@ -158,5 +159,32 @@ func TestRenderNextCursor(t *testing.T) {
 	RenderSearch(&out, EventSearchResponse{NextCursor: &next})
 	if !strings.Contains(out.String(), "next_cursor: abc") {
 		t.Fatalf("output=%s", out.String())
+	}
+}
+
+func TestRenderTriageHeaderAndSections(t *testing.T) {
+	rep := &TriageReport{
+		SchemaVersion: "triage.v1",
+		IncidentRef:   triage.IncidentRef{ID: "inc_abc", Window: "15m"},
+		BlastSnapshot: triage.BlastSnapshot{
+			Requests: 12, Users: 8, Services: 4,
+			TopErrorFamilies: []triage.ErrorFamily{
+				{Service: "payment", Step: "payment.charge", ErrorCode: "PMT_502", Count: 11},
+			},
+		},
+		Signals:    []triage.SignalRef{{ID: "sig_1", Type: "deploy"}},
+		NextChecks: []triage.NextCheck{{ID: "check_payment_health", Prompt: "Verify payment-service health"}},
+		Confidence: triage.ConfidenceMedium,
+		ReportHash: "sha256:abc",
+	}
+	var buf bytes.Buffer
+	if rc := RenderTriage(&buf, rep); rc != 0 {
+		t.Fatalf("render returned %d", rc)
+	}
+	out := buf.String()
+	for _, want := range []string{"inc_abc", "PMT_502", "deploy", "Verify payment-service health", "sha256:abc"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q\noutput:\n%s", want, out)
+		}
 	}
 }

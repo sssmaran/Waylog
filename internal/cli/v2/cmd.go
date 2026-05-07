@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const version = "v2-phase-2"
+const version = "v2.1-triage"
 
 type cliConfig struct {
 	addr    string
@@ -65,6 +65,8 @@ func RunCLI(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return runBlast(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "search":
 		return runSearch(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "triage":
+		return runTriage(ctx, client, cfg, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", rest[0])
 		printUsage(stderr)
@@ -242,6 +244,57 @@ func parseIncidentArgs(args []string) (string, bool, error) {
 		return "", false, errors.New("usage: waylog incident <incident_id> [--snapshot] [--json]")
 	}
 	return incidentID, snapshot, nil
+}
+
+func runTriage(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
+	id, window, snapshot, err := parseTriageArgs(args)
+	if err != nil {
+		return usage(stderr, err.Error())
+	}
+	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
+		return gate
+	}
+	rep, err := client.Triage(ctx, id, TriageParams{Window: window, Snapshot: snapshot})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitCodeForError(err)
+	}
+	if cfg.json {
+		if err := renderJSON(stdout, rep); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		return 0
+	}
+	return RenderTriage(stdout, rep)
+}
+
+func parseTriageArgs(args []string) (id, window string, snapshot bool, err error) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--snapshot":
+			snapshot = true
+		case arg == "--window":
+			if i+1 >= len(args) {
+				return "", "", false, fmt.Errorf("--window requires a value")
+			}
+			window = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--window="):
+			window = strings.TrimPrefix(arg, "--window=")
+		case strings.HasPrefix(arg, "-"):
+			return "", "", false, fmt.Errorf("unknown flag: %s", arg)
+		case id == "":
+			id = arg
+		default:
+			return "", "", false, fmt.Errorf("unexpected argument: %s", arg)
+		}
+	}
+	if id == "" {
+		return "", "", false, fmt.Errorf("usage: waylog triage <incident_id> [--window 15m] [--snapshot]")
+	}
+	return id, window, snapshot, nil
 }
 
 func runEvent(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {

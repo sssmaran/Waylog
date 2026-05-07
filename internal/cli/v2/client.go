@@ -169,6 +169,19 @@ func (c *Client) IncidentSnapshotJSON(ctx context.Context, incidentID string) (I
 	return out, err
 }
 
+func (c *Client) Triage(ctx context.Context, id string, p TriageParams) (*TriageReport, error) {
+	q := url.Values{}
+	addQuery(q, "window", p.Window)
+	if p.Snapshot {
+		q.Set("snapshot", "true")
+	}
+	var rep TriageReport
+	if err := c.do(ctx, "/v1/triage/"+url.PathEscape(id), q, &rep); err != nil {
+		return nil, err
+	}
+	return &rep, nil
+}
+
 func (c *Client) Search(ctx context.Context, p SearchParams) (EventSearchResponse, error) {
 	q := url.Values{}
 	addQuery(q, "error_code", p.ErrorCode)

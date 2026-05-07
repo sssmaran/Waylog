@@ -5,6 +5,7 @@ import (
 
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
+	pkgtriage "github.com/sssmaran/WaylogCLI/pkg/triage"
 )
 
 type CapabilitiesResponse struct {
@@ -85,3 +86,10 @@ type ClientConfig struct {
 	APIKey  string
 	Timeout time.Duration
 }
+
+type TriageParams struct {
+	Window   string
+	Snapshot bool
+}
+
+type TriageReport = pkgtriage.Report

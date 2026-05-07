@@ -21,3 +21,13 @@ func TestDependencyIncidentHelpers(t *testing.T) {
 		t.Fatalf("firstIncidentID = %q, want inc_123", got)
 	}
 }
+
+func TestTriageReportHash(t *testing.T) {
+	body := []byte(`{"schema_version":"triage.v1","incident_ref":{"id":"inc_x"},"confidence":"medium","generated_at":"t","report_hash":"sha256:deadbeef"}`)
+	if got := triageReportHash(body); got != "sha256:deadbeef" {
+		t.Fatalf("triageReportHash = %q, want sha256:deadbeef", got)
+	}
+	if got := triageReportHash([]byte(`{not-json`)); got != "" {
+		t.Fatalf("malformed input should return empty, got %q", got)
+	}
+}

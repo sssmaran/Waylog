@@ -36,6 +36,8 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/signals"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 	"github.com/sssmaran/WaylogCLI/internal/tracestore"
+	"github.com/sssmaran/WaylogCLI/internal/triage"
+	"github.com/sssmaran/WaylogCLI/internal/triagehttp"
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
@@ -412,8 +414,9 @@ func main() {
 		if incidentsEnabled {
 			if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
 				incidentStore := coldstore.NewIncidentStore(sqlite)
+				incReader := incidentReaderAdapter{reader: v2Reader}
 				incidentEngine = incidents.NewEngine(
-					incidentReaderAdapter{reader: v2Reader},
+					incReader,
 					signalStore,
 					coldDeployAdapter{store: sqlite},
 					incidentStore,
@@ -429,6 +432,34 @@ func main() {
 				mux.Handle("/v1/incidents/active", readCORS(incidentHandler.Active))
 				mux.Handle("/v1/incidents/", readCORS(incidentHandler.Incident))
 				ingestServer.SetDetector(incidentInsightAdapter{engine: incidentEngine})
+
+				// Triage engine: deterministic TriageReport build for a given
+				// incident. Reuses the same v2Reader-backed adapter for blast
+				// queries, the live graph + trace store for first-failure
+				// stories, and the configured signal store. Read-scope auth.
+				triageEng, err := triage.NewEngine(triage.Deps{
+					Incidents: triage.NewIncidentLookupAdapter(incidentEngine),
+					Blast:     triage.NewBlastQueryAdapter(incReader),
+					Story: triage.NewStoryBuilderAdapter(
+						incidentEngine,
+						func(traceID string) (apiv2.StoryResponse, bool) {
+							return v2Reader.TraceStoryByTraceID(traceID)
+						},
+					),
+					Signals:    triage.NewSignalQueryAdapter(signalStore),
+					NextChecks: triage.NewNextChecksAdapter(),
+				})
+				if err != nil {
+					slog.Error("triage engine init failed", "err", err)
+					os.Exit(1)
+				}
+				if err := tools.RegisterTriageTool(reg, triageEng); err != nil {
+					slog.Error("triage tool register failed", "err", err)
+					os.Exit(1)
+				}
+				triageHandler := triagehttp.NewHandler(triageEng)
+				mux.Handle("/v1/triage/", readCORS(triageHandler.Triage))
+
 				incidentRunning = true
 				slog.Info("incident engine enabled", "interval", incidentCfg.TickInterval, "window", incidentCfg.Window)
 			} else {
