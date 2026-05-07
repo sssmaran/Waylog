@@ -20,6 +20,43 @@ func NewIncidentStore(db *SQLiteStore) *IncidentStore {
 }
 
 func (s *IncidentStore) Upsert(ctx context.Context, inc incidents.Incident) error {
+	if err := upsertIncident(ctx, s.db.writer, inc); err != nil {
+		return fmt.Errorf("coldstore upsert incident: %w", err)
+	}
+	return nil
+}
+
+func (s *IncidentStore) ReplaceNonResolved(ctx context.Context, rows []incidents.Incident) error {
+	tx, err := s.db.writer.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return fmt.Errorf("coldstore replace incidents begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM incidents WHERE status != ?`, string(incidents.StatusResolved)); err != nil {
+		return fmt.Errorf("coldstore replace incidents delete: %w", err)
+	}
+	for _, inc := range rows {
+		if err := upsertIncident(ctx, tx, inc); err != nil {
+			return fmt.Errorf("coldstore replace incident %s: %w", inc.IncidentID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("coldstore replace incidents commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+type incidentExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func upsertIncident(ctx context.Context, execer incidentExecer, inc incidents.Incident) error {
 	topServices, err := jsonText(inc.TopServices)
 	if err != nil {
 		return fmt.Errorf("coldstore incident top services: %w", err)
@@ -40,7 +77,7 @@ func (s *IncidentStore) Upsert(ctx context.Context, inc incidents.Incident) erro
 	if err != nil {
 		return fmt.Errorf("coldstore incident warnings: %w", err)
 	}
-	_, err = s.db.writer.ExecContext(ctx, `
+	_, err = execer.ExecContext(ctx, `
 		INSERT INTO incidents (
 			incident_id, env, service, error_service, error_step, error_code,
 			status, cause, confidence, severity, started_at, updated_at, last_seen_at,
@@ -76,7 +113,7 @@ func (s *IncidentStore) Upsert(ctx context.Context, inc incidents.Incident) erro
 		topServices, samples, evidence, nextChecks, warnings, inc.Lift, inc.BaselineCount, inc.CurrentCount,
 	)
 	if err != nil {
-		return fmt.Errorf("coldstore upsert incident: %w", err)
+		return err
 	}
 	return nil
 }

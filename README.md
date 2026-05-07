@@ -297,8 +297,9 @@ Public alpha. APIs may break before 1.0.
 - hot graph with flattened 3-node model + dedicated trace store
 - schema-2.0 recent-index read APIs behind `WAYLOG_V2_READS=true`
 - SQLite cold store (events, deployments, signals, incidents, causal claims)
-- signal-driven incident engine with `waylog incidents`, `waylog incident <id>`, and dashboard incident cards
-- 10 deterministic analysis tools, rollup-correct root-cause attribution
+- signal-driven incident engine with `waylog incidents`, `waylog incident <id>`, dashboard incident cards, runtime cause classification, and startup hot-window rebuild from the schema-2.0 WAL
+- provider-neutral Ask configuration via `WAYLOG_LLM_PROVIDER`; deterministic CLI, tools, plans, triage, and MCP work with no LLM configured
+- 11 deterministic analysis tools, rollup-correct root-cause attribution
 - agent-native REST (`/v1/tools/*`, `/v1/ask`, `/v1/plans/execute`) with idempotency and structured envelopes
 - `/v1/traces/story` and indented failure-path rendering in the dashboard
 - dashboard: minimal v2 triage loop (errors, explain, blast, recent requests)
@@ -319,8 +320,8 @@ Public alpha. APIs may break before 1.0.
 - OTLP is HTTP/traces only. gRPC, logs, and metrics are not shipping yet.
 - Only Go and TypeScript SDKs today. Python / Java / Ruby are not available.
 - SQLite cold store fits demos and small deployments; not sized for production-scale retention.
-- Signal and incident records are SQLite-backed; they do not use the event WAL/replay path.
-- Incident cause classification is deterministic and heuristic. `runtime` signals are accepted but do not produce a `runtime` cause label yet.
+- Signal records are SQLite-backed. Incident rows are a SQLite read cache and can be rebuilt within the hot window from the schema-2.0 WAL plus signals.
+- Incident cause classification is deterministic and heuristic.
 - No built-in alerting or paging. Waylog answers questions, it doesn't wake you up.
 - No multi-tenancy. One instance = one trust boundary.
 - No full log search, Slack/PagerDuty automation, RBAC/SSO, or automatic remediation.

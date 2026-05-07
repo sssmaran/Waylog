@@ -78,6 +78,10 @@ type Metrics struct {
 	IncidentTickLatency     prometheus.Histogram
 	IncidentActive          prometheus.Gauge
 	IncidentClassifications *prometheus.CounterVec
+	IncidentRebuildDuration prometheus.Histogram
+	IncidentRebuildRows     prometheus.Counter
+	IncidentRebuildFailures prometheus.Counter
+	IncidentRebuildReplayed prometheus.Counter
 
 	CausalRunsTotal   prometheus.Counter
 	CausalRunDuration prometheus.Histogram
@@ -377,11 +381,28 @@ func New(reg *prometheus.Registry) *Metrics {
 		Name: "waylog_incident_classifications_total",
 		Help: "Incident classifications by cause and confidence.",
 	}, []string{"cause", "confidence"})
-	for _, cause := range []string{"deploy", "app", "dependency", "unknown"} {
+	for _, cause := range []string{"deploy", "app", "dependency", "runtime", "unknown"} {
 		for _, confidence := range []string{"high", "medium", "low"} {
 			m.IncidentClassifications.WithLabelValues(cause, confidence).Add(0)
 		}
 	}
+	m.IncidentRebuildDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_incident_rebuild_duration_seconds",
+		Help:    "Startup hot-window incident rebuild duration.",
+		Buckets: defaultBuckets,
+	})
+	m.IncidentRebuildRows = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incident_rebuild_rows_replaced",
+		Help: "Incident rows replaced by startup hot-window rebuild.",
+	})
+	m.IncidentRebuildFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incident_rebuild_failures_total",
+		Help: "Failed startup hot-window incident rebuild attempts.",
+	})
+	m.IncidentRebuildReplayed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incident_rebuild_replayed_events_total",
+		Help: "Schema-2.0 events replayed for startup hot-window incident rebuild.",
+	})
 
 	m.CausalRunsTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_causal_runs_total",
@@ -462,6 +483,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.SignalsAccepted, m.SignalsRejected, m.SignalRetentionPruned,
 		m.IncidentOpened, m.IncidentUpdated, m.IncidentRecovered, m.IncidentResolved,
 		m.IncidentTickLatency, m.IncidentActive, m.IncidentClassifications,
+		m.IncidentRebuildDuration, m.IncidentRebuildRows, m.IncidentRebuildFailures, m.IncidentRebuildReplayed,
 		m.CausalRunsTotal, m.CausalRunDuration, m.CausalRunFailures, m.CausalClaimsTotal,
 		m.OTLPRequestsTotal, m.OTLPSpansReceived, m.OTLPSpansConverted,
 		m.OTLPSpansDropped, m.OTLPValidationRejects, m.OTLPDecodeFailures,

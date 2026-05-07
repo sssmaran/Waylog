@@ -12,6 +12,7 @@ var ErrNotFound = errors.New("incidents: not found")
 
 type Store interface {
 	Upsert(ctx context.Context, inc Incident) error
+	ReplaceNonResolved(ctx context.Context, rows []Incident) error
 	Get(ctx context.Context, id string) (Incident, error)
 	ListActive(ctx context.Context) ([]Incident, error)
 	PruneResolvedOlderThan(ctx context.Context, cutoff time.Time) (int, error)
@@ -30,6 +31,20 @@ func (s *MemoryStore) Upsert(_ context.Context, inc Incident) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rows[inc.IncidentID] = cloneIncident(inc)
+	return nil
+}
+
+func (s *MemoryStore) ReplaceNonResolved(_ context.Context, rows []Incident) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, inc := range s.rows {
+		if inc.Status != StatusResolved {
+			delete(s.rows, id)
+		}
+	}
+	for _, inc := range rows {
+		s.rows[inc.IncidentID] = cloneIncident(inc)
+	}
 	return nil
 }
 

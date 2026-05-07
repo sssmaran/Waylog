@@ -83,3 +83,80 @@ func TestIncidentStoreRoundtripAndPrune(t *testing.T) {
 		t.Fatalf("expected not found, got %v", err)
 	}
 }
+
+func TestIncidentStoreReplaceNonResolved(t *testing.T) {
+	ctx := context.Background()
+	managed, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer managed.Close()
+	store := NewIncidentStore(managed.(*SQLiteStore))
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+
+	oldActive := testColdIncident("inc_old_active", incidents.StatusActive, now.Add(-20*time.Minute))
+	oldRecovering := testColdIncident("inc_old_recovering", incidents.StatusRecovering, now.Add(-15*time.Minute))
+	preservedResolved := testColdIncident("inc_preserved_resolved", incidents.StatusResolved, now.Add(-30*time.Minute))
+	overwrittenResolved := testColdIncident("inc_overwritten_resolved", incidents.StatusResolved, now.Add(-25*time.Minute))
+	for _, inc := range []incidents.Incident{oldActive, oldRecovering, preservedResolved, overwrittenResolved} {
+		if err := store.Upsert(ctx, inc); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	newActive := testColdIncident("inc_new_active", incidents.StatusActive, now)
+	replacement := testColdIncident("inc_overwritten_resolved", incidents.StatusActive, now)
+	if err := store.ReplaceNonResolved(ctx, []incidents.Incident{newActive, replacement}); err != nil {
+		t.Fatal(err)
+	}
+
+	active, err := store.ListActive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotActive := map[string]incidents.Status{}
+	for _, inc := range active {
+		gotActive[inc.IncidentID] = inc.Status
+	}
+	if _, ok := gotActive["inc_old_active"]; ok {
+		t.Fatalf("old active row preserved unexpectedly: %+v", gotActive)
+	}
+	if _, ok := gotActive["inc_old_recovering"]; ok {
+		t.Fatalf("old recovering row preserved unexpectedly: %+v", gotActive)
+	}
+	if gotActive["inc_new_active"] != incidents.StatusActive || gotActive["inc_overwritten_resolved"] != incidents.StatusActive {
+		t.Fatalf("active rows after replace=%+v", gotActive)
+	}
+	if got, err := store.Get(ctx, "inc_preserved_resolved"); err != nil || got.Status != incidents.StatusResolved {
+		t.Fatalf("preserved resolved row got=%+v err=%v", got, err)
+	}
+}
+
+func testColdIncident(id string, status incidents.Status, at time.Time) incidents.Incident {
+	resolvedAt := at.Add(time.Minute)
+	inc := incidents.Incident{
+		IncidentID:       id,
+		Env:              "prod",
+		Service:          "checkout",
+		ErrorFamily:      apiv2.ErrorFamily{Service: "checkout", Step: "payment.charge", ErrorCode: "PMT_502"},
+		Status:           status,
+		Cause:            incidents.CauseDependency,
+		Confidence:       incidents.ConfidenceHigh,
+		Severity:         8,
+		StartedAt:        at,
+		UpdatedAt:        at,
+		LastSeenAt:       at,
+		AffectedRequests: 9,
+		AffectedServices: 2,
+		TopServices:      []string{"checkout", "payment"},
+		SampleTraces:     []string{"trace-a"},
+		Evidence:         []incidents.Evidence{{Kind: incidents.EvidenceTrace, Title: "trace", TraceID: "trace-a", OccurredAt: at}},
+		NextChecks:       []string{"check downstream"},
+		Lift:             9,
+		CurrentCount:     9,
+	}
+	if status == incidents.StatusResolved {
+		inc.ResolvedAt = &resolvedAt
+	}
+	return inc
+}

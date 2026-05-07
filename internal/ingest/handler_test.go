@@ -349,6 +349,65 @@ func TestCapabilities_V2ReadsEnabled(t *testing.T) {
 	}
 }
 
+func TestCapabilities_IncidentsBlock(t *testing.T) {
+	tests := []struct {
+		name             string
+		cfg              ServerConfig
+		wantEnabled      bool
+		wantPersistent   bool
+		wantRebuild      bool
+		wantRebuildScope string
+	}{
+		{name: "disabled"},
+		{
+			name: "sqlite enabled",
+			cfg: ServerConfig{
+				IncidentsEnabled:         true,
+				IncidentsPersistent:      true,
+				IncidentRebuildSupported: true,
+			},
+			wantEnabled:      true,
+			wantPersistent:   true,
+			wantRebuild:      true,
+			wantRebuildScope: "hot-window",
+		},
+		{name: "requested but sqlite missing"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(tc.cfg)
+			req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
+			w := httptest.NewRecorder()
+			srv.Capabilities(w, req)
+			var resp struct {
+				Incidents struct {
+					Enabled    bool `json:"enabled"`
+					Persistent bool `json:"persistent"`
+					Rebuild    struct {
+						Supported bool   `json:"supported"`
+						Scope     string `json:"scope"`
+					} `json:"rebuild"`
+				} `json:"incidents"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid json: %v", err)
+			}
+			if resp.Incidents.Enabled != tc.wantEnabled {
+				t.Fatalf("enabled=%v want %v", resp.Incidents.Enabled, tc.wantEnabled)
+			}
+			if resp.Incidents.Persistent != tc.wantPersistent {
+				t.Fatalf("persistent=%v want %v", resp.Incidents.Persistent, tc.wantPersistent)
+			}
+			if resp.Incidents.Rebuild.Supported != tc.wantRebuild {
+				t.Fatalf("rebuild.supported=%v want %v", resp.Incidents.Rebuild.Supported, tc.wantRebuild)
+			}
+			if resp.Incidents.Rebuild.Scope != tc.wantRebuildScope {
+				t.Fatalf("rebuild.scope=%q want %q", resp.Incidents.Rebuild.Scope, tc.wantRebuildScope)
+			}
+		})
+	}
+}
+
 const successTrace = "bbbb0000cccc1111dddd2222eeee3333"
 
 func makeTestServerMixed() *Server {
@@ -1686,6 +1745,37 @@ func TestAsk_DedupSafetyNet_PreservesActualStatus(t *testing.T) {
 	}
 }
 
+func TestAsk_MissingProviderMessageIsProviderAgnostic(t *testing.T) {
+	t.Setenv("WAYLOG_LLM_PROVIDER", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "")
+	srv := &Server{
+		store:        graphstore.NewStore(),
+		maxBodyBytes: 1 << 20,
+		dedupCache:   NewDedupCache(),
+	}
+	r := httptest.NewRequest("POST", "/v1/ask?envelope=v2", strings.NewReader(`{"prompt":"test"}`))
+	w := httptest.NewRecorder()
+	srv.Ask(w, r)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatalf("expected error response")
+	}
+	if got := resp.Error.Message; got != llm.ErrProviderNotConfigured.Error() {
+		t.Fatalf("message = %q, want %q", got, llm.ErrProviderNotConfigured.Error())
+	}
+	if strings.Contains(strings.ToLower(resp.Error.Message), "gemini") {
+		t.Fatalf("message should not pin Gemini: %q", resp.Error.Message)
+	}
+}
+
 func TestToolCall_DedupSafetyNet_Exists(t *testing.T) {
 	dc := NewDedupCache()
 	reg := tools.NewRegistry()
@@ -1911,5 +2001,90 @@ func TestOverview_IncludesLatestFailedTraceID(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 	if _, ok := resp["latest_failed_trace_id"]; !ok {
 		t.Fatal("overview response missing latest_failed_trace_id field")
+	}
+}
+
+type stubAskProvider struct{}
+
+func (stubAskProvider) Generate(ctx context.Context, prompt string, tools []llm.ToolDefinition, history []llm.Turn) (llm.Result, error) {
+	return llm.Result{}, nil
+}
+
+func TestCapabilities_LLMBlock(t *testing.T) {
+	tests := []struct {
+		name           string
+		env            map[string]string
+		askProvider    llm.Provider
+		wantProvider   string
+		wantConfigured bool
+		wantAskEnabled bool
+	}{
+		{
+			name:           "no env",
+			env:            map[string]string{},
+			wantProvider:   "none",
+			wantConfigured: false,
+			wantAskEnabled: false,
+		},
+		{
+			name:           "gemini key set",
+			env:            map[string]string{"WAYLOG_LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "test-key"},
+			wantProvider:   "gemini",
+			wantConfigured: true,
+			wantAskEnabled: true,
+		},
+		{
+			name:           "custom injected provider",
+			env:            map[string]string{},
+			askProvider:    stubAskProvider{},
+			wantProvider:   "custom",
+			wantConfigured: true,
+			wantAskEnabled: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WAYLOG_LLM_PROVIDER", "")
+			t.Setenv("WAYLOG_LLM_MODEL", "")
+			t.Setenv("GEMINI_API_KEY", "")
+			t.Setenv("GOOGLE_API_KEY", "")
+			t.Setenv("GEMINI_MODEL", "")
+			t.Setenv("GEMINI_API_BASE", "")
+			t.Setenv("GEMINI_TOOL_MODE", "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			srv := NewServer(ServerConfig{AskProvider: tc.askProvider})
+			req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
+			w := httptest.NewRecorder()
+			srv.Capabilities(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+			var resp struct {
+				LLM struct {
+					Provider   string `json:"provider"`
+					Model      string `json:"model"`
+					ToolMode   string `json:"tool_mode"`
+					Configured bool   `json:"configured"`
+					AskEnabled bool   `json:"ask_enabled"`
+				} `json:"llm"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid json: %v", err)
+			}
+			if resp.LLM.Provider != tc.wantProvider {
+				t.Errorf("provider = %q, want %q", resp.LLM.Provider, tc.wantProvider)
+			}
+			if resp.LLM.Configured != tc.wantConfigured {
+				t.Errorf("configured = %v, want %v", resp.LLM.Configured, tc.wantConfigured)
+			}
+			if resp.LLM.AskEnabled != tc.wantAskEnabled {
+				t.Errorf("ask_enabled = %v, want %v", resp.LLM.AskEnabled, tc.wantAskEnabled)
+			}
+		})
 	}
 }

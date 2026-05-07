@@ -29,6 +29,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/incidents"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
+	"github.com/sssmaran/WaylogCLI/internal/llm"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	otelhttp "github.com/sssmaran/WaylogCLI/internal/otel"
@@ -150,6 +151,10 @@ func main() {
 	causalInterval := config.GetenvDuration("CAUSAL_INTERVAL", 30*time.Second)
 
 	trustProxy := config.GetenvBool("WAYLOG_TRUST_PROXY", false)
+	if _, err := llm.SelectFromEnv(); err != nil {
+		slog.Error("LLM provider config error", "err", err)
+		os.Exit(1)
+	}
 
 	dedupCache := ingest.NewDedupCache()
 	planStore := ingest.NewPlanStore()
@@ -236,28 +241,31 @@ func main() {
 
 	// Create ingest server with the store
 	ingestServer := ingest.NewServer(ingest.ServerConfig{
-		Store:               graphStore,
-		TraceStore:          traceStore,
-		MaxBodyBytes:        maxBody,
-		EventLogDir:         eventLogDir,
-		Metrics:             m,
-		StartTime:           time.Now(),
-		AskRegistry:         reg,
-		AskMaxStepsDefault:  askMaxStepsDefault,
-		AskMaxStepsMax:      askMaxStepsMax,
-		DashboardRefreshSec: dashboardRefreshSec,
-		PrometheusURL:       prometheusURL,
-		GrafanaURL:          grafanaURL,
-		GraphUI:             graphUI,
-		DedupCache:          dedupCache,
-		AgentKey:            agentKey,
-		TrustProxy:          trustProxy,
-		ColdWriter:          coldWriter,
-		ColdStore:           coldDB,
-		PlanStore:           planStore,
-		GraphHotWindow:      graphHotWindow,
-		OTLPEnabled:         otlpEnabled,
-		V2ReadsEnabled:      v2ReadsEnabled,
+		Store:                    graphStore,
+		TraceStore:               traceStore,
+		MaxBodyBytes:             maxBody,
+		EventLogDir:              eventLogDir,
+		Metrics:                  m,
+		StartTime:                time.Now(),
+		AskRegistry:              reg,
+		AskMaxStepsDefault:       askMaxStepsDefault,
+		AskMaxStepsMax:           askMaxStepsMax,
+		DashboardRefreshSec:      dashboardRefreshSec,
+		PrometheusURL:            prometheusURL,
+		GrafanaURL:               grafanaURL,
+		GraphUI:                  graphUI,
+		DedupCache:               dedupCache,
+		AgentKey:                 agentKey,
+		TrustProxy:               trustProxy,
+		ColdWriter:               coldWriter,
+		ColdStore:                coldDB,
+		PlanStore:                planStore,
+		GraphHotWindow:           graphHotWindow,
+		OTLPEnabled:              otlpEnabled,
+		V2ReadsEnabled:           v2ReadsEnabled,
+		IncidentsEnabled:         v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
+		IncidentsPersistent:      v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
+		IncidentRebuildSupported: v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
 	})
 
 	// SSE hub for real-time dashboard updates
@@ -428,6 +436,66 @@ func main() {
 					slog.Error("incident engine bootstrap failed", "err", err)
 					os.Exit(1)
 				}
+				if config.GetenvBool("WAYLOG_REBUILD_INCIDENTS_ON_START", false) {
+					rebuildMaxEvents := config.GetenvInt("WAYLOG_INCIDENT_REBUILD_MAX_EVENTS", 250000)
+					if rebuildMaxEvents <= 0 {
+						rebuildMaxEvents = 250000
+					}
+					replayWindow := graphHotWindow
+					if minWindow := 2 * incidentCfg.Window; minWindow > replayWindow {
+						replayWindow = minWindow
+					}
+					replaySince := time.Now().UTC().Add(-replayWindow)
+					seed := incidentEngine.SnapshotActive()
+					for _, inc := range seed {
+						if inc.StartedAt.Before(replaySince) {
+							slog.Info("incident continuity broken: started_at older than WAL retention",
+								"incident_id", inc.IncidentID,
+								"started_at", inc.StartedAt,
+								"replay_since", replaySince,
+							)
+							break
+						}
+					}
+					tempIndex := ingestv2.NewRecentIndex(nil)
+					tempDedup := ingestv2.NewDedup(dedupCapacity, nil)
+					tempProjector := ingestv2.NewProjector(tempIndex)
+					replay, err := ingestv2.ReplayWAL(eventLogV2Dir, tempDedup, tempProjector, replaySince, m)
+					if err != nil {
+						m.IncidentRebuildFailures.Inc()
+						slog.Error("incident rebuild WAL replay failed", "err", err)
+						os.Exit(1)
+					}
+					m.IncidentRebuildReplayed.Add(float64(replay.Projected))
+					if replay.Projected > rebuildMaxEvents {
+						m.IncidentRebuildFailures.Inc()
+						slog.Error("incident rebuild replay exceeded max events", "projected", replay.Projected, "max_events", rebuildMaxEvents)
+						os.Exit(1)
+					}
+					if replay.Projected == 0 {
+						if len(seed) > 0 {
+							slog.Warn("incidents rebuild skipped: WAL replay returned no events; preserving SQLite as-is")
+						}
+					} else {
+						result, err := incidents.Rebuild(context.Background(), incidents.RebuildDeps{
+							Engine: incidentEngine,
+							Reader: incidentReaderAdapter{reader: ingestv2.NewReader(tempIndex)},
+							Now:    time.Now,
+						})
+						if err != nil {
+							m.IncidentRebuildFailures.Inc()
+							slog.Error("incident rebuild failed", "err", err)
+							os.Exit(1)
+						}
+						m.IncidentRebuildDuration.Observe(result.Duration.Seconds())
+						m.IncidentRebuildRows.Add(float64(result.RowsReplaced))
+						slog.Info("incident rebuild complete",
+							"replayed_events", replay.Projected,
+							"rows_replaced", result.RowsReplaced,
+							"duration", result.Duration,
+						)
+					}
+				}
 				incidentHandler := incidents.NewHandler(incidentEngine)
 				mux.Handle("/v1/incidents/active", readCORS(incidentHandler.Active))
 				mux.Handle("/v1/incidents/", readCORS(incidentHandler.Incident))
@@ -463,7 +531,7 @@ func main() {
 				incidentRunning = true
 				slog.Info("incident engine enabled", "interval", incidentCfg.TickInterval, "window", incidentCfg.Window)
 			} else {
-				slog.Info("incident engine disabled: SQLITE_PATH is not set")
+				slog.Warn("incidents requested but SQLite not configured; running without incidents")
 			}
 		}
 	} else {

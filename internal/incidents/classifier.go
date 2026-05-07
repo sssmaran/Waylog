@@ -52,6 +52,10 @@ func Classify(input ClassificationInput) Classification {
 		evidence = append(evidence, signalEvidence(*sig, "Deploy signal overlaps incident window"))
 		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings)
 	}
+	if sig := matchingRuntimeSignal(input); sig != nil {
+		evidence = append(evidence, signalEvidence(*sig, "Runtime signal overlaps incident window"))
+		return classification(CauseRuntime, ConfidenceHigh, evidence, warnings)
+	}
 	if len(input.Events) > 0 && input.Incident.ErrorFamily.Step != "" && firstFailingDownstream(input.Events) == "" {
 		return classification(CauseApp, ConfidenceMedium, evidence, warnings)
 	}
@@ -97,6 +101,26 @@ func matchingDeployment(input ClassificationInput) *Deployment {
 			continue
 		}
 		return &input.Deployments[i]
+	}
+	return nil
+}
+
+func matchingRuntimeSignal(input ClassificationInput) *signals.Signal {
+	start := input.Incident.StartedAt
+	lo := start.Add(-5 * time.Minute)
+	hi := start.Add(time.Minute)
+	for i := range input.Signals {
+		sig := input.Signals[i]
+		if sig.Type != signals.TypeRuntime && sig.Type != signals.TypeHealthcheck {
+			continue
+		}
+		if sig.Service != input.Incident.Service {
+			continue
+		}
+		if sig.Timestamp.Before(lo) || sig.Timestamp.After(hi) {
+			continue
+		}
+		return &input.Signals[i]
 	}
 	return nil
 }

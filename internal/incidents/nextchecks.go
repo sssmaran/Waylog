@@ -14,6 +14,13 @@ func NextChecks(cause Cause, confidence Confidence) []string {
 			"Inspect retries, timeouts, and circuit-breaker state for the failing step.",
 			"Notify the downstream owner with sample traces and affected service list.",
 		}
+	case CauseRuntime:
+		return []string{
+			"Check the service for recent restarts or crashloops.",
+			"Inspect memory and CPU usage for OOM kills or resource pressure.",
+			"Review readiness and liveness probe results around the incident start.",
+			"Verify node and task health for the affected service instances.",
+		}
 	case CauseApp:
 		return []string{
 			"Inspect the first failing step and recent application logs.",

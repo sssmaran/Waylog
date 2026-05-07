@@ -134,17 +134,36 @@ func (e *Engine) Tick(ctx context.Context) error {
 		defer func() { e.metrics.IncidentTickLatency.Observe(time.Since(start).Seconds()) }()
 	}
 	now := e.now().UTC()
+	rows, err := e.derive(ctx, now, e.SnapshotActive(), e.reader)
+	if err != nil {
+		return err
+	}
+	return e.ApplyLive(ctx, rows)
+}
+
+// derivedRow carries the derivation output plus whether the row was already
+// in the seed (used by ApplyLive to distinguish Opened vs Updated metrics).
+type derivedRow struct {
+	Incident Incident
+	Existed  bool
+}
+
+// derive computes the full set of incident rows for the cycle from the seed +
+// reader without touching e.active or the store. Used by both live Tick and
+// startup Rebuild.
+func (e *Engine) derive(ctx context.Context, now time.Time, seed map[string]Incident, reader Reader) ([]derivedRow, error) {
 	currentStart := now.Add(-e.cfg.Window)
 	baselineStart := now.Add(-2 * e.cfg.Window)
 	statuses := failedStatuses()
-	current := e.reader.Errors(SearchFilter{Since: currentStart, Until: now, Statuses: statuses}, 200)
-	baseline := e.reader.Errors(SearchFilter{Since: baselineStart, Until: currentStart, Statuses: statuses}, 200)
+	current := reader.Errors(SearchFilter{Since: currentStart, Until: now, Statuses: statuses}, 200)
+	baseline := reader.Errors(SearchFilter{Since: baselineStart, Until: currentStart, Statuses: statuses}, 200)
 	baselineByFamily := map[string]int{}
 	for _, row := range baseline.Rows {
 		baselineByFamily[familyKey(row.ErrorFamily)] = row.Count
 	}
 
 	seen := map[string]struct{}{}
+	out := make([]derivedRow, 0, len(current.Rows))
 	for _, row := range current.Rows {
 		if row.Count < e.cfg.MinCount {
 			continue
@@ -154,23 +173,124 @@ func (e *Engine) Tick(ctx context.Context) error {
 		if baselineCount > 0 && lift < e.cfg.MinLift {
 			continue
 		}
-		inc, err := e.buildIncident(ctx, row, baselineCount, lift, currentStart, now)
+		inc, existed, err := e.buildIncidentFromSeed(ctx, seed, reader, row, baselineCount, lift, currentStart, now)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		seen[inc.IncidentID] = struct{}{}
-		if err := e.store.Upsert(ctx, inc); err != nil {
+		out = append(out, derivedRow{Incident: inc, Existed: existed})
+	}
+	out = append(out, e.deriveMissing(seed, seen, now)...)
+	return out, nil
+}
+
+// deriveMissing emits transitions for seed rows absent from the current cycle:
+// active → recovering, and recovering → resolved once LastSeenAt is older
+// than ResolveAfter. Mirrors the previous transitionMissing semantics.
+func (e *Engine) deriveMissing(seed map[string]Incident, seen map[string]struct{}, now time.Time) []derivedRow {
+	out := make([]derivedRow, 0)
+	for _, inc := range seed {
+		if _, ok := seen[inc.IncidentID]; ok {
+			continue
+		}
+		switch inc.Status {
+		case StatusActive:
+			row := cloneIncident(inc)
+			row.Status = StatusRecovering
+			t := now
+			row.RecoveringAt = &t
+			row.UpdatedAt = now
+			out = append(out, derivedRow{Incident: row, Existed: true})
+		case StatusRecovering:
+			if now.Sub(inc.LastSeenAt) >= e.cfg.ResolveAfter {
+				row := cloneIncident(inc)
+				row.Status = StatusResolved
+				t := now
+				row.ResolvedAt = &t
+				row.UpdatedAt = now
+				out = append(out, derivedRow{Incident: row, Existed: true})
+			}
+		}
+	}
+	return out
+}
+
+// ApplyLive persists derived rows for a live tick: per-row Upsert, in-memory
+// cache update, and per-transition metric increments matching pre-refactor
+// Tick behavior.
+func (e *Engine) ApplyLive(ctx context.Context, rows []derivedRow) error {
+	for _, dr := range rows {
+		if err := e.store.Upsert(ctx, dr.Incident); err != nil {
 			return err
 		}
-		e.remember(inc)
-	}
-	if err := e.transitionMissing(ctx, seen, now); err != nil {
-		return err
+		switch dr.Incident.Status {
+		case StatusResolved:
+			e.forget(dr.Incident.IncidentID)
+			if e.metrics != nil {
+				e.metrics.IncidentResolved.Inc()
+			}
+		case StatusRecovering:
+			e.remember(dr.Incident)
+			if dr.Existed {
+				if e.metrics != nil {
+					e.metrics.IncidentRecovered.Inc()
+				}
+			}
+		default:
+			e.remember(dr.Incident)
+			if e.metrics != nil {
+				if dr.Existed {
+					e.metrics.IncidentUpdated.Inc()
+				} else {
+					e.metrics.IncidentOpened.Inc()
+				}
+			}
+		}
 	}
 	if e.metrics != nil {
 		e.metrics.IncidentActive.Set(float64(e.activeCount()))
 	}
 	return nil
+}
+
+// ApplyRebuild atomically replaces non-resolved store rows with the derived
+// set, then reloads the in-memory cache from the store. ApplyRebuild owns
+// cache reload; do NOT call Bootstrap after it. Per-row Opened/Updated/
+// Recovered/Resolved counters are intentionally not incremented here —
+// rebuild metrics live in main.go.
+func (e *Engine) ApplyRebuild(ctx context.Context, rows []derivedRow) error {
+	incs := make([]Incident, 0, len(rows))
+	for _, dr := range rows {
+		incs = append(incs, dr.Incident)
+	}
+	if err := e.store.ReplaceNonResolved(ctx, incs); err != nil {
+		return err
+	}
+	active, err := e.store.ListActive(ctx)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.active = make(map[string]Incident, len(active))
+	for _, inc := range active {
+		e.active[inc.IncidentID] = cloneIncident(inc)
+	}
+	e.mu.Unlock()
+	if e.metrics != nil {
+		e.metrics.IncidentActive.Set(float64(len(active)))
+	}
+	return nil
+}
+
+// SnapshotActive returns a deep clone of the in-memory active map.
+func (e *Engine) SnapshotActive() map[string]Incident {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make(map[string]Incident, len(e.active))
+	for id, inc := range e.active {
+		out[id] = cloneIncident(inc)
+	}
+	return out
 }
 
 func (e *Engine) Active(ctx context.Context) ([]Incident, error) {
@@ -265,6 +385,69 @@ func (e *Engine) buildIncident(ctx context.Context, row apiv2.ErrorRow, baseline
 	return inc, nil
 }
 
+func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Incident, reader Reader, row apiv2.ErrorRow, baselineCount int, lift float64, since, now time.Time) (Incident, bool, error) {
+	events := sampleEventsFromReader(reader, row.ErrorFamily, since, now, 200)
+	startedAt := earliestEventTime(events, now)
+	env := firstEventEnv(events)
+	if existing, ok := findByFamilyIn(seed, env, row.ErrorFamily); ok {
+		startedAt = existing.StartedAt
+	}
+	id := StableID(env, row.ErrorFamily, startedAt)
+	existing, hadExisting := getCachedIn(seed, id)
+	if !hadExisting {
+		if prior, ok := findByFamilyIn(seed, env, row.ErrorFamily); ok {
+			existing = prior
+			id = prior.IncidentID
+			hadExisting = true
+		}
+	}
+	blast := reader.BlastRadius(
+		SearchFilter{Since: since, Until: now},
+		apiv2.BlastKey{Service: row.ErrorFamily.Service, Step: row.ErrorFamily.Step, ErrorCode: row.ErrorFamily.ErrorCode},
+	)
+	sigs, err := e.querySignals(ctx, env, now.Add(-e.cfg.DeployCorrelationWindow), now)
+	if err != nil && !errors.Is(err, signals.ErrUnavailable) {
+		return Incident{}, false, err
+	}
+	deploys, err := e.queryDeploys(ctx, row.ErrorFamily.Service, now.Add(-e.cfg.DeployCorrelationWindow), now)
+	if err != nil {
+		return Incident{}, false, err
+	}
+	inc := Incident{
+		IncidentID:       id,
+		Env:              env,
+		Service:          row.ErrorFamily.Service,
+		ErrorFamily:      row.ErrorFamily,
+		Status:           StatusActive,
+		Severity:         severity(row.Count, blast.AffectedServices, lift),
+		StartedAt:        startedAt,
+		UpdatedAt:        now,
+		LastSeenAt:       now,
+		AffectedRequests: blast.AffectedRequests,
+		AffectedUsers:    cloneInt(row.AffectedUsers),
+		AffectedServices: blast.AffectedServices,
+		TopServices:      append([]string(nil), blast.TopServices...),
+		SampleTraces:     stableSamples(existing.SampleTraces, events, e.cfg.SampleLimit),
+		Lift:             lift,
+		BaselineCount:    baselineCount,
+		CurrentCount:     row.Count,
+	}
+	if hadExisting {
+		inc.StartedAt = existing.StartedAt
+		inc.RecoveringAt = nil
+	}
+	class := Classify(ClassificationInput{Incident: inc, Events: events, Signals: sigs, Deployments: deploys, Now: now})
+	inc.Cause = class.Cause
+	inc.Confidence = class.Confidence
+	inc.Evidence = class.Evidence
+	inc.NextChecks = class.NextChecks
+	inc.InstrumentationWarnings = class.InstrumentationWarnings
+	if e.metrics != nil {
+		e.observeClassification(inc.Cause, inc.Confidence)
+	}
+	return inc, hadExisting, nil
+}
+
 func (e *Engine) transitionMissing(ctx context.Context, seen map[string]struct{}, now time.Time) error {
 	e.mu.RLock()
 	rows := make([]Incident, 0, len(e.active))
@@ -309,7 +492,11 @@ func (e *Engine) transitionMissing(ctx context.Context, seen map[string]struct{}
 }
 
 func (e *Engine) sampleEvents(f apiv2.ErrorFamily, since, until time.Time, limit int) []*eventv2.Event {
-	events := e.reader.SearchEvents(SearchFilter{
+	return sampleEventsFromReader(e.reader, f, since, until, limit)
+}
+
+func sampleEventsFromReader(reader Reader, f apiv2.ErrorFamily, since, until time.Time, limit int) []*eventv2.Event {
+	events := reader.SearchEvents(SearchFilter{
 		Service:   f.Service,
 		ErrorCode: f.ErrorCode,
 		Since:     since,
@@ -323,6 +510,20 @@ func (e *Engine) sampleEvents(f apiv2.ErrorFamily, since, until time.Time, limit
 		}
 	}
 	return out
+}
+
+func getCachedIn(seed map[string]Incident, id string) (Incident, bool) {
+	inc, ok := seed[id]
+	return cloneIncident(inc), ok
+}
+
+func findByFamilyIn(seed map[string]Incident, env string, family apiv2.ErrorFamily) (Incident, bool) {
+	for _, inc := range seed {
+		if inc.Env == env && inc.ErrorFamily == family && inc.Status != StatusResolved {
+			return cloneIncident(inc), true
+		}
+	}
+	return Incident{}, false
 }
 
 func (e *Engine) querySignals(ctx context.Context, env string, since, until time.Time) ([]signals.Signal, error) {

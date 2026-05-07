@@ -20,6 +20,7 @@ const (
 	CauseDeploy     Cause = "deploy"
 	CauseApp        Cause = "app"
 	CauseDependency Cause = "dependency"
+	CauseRuntime    Cause = "runtime"
 	CauseUnknown    Cause = "unknown"
 )
 

@@ -125,6 +125,136 @@ func TestEngineUsesDownstreamDependencySignal(t *testing.T) {
 	}
 }
 
+func TestDerivePreservesSeedContinuity(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	started := now.Add(-20 * time.Minute)
+	seeded := testIncident(started)
+	seeded.SampleTraces = []string{"trace-seeded"}
+	reader := &fakeReader{
+		current: ErrorsResult{Rows: []apiv2.ErrorRow{{
+			ErrorFamily: testFamily(),
+			Count:       6,
+		}}},
+		blast: apiv2.BlastRadiusResponse{AffectedRequests: 6, AffectedServices: 2, TopServices: []string{"checkout", "payment"}},
+		events: []*eventv2.Event{
+			testIncidentEvent("new", "trace-new", now.Add(-time.Minute), "checkout", "payment.charge", "PMT_502", "payment"),
+		},
+	}
+	engine := NewEngine(reader, nil, nil, NewMemoryStore(), Config{MinCount: 5, SampleLimit: 2}, nil, nil)
+	rows, err := engine.derive(context.Background(), now, map[string]Incident{seeded.IncidentID: seeded}, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows=%+v", rows)
+	}
+	got := rows[0].Incident
+	if !got.StartedAt.Equal(started) {
+		t.Fatalf("started_at=%s want %s", got.StartedAt, started)
+	}
+	if len(got.SampleTraces) != 2 || got.SampleTraces[0] != "trace-seeded" || got.SampleTraces[1] != "trace-new" {
+		t.Fatalf("sample_traces=%+v", got.SampleTraces)
+	}
+	if !rows[0].Existed {
+		t.Fatalf("seeded row should be marked existed")
+	}
+}
+
+func TestDeriveMissingTransitions(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	reader := &fakeReader{}
+	engine := NewEngine(reader, nil, nil, NewMemoryStore(), Config{ResolveAfter: time.Minute}, nil, nil)
+
+	active := testIncident(now.Add(-5 * time.Minute))
+	rows, err := engine.derive(context.Background(), now, map[string]Incident{active.IncidentID: active}, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Incident.Status != StatusRecovering {
+		t.Fatalf("active missing rows=%+v", rows)
+	}
+
+	recovering := testIncident(now.Add(-5 * time.Minute))
+	recovering.Status = StatusRecovering
+	recovering.LastSeenAt = now.Add(-2 * time.Minute)
+	rows, err = engine.derive(context.Background(), now, map[string]Incident{recovering.IncidentID: recovering}, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Incident.Status != StatusResolved {
+		t.Fatalf("recovering missing rows=%+v", rows)
+	}
+}
+
+func TestApplyRebuildReplacesStoreAndReloadsCache(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	store := NewMemoryStore()
+	oldActive := testIncident(now.Add(-10 * time.Minute))
+	resolved := testIncident(now.Add(-20 * time.Minute))
+	resolved.IncidentID = "inc_resolved"
+	resolved.Status = StatusResolved
+	resolvedAt := now.Add(-5 * time.Minute)
+	resolved.ResolvedAt = &resolvedAt
+	if err := store.Upsert(ctx, oldActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(ctx, resolved); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(&fakeReader{}, nil, nil, store, Config{}, nil, nil)
+	if err := engine.Bootstrap(ctx); err != nil {
+		t.Fatal(err)
+	}
+	newActive := testIncident(now)
+	newActive.IncidentID = "inc_new"
+	if err := engine.ApplyRebuild(ctx, []derivedRow{{Incident: newActive}}); err != nil {
+		t.Fatal(err)
+	}
+	active, err := engine.Active(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 || active[0].IncidentID != "inc_new" {
+		t.Fatalf("active after rebuild=%+v", active)
+	}
+	if _, ok := engine.SnapshotActive()["inc_new"]; !ok {
+		t.Fatalf("cache was not reloaded from rebuilt rows")
+	}
+	if _, err := store.Get(ctx, "inc_resolved"); err != nil {
+		t.Fatalf("resolved row should be preserved: %v", err)
+	}
+	if _, err := store.Get(ctx, oldActive.IncidentID); err == nil {
+		t.Fatalf("old non-resolved row should be replaced")
+	}
+}
+
+func TestRebuildOrchestratorUsesRebuildApply(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	reader := &fakeReader{
+		current: ErrorsResult{Rows: []apiv2.ErrorRow{{
+			ErrorFamily: testFamily(),
+			Count:       6,
+		}}},
+		blast: apiv2.BlastRadiusResponse{AffectedRequests: 6, AffectedServices: 2},
+		events: []*eventv2.Event{
+			testIncidentEvent("new", "trace-new", now.Add(-time.Minute), "checkout", "payment.charge", "PMT_502", "payment"),
+		},
+	}
+	engine := NewEngine(reader, nil, nil, NewMemoryStore(), Config{MinCount: 5, SampleLimit: 2}, nil, nil)
+	result, err := Rebuild(ctx, RebuildDeps{Engine: engine, Reader: reader, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RowsReplaced != 1 {
+		t.Fatalf("rows_replaced=%d", result.RowsReplaced)
+	}
+	if len(engine.SnapshotActive()) != 1 {
+		t.Fatalf("cache should reflect rebuilt active rows")
+	}
+}
+
 type fakeReader struct {
 	current ErrorsResult
 	base    ErrorsResult

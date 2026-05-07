@@ -1849,6 +1849,26 @@ components:
         ask:
           type: object
           additionalProperties: true
+        llm:
+          type: object
+          description: Provider-neutral Ask configuration and runtime state.
+          properties:
+            provider:
+              type: string
+              description: Resolved Ask provider. `custom` is used for injected providers.
+              enum: [none, gemini, custom]
+            model:
+              type: string
+              description: Resolved model for the selected provider, or empty when Ask is disabled.
+            tool_mode:
+              type: string
+              description: Resolved tool-calling mode for the selected provider, or empty when Ask is disabled.
+            configured:
+              type: boolean
+              description: True when a provider was explicitly selected or inferred from credentials.
+            ask_enabled:
+              type: boolean
+              description: True when Ask has a provider implementation available.
         dashboard:
           type: object
           additionalProperties: true
@@ -1867,6 +1887,21 @@ components:
           properties:
             enabled:
               type: boolean
+        incidents:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            persistent:
+              type: boolean
+            rebuild:
+              type: object
+              properties:
+                supported:
+                  type: boolean
+                scope:
+                  type: string
+                  enum: ["", hot-window]
         architecture:
           type: object
           additionalProperties: true

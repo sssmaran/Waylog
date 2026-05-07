@@ -6,7 +6,19 @@ Reference for configuring the Waylog ingest server and SDK. All variables are re
 
 | Variable | Purpose |
 |---|---|
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Required when server-side Ask/tool flows use Gemini |
+| Provider credentials | Required only when natural-language Ask should call a configured LLM provider. For the current Gemini provider, set `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+
+## LLM provider
+
+Deterministic tools, plans, triage, MCP, and read APIs do not require an LLM provider. The provider is only used by natural-language Ask flows. If Ask cannot construct the selected provider, it returns a provider-agnostic "LLM provider not configured" error.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WAYLOG_LLM_PROVIDER` | `none` unless a supported provider key is present | LLM provider for Ask. Supported values in M2: `none`, `gemini` |
+| `WAYLOG_LLM_MODEL` | provider default | Provider-neutral model override. For Gemini, this takes precedence over `GEMINI_MODEL` |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini-specific model override when `WAYLOG_LLM_MODEL` is unset |
+| `GEMINI_API_BASE` | Gemini API default | Gemini-specific API base URL override |
+| `GEMINI_TOOL_MODE` | `text` | Gemini-specific tool-calling mode |
 
 ## Auth
 
@@ -65,6 +77,8 @@ The `waylog` CLI calls the running ingest server's v2 read APIs. The server must
 | `WAYLOG_INCIDENT_RESOLVE_AFTER` | `2m` | Time without renewed matching failures before a recovering incident resolves |
 | `WAYLOG_DEPLOY_CORRELATION_WINDOW` | `15m` | Window used to attach deploy signals and deployment records as incident evidence |
 | `WAYLOG_INCIDENT_SAMPLE_LIMIT` | `5` | Maximum persisted sample traces per incident |
+| `WAYLOG_REBUILD_INCIDENTS_ON_START` | `false` | Rebuild non-resolved incident rows at startup from the schema-2.0 WAL hot window plus signals |
+| `WAYLOG_INCIDENT_REBUILD_MAX_EVENTS` | `250000` | Safety cap for startup incident rebuild replay |
 | `WAYLOG_V2_DEDUP_CAPACITY` | `65536` | Recent schema-2.0 `event_id` dedupe cache capacity |
 | `GRAPH_HOT_WINDOW` | `GRAPH_RETENTION` or `24h` | Recent in-memory graph/index retention window and max v2 read window |
 | `GRAPH_RETENTION` | `24h` | Hot graph retention. Nodes older than this are pruned every snapshot tick |
