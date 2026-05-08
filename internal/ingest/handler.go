@@ -2285,9 +2285,7 @@ func (s *Server) PlanExecute(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	var req struct {
-		Steps []PlanStep `json:"steps"`
-	}
+	var req PlanExecuteRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		if dedupIsExecutor {
 			dedupCompleted = true
@@ -2297,6 +2295,8 @@ func (s *Server) PlanExecute(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON: "+err.Error(), false, APIMeta{RequestID: reqID})
 		return
 	}
+
+	steps, expandErr := ExpandPlanRequest(req)
 
 	registry := s.askRegistry
 	if registry == nil {
@@ -2309,7 +2309,17 @@ func (s *Server) PlanExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if errs := ValidatePlan(req.Steps, registry); len(errs) > 0 {
+	if expandErr != nil {
+		if dedupIsExecutor {
+			dedupCompleted = true
+			s.dedupCache.Complete(r.Method, r.URL.Path, s.dedupPrincipal(r), idempKey, body,
+				http.StatusBadRequest, nil, &APIError{Code: "INVALID_PLAN", Message: expandErr.Error()}, time.Since(start).Milliseconds())
+		}
+		respondError(w, r, http.StatusBadRequest, "INVALID_PLAN", expandErr.Error(), false, APIMeta{RequestID: reqID})
+		return
+	}
+
+	if errs := ValidatePlan(steps, registry); len(errs) > 0 {
 		msg := strings.Join(errs, "; ")
 		if dedupIsExecutor {
 			dedupCompleted = true
@@ -2325,7 +2335,7 @@ func (s *Server) PlanExecute(w http.ResponseWriter, r *http.Request) {
 		planID = s.planStore.Create()
 	}
 
-	result := s.executePlanWithProgress(r.Context(), req.Steps, registry, planID)
+	result := s.executePlanWithProgress(r.Context(), steps, registry, planID)
 
 	if result.PlanID != "" {
 		w.Header().Set("X-Plan-ID", result.PlanID)

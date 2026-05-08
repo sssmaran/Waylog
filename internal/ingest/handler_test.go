@@ -1714,6 +1714,124 @@ func TestToolCall_InvalidJSON_EnvelopeError(t *testing.T) {
 	}
 }
 
+func TestPlanExecute_TriageTemplateExecutesAsPlan(t *testing.T) {
+	reg := tools.NewRegistry()
+	if err := reg.Register(tools.Tool{
+		Name:        "triage_incident",
+		Description: "test triage",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"required":["incident_id"],
+			"properties":{
+				"incident_id":{"type":"string"},
+				"window":{"type":"string"},
+				"snapshot":{"type":"boolean"}
+			}
+		}`),
+		Handler: func(ctx context.Context, store tools.Store, params json.RawMessage) (any, error) {
+			var got struct {
+				IncidentID string `json:"incident_id"`
+				Window     string `json:"window"`
+				Snapshot   bool   `json:"snapshot"`
+			}
+			if err := json.Unmarshal(params, &got); err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"schema_version": "triage.v1",
+				"incident_ref":   map[string]string{"id": got.IncidentID, "window": got.Window},
+				"report_hash":    "sha256:test",
+				"snapshot":       got.Snapshot,
+			}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	ps := NewPlanStore()
+	srv := &Server{store: graphstore.NewStore(), maxBodyBytes: 1 << 20, askRegistry: reg, planStore: ps}
+	body := `{"template":"triage","params":{"incident_id":"inc_abc","window":"15m","snapshot":true}}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/plans/execute", strings.NewReader(body))
+	r = r.WithContext(ContextWithRequestID(r.Context(), "req_test"))
+	w := httptest.NewRecorder()
+	srv.PlanExecute(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("X-Plan-ID") == "" {
+		t.Fatalf("missing X-Plan-ID")
+	}
+	var result PlanResult
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.Status != "complete" || result.Completed != 1 || result.Total != 1 {
+		t.Fatalf("result status = %+v", result)
+	}
+	if result.Steps[0].ID != "triage" || result.Steps[0].Tool != "triage_incident" {
+		t.Fatalf("step = %+v", result.Steps[0])
+	}
+	raw, err := json.Marshal(result.Steps[0].Result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var rep struct {
+		ReportHash  string `json:"report_hash"`
+		IncidentRef struct {
+			ID string `json:"id"`
+		} `json:"incident_ref"`
+		Snapshot bool `json:"snapshot"`
+	}
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if rep.ReportHash != "sha256:test" || rep.IncidentRef.ID != "inc_abc" || !rep.Snapshot {
+		t.Fatalf("report = %+v", rep)
+	}
+	entry, ok := ps.Get(result.PlanID)
+	if !ok || len(entry.Events) < 3 {
+		t.Fatalf("expected SSE event log with start/complete/done, got ok=%v entry=%+v", ok, entry)
+	}
+}
+
+func TestPlanExecute_TemplateValidationErrors(t *testing.T) {
+	reg := tools.NewRegistry()
+	if err := reg.Register(tools.Tool{
+		Name:        "triage_incident",
+		Description: "test triage",
+		InputSchema: json.RawMessage(`{"type":"object","required":["incident_id"],"properties":{"incident_id":{"type":"string"}}}`),
+		Handler: func(ctx context.Context, store tools.Store, params json.RawMessage) (any, error) {
+			return map[string]string{"ok": "true"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	srv := &Server{store: graphstore.NewStore(), maxBodyBytes: 1 << 20, askRegistry: reg}
+	cases := map[string]string{
+		"unknown template":        `{"template":"bogus","params":{"incident_id":"inc_abc"}}`,
+		"missing incident id":     `{"template":"triage","params":{"snapshot":true}}`,
+		"steps and template both": `{"steps":[{"id":"x","tool":"triage_incident","params":{"incident_id":"inc_abc"}}],"template":"triage","params":{"incident_id":"inc_abc"}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/v1/plans/execute?envelope=v2", strings.NewReader(body))
+			r = r.WithContext(ContextWithRequestID(r.Context(), "req_test"))
+			w := httptest.NewRecorder()
+			srv.PlanExecute(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			var resp APIResponse
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Error == nil || resp.Error.Code != "INVALID_PLAN" {
+				t.Fatalf("error = %+v, want INVALID_PLAN", resp.Error)
+			}
+		})
+	}
+}
+
 func TestAsk_DedupSafetyNet_PreservesActualStatus(t *testing.T) {
 	dc := NewDedupCache()
 	srv := &Server{

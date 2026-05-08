@@ -741,6 +741,69 @@ paths:
         '503':
           description: LLM provider unavailable
 
+  /v1/plans/execute:
+    post:
+      tags: [Operational]
+      operationId: executePlan
+      summary: Execute a deterministic tool plan
+      description: |
+        Executes explicit plan steps or a built-in template shorthand. The
+        `triage` template expands to one `triage_incident` tool step; the
+        resulting TriageReport is returned at `steps[0].result`.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [steps]
+                  properties:
+                    steps:
+                      type: array
+                      minItems: 1
+                      maxItems: 10
+                      items:
+                        type: object
+                        required: [id, tool]
+                        properties:
+                          id: {type: string}
+                          tool: {type: string}
+                          params:
+                            type: object
+                            additionalProperties: true
+                - type: object
+                  required: [template, params]
+                  properties:
+                    template:
+                      type: string
+                      enum: [triage]
+                    params:
+                      type: object
+                      required: [incident_id]
+                      properties:
+                        incident_id: {type: string}
+                        window: {type: string, default: 15m}
+                        snapshot: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Plan execution result
+          headers:
+            X-Plan-ID:
+              schema: {type: string}
+              description: Plan ID for `/v1/stream/plans/{id}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResult'
+        '400':
+          description: Invalid plan or template parameters
+        '503':
+          description: Tool registry unavailable
+
   /v1/tools/{name}:
     post:
       tags: [Operational]
@@ -1832,10 +1895,54 @@ components:
         generated_at: {type: string}
         plan_run_id:
           type: string
-          description: Set only when produced via /v1/plans/execute.
+          description: Reserved for future plan-produced reports; omitted by the M1.5 triage template.
         report_hash:
           type: string
           description: "sha256:<hex>"
+
+    PlanResult:
+      type: object
+      required: [plan_id, steps, completed, total, status]
+      properties:
+        plan_id: {type: string}
+        steps:
+          type: array
+          items:
+            type: object
+            required: [id, index, tool, duration_ms]
+            properties:
+              id: {type: string}
+              index: {type: integer}
+              tool: {type: string}
+              result:
+                description: Tool output. For the triage template this is a TriageReport.
+                oneOf:
+                  - $ref: '#/components/schemas/TriageReport'
+                  - type: object
+                    additionalProperties: true
+              error:
+                type: object
+                nullable: true
+                properties:
+                  code: {type: string}
+                  message: {type: string}
+                  retryable: {type: boolean}
+              duration_ms: {type: integer}
+        completed: {type: integer}
+        total: {type: integer}
+        status:
+          type: string
+          enum: [complete, partial, failed]
+        halted_at:
+          type: integer
+          nullable: true
+        error:
+          type: object
+          nullable: true
+          properties:
+            code: {type: string}
+            message: {type: string}
+            retryable: {type: boolean}
 
     CapabilitiesResponse:
       type: object
@@ -1856,7 +1963,7 @@ components:
             provider:
               type: string
               description: Resolved Ask provider. `custom` is used for injected providers.
-              enum: [none, gemini, custom]
+              enum: [none, gemini, anthropic, openai, custom]
             model:
               type: string
               description: Resolved model for the selected provider, or empty when Ask is disabled.

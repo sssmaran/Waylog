@@ -6,7 +6,7 @@ Reference for configuring the Waylog ingest server and SDK. All variables are re
 
 | Variable | Purpose |
 |---|---|
-| Provider credentials | Required only when natural-language Ask should call a configured LLM provider. For the current Gemini provider, set `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+| Provider credentials | Required only when natural-language Ask should call a configured LLM provider. Set the matching key for the selected provider: `GEMINI_API_KEY` or `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` |
 
 ## LLM provider
 
@@ -14,11 +14,17 @@ Deterministic tools, plans, triage, MCP, and read APIs do not require an LLM pro
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WAYLOG_LLM_PROVIDER` | `none` unless a supported provider key is present | LLM provider for Ask. Supported values in M2: `none`, `gemini` |
-| `WAYLOG_LLM_MODEL` | provider default | Provider-neutral model override. For Gemini, this takes precedence over `GEMINI_MODEL` |
+| `WAYLOG_LLM_PROVIDER` | `none` unless a supported provider key is present | LLM provider for Ask. Supported values: `none`, `gemini`, `anthropic`, `openai` |
+| `WAYLOG_LLM_MODEL` | provider default | Provider-neutral model override. Takes precedence over provider-specific model variables |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini-specific model override when `WAYLOG_LLM_MODEL` is unset |
 | `GEMINI_API_BASE` | Gemini API default | Gemini-specific API base URL override |
 | `GEMINI_TOOL_MODE` | `text` | Gemini-specific tool-calling mode |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key for `WAYLOG_LLM_PROVIDER=anthropic` |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Anthropic-specific model override when `WAYLOG_LLM_MODEL` is unset |
+| `ANTHROPIC_API_BASE` | Anthropic API default | Anthropic-specific API base URL override |
+| `OPENAI_API_KEY` | — | OpenAI API key for `WAYLOG_LLM_PROVIDER=openai` |
+| `OPENAI_MODEL` | `gpt-5.4-mini` | OpenAI-specific model override when `WAYLOG_LLM_MODEL` is unset |
+| `OPENAI_API_BASE` | OpenAI API default | OpenAI-specific API base URL override |
 
 ## Auth
 

@@ -14,6 +14,12 @@ func clearProviderEnv(t *testing.T) {
 	t.Setenv("GEMINI_MODEL", "")
 	t.Setenv("GEMINI_API_BASE", "")
 	t.Setenv("GEMINI_TOOL_MODE", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_MODEL", "")
+	t.Setenv("ANTHROPIC_API_BASE", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("OPENAI_API_BASE", "")
 }
 
 func TestSelectFromEnv_NoEnv(t *testing.T) {
@@ -129,16 +135,16 @@ func TestSelectFromEnv_GeminiMissingKey(t *testing.T) {
 
 func TestSelectFromEnv_UnknownProvider(t *testing.T) {
 	clearProviderEnv(t)
-	t.Setenv("WAYLOG_LLM_PROVIDER", "anthropic")
+	t.Setenv("WAYLOG_LLM_PROVIDER", "bogus")
 
 	_, err := SelectFromEnv()
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "anthropic") {
+	if !strings.Contains(err.Error(), "bogus") {
 		t.Errorf("error %q should mention provider name", err.Error())
 	}
-	if !strings.Contains(err.Error(), "none, gemini") {
+	if !strings.Contains(err.Error(), "none, gemini, anthropic, openai") {
 		t.Errorf("error %q should list supported providers", err.Error())
 	}
 }
@@ -156,5 +162,131 @@ func TestSelectFromEnv_WaylogModelOverridesGeminiModel(t *testing.T) {
 	}
 	if sel.Model != "foo" {
 		t.Errorf("Model = %q, want %q", sel.Model, "foo")
+	}
+}
+
+func TestSelectFromEnv_AnthropicWithKey(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("WAYLOG_LLM_PROVIDER", "anthropic")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	sel, err := SelectFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sel.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic", sel.Provider)
+	}
+	if !sel.Configured || !sel.AskEnabled || sel.Impl == nil {
+		t.Fatalf("selection = %+v, want configured enabled provider", sel)
+	}
+	if sel.Model == "" {
+		t.Error("Model is empty, want default")
+	}
+}
+
+func TestSelectFromEnv_AnthropicMissingKey(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("WAYLOG_LLM_PROVIDER", "anthropic")
+
+	sel, err := SelectFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sel.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic", sel.Provider)
+	}
+	if sel.Configured || sel.AskEnabled || sel.Impl != nil {
+		t.Fatalf("selection = %+v, want unavailable provider without startup error", sel)
+	}
+}
+
+func TestSelectFromEnv_OpenAIWithKey(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("WAYLOG_LLM_PROVIDER", "openai")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	sel, err := SelectFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sel.Provider != "openai" {
+		t.Errorf("Provider = %q, want openai", sel.Provider)
+	}
+	if !sel.Configured || !sel.AskEnabled || sel.Impl == nil {
+		t.Fatalf("selection = %+v, want configured enabled provider", sel)
+	}
+	if sel.Model == "" {
+		t.Error("Model is empty, want default")
+	}
+}
+
+func TestSelectFromEnv_OpenAIMissingKey(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("WAYLOG_LLM_PROVIDER", "openai")
+
+	sel, err := SelectFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sel.Provider != "openai" {
+		t.Errorf("Provider = %q, want openai", sel.Provider)
+	}
+	if sel.Configured || sel.AskEnabled || sel.Impl != nil {
+		t.Fatalf("selection = %+v, want unavailable provider without startup error", sel)
+	}
+}
+
+func TestSelectFromEnv_InferredProviderKeys(t *testing.T) {
+	tests := []struct {
+		name     string
+		keyEnv   string
+		wantName string
+	}{
+		{name: "anthropic", keyEnv: "ANTHROPIC_API_KEY", wantName: "anthropic"},
+		{name: "openai", keyEnv: "OPENAI_API_KEY", wantName: "openai"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clearProviderEnv(t)
+			t.Setenv(tc.keyEnv, "test-key")
+
+			sel, err := SelectFromEnv()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if sel.Provider != tc.wantName || !sel.AskEnabled {
+				t.Fatalf("selection = %+v, want %s enabled", sel, tc.wantName)
+			}
+		})
+	}
+}
+
+func TestSelectFromEnv_WaylogModelOverridesProviderModel(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		keyEnv   string
+		modelEnv string
+	}{
+		{name: "anthropic", provider: "anthropic", keyEnv: "ANTHROPIC_API_KEY", modelEnv: "ANTHROPIC_MODEL"},
+		{name: "openai", provider: "openai", keyEnv: "OPENAI_API_KEY", modelEnv: "OPENAI_MODEL"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clearProviderEnv(t)
+			t.Setenv("WAYLOG_LLM_PROVIDER", tc.provider)
+			t.Setenv(tc.keyEnv, "test-key")
+			t.Setenv("WAYLOG_LLM_MODEL", "waylog-model")
+			t.Setenv(tc.modelEnv, "provider-model")
+
+			sel, err := SelectFromEnv()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if sel.Model != "waylog-model" {
+				t.Fatalf("Model = %q, want waylog-model", sel.Model)
+			}
+		})
 	}
 }

@@ -60,3 +60,37 @@ func TestSnapshotModeUsesIncidentUpdatedAt(t *testing.T) {
 		t.Fatalf("snap report missing incident ref")
 	}
 }
+
+func TestBuildHashDoesNotDependOnLLMProviderEnv(t *testing.T) {
+	providers := []string{"none", "gemini", "anthropic", "openai"}
+	var first string
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			t.Setenv("WAYLOG_LLM_PROVIDER", provider)
+			t.Setenv("GEMINI_API_KEY", "test-gemini-key")
+			t.Setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+			t.Setenv("OPENAI_API_KEY", "test-openai-key")
+
+			deps := Deps{
+				Incidents: richIncidents{}, Blast: richBlast{}, Story: richStory{},
+				Signals: richSignals{}, NextChecks: richNextChecks{},
+				Now: func() time.Time { return time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC) },
+			}
+			eng, err := NewEngine(deps)
+			if err != nil {
+				t.Fatalf("new engine: %v", err)
+			}
+			opts, _ := ParseBuildOptions("15m", true, deps.Now())
+			r, err := eng.Build(context.Background(), "inc_abc", opts)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			if first == "" {
+				first = r.ReportHash
+			}
+			if r.ReportHash != first {
+				t.Fatalf("provider %s hash = %q, want %q", provider, r.ReportHash, first)
+			}
+		})
+	}
+}

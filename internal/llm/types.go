@@ -12,8 +12,11 @@ type ToolDefinition struct {
 }
 
 type ToolCall struct {
-	Name      string
-	Arguments json.RawMessage
+	Name                string
+	Arguments           json.RawMessage
+	ProviderID          string            `json:"-"`
+	ProviderRawItems    []json.RawMessage `json:"-"`
+	ProviderRawIncluded bool              `json:"-"`
 }
 
 type ToolResult struct {

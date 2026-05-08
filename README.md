@@ -210,6 +210,8 @@ Exposes the same tool registry over MCP stdio for Claude, Cursor, and other MCP 
 
 All eleven tools are deterministic, idempotent, and available via CLI, REST `/v1/tools/{name}`, MCP, and plan execution.
 
+Agents can call the built-in triage plan template with `POST /v1/plans/execute` and `{"template":"triage","params":{"incident_id":"inc_...","snapshot":true}}`; the TriageReport is returned at `steps[0].result`.
+
 | Tool               | Answers                                                       |
 | ------------------ | ------------------------------------------------------------- |
 | `graph_stats`      | Overall shape of the graph right now                          |
@@ -298,12 +300,12 @@ Public alpha. APIs may break before 1.0.
 - schema-2.0 recent-index read APIs behind `WAYLOG_V2_READS=true`
 - SQLite cold store (events, deployments, signals, incidents, causal claims)
 - signal-driven incident engine with `waylog incidents`, `waylog incident <id>`, dashboard incident cards, runtime cause classification, and startup hot-window rebuild from the schema-2.0 WAL
-- provider-neutral Ask configuration via `WAYLOG_LLM_PROVIDER`; deterministic CLI, tools, plans, triage, and MCP work with no LLM configured
+- provider-neutral Ask configuration via `WAYLOG_LLM_PROVIDER` (`none`, `gemini`, `anthropic`, `openai`); deterministic CLI, tools, plans, triage, and MCP work with no LLM configured
 - 11 deterministic analysis tools, rollup-correct root-cause attribution
 - agent-native REST (`/v1/tools/*`, `/v1/ask`, `/v1/plans/execute`) with idempotency and structured envelopes
 - `/v1/traces/story` and indented failure-path rendering in the dashboard
 - dashboard: minimal v2 triage loop (errors, explain, blast, recent requests)
-- v2 operator CLI (`capabilities`, `recent`, `incidents`, `incident`, `errors`, `event`, `trace`, `explain`, `blast`, `search`) over read APIs
+- v2 operator CLI (`capabilities`, `recent`, `incidents`, `incident`, `triage`, `errors`, `event`, `trace`, `explain`, `blast`, `search`) over read APIs
 - live TUI (`waylog-live --dev` streams via SSE), MCP stdio
 - scoped auth (write/read/agent) with startup validation
 
