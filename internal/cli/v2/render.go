@@ -286,6 +286,22 @@ func RenderSearch(w io.Writer, resp EventSearchResponse) {
 func RenderCapabilities(w io.Writer, resp CapabilitiesResponse) {
 	fmt.Fprintf(w, "v2_reads: %s\n", enabledLabel(resp.V2Reads.Enabled))
 	fmt.Fprintf(w, "otlp_http_traces: %s\n", enabledLabel(resp.OTLP.HTTPTraces))
+	if resp.LLM.Provider != "" {
+		fmt.Fprintf(w, "llm: provider=%s configured=%t ask_enabled=%t", resp.LLM.Provider, resp.LLM.Configured, resp.LLM.AskEnabled)
+		if resp.LLM.Model != "" {
+			fmt.Fprintf(w, " model=%s", resp.LLM.Model)
+		}
+		if resp.LLM.ToolMode != "" {
+			fmt.Fprintf(w, " tool_mode=%s", resp.LLM.ToolMode)
+		}
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintf(w, "incidents: enabled=%t persistent=%t rebuild_supported=%t",
+		resp.Incidents.Enabled, resp.Incidents.Persistent, resp.Incidents.Rebuild.Supported)
+	if resp.Incidents.Rebuild.Scope != "" {
+		fmt.Fprintf(w, " rebuild_scope=%s", resp.Incidents.Rebuild.Scope)
+	}
+	fmt.Fprintln(w)
 }
 
 func eventRoute(ev *Event) string {

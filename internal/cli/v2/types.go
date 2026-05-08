@@ -15,6 +15,21 @@ type CapabilitiesResponse struct {
 	OTLP struct {
 		HTTPTraces bool `json:"http_traces"`
 	} `json:"otlp"`
+	LLM struct {
+		Provider   string `json:"provider"`
+		Model      string `json:"model"`
+		ToolMode   string `json:"tool_mode"`
+		Configured bool   `json:"configured"`
+		AskEnabled bool   `json:"ask_enabled"`
+	} `json:"llm"`
+	Incidents struct {
+		Enabled    bool `json:"enabled"`
+		Persistent bool `json:"persistent"`
+		Rebuild    struct {
+			Supported bool   `json:"supported"`
+			Scope     string `json:"scope"`
+		} `json:"rebuild"`
+	} `json:"incidents"`
 }
 
 type EventSearchResponse = apiv2.EventSearchResponse
