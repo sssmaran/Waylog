@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance rollup-comparison demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
@@ -19,6 +19,7 @@ help:
 	@echo "  demo     - start dashboard demo locally (detached, no Docker)"
 	@echo "  demo-stop - stop demo processes"
 	@echo "  demo-acceptance - verify a running local demo end-to-end"
+	@echo "  rollup-comparison - run demo proof for root-cause vs naive rollup counts"
 	@echo "  demo-up  - start v2 demo stack in Docker (detached)"
 	@echo "  demo-down - stop Docker demo stack"
 	@echo "  micro-demo - start 4-service micro-demo in foreground for debugging"
@@ -122,6 +123,9 @@ demo-stop:
 
 demo-acceptance:
 	./scripts/demo-acceptance.sh
+
+rollup-comparison:
+	./scripts/rollup-comparison.sh
 
 demo-up: docker-dev
 

@@ -13,6 +13,7 @@ type errorsResponse struct {
 
 type errorRow struct {
 	ErrorFamily    errorFamily `json:"error_family"`
+	Count          int         `json:"count"`
 	AffectedTraces int         `json:"affected_traces"`
 	SampleTraces   []string    `json:"sample_traces"`
 }
@@ -58,9 +59,13 @@ type triageReport struct {
 	ReportHash string `json:"report_hash"`
 }
 
+type blastResponse struct {
+	AffectedServices int `json:"affected_services"`
+}
+
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: demo-acceptance-json <has-payment-error|first-payment-trace|first-event-id|burst-signals-accepted|has-dependency-incident|first-incident-id|triage-report-hash>")
+		fmt.Fprintln(os.Stderr, "usage: demo-acceptance-json <has-payment-error|payment-error-count|payment-affected-traces|first-payment-trace|first-event-id|burst-signals-accepted|has-dependency-incident|first-incident-id|triage-report-hash|blast-affected-services>")
 		os.Exit(2)
 	}
 
@@ -75,6 +80,10 @@ func main() {
 		if !hasPaymentError(body) {
 			os.Exit(1)
 		}
+	case "payment-error-count":
+		fmt.Println(paymentErrorCount(body))
+	case "payment-affected-traces":
+		fmt.Println(paymentAffectedTraces(body))
 	case "first-payment-trace":
 		fmt.Println(firstPaymentTrace(body))
 	case "first-event-id":
@@ -91,6 +100,8 @@ func main() {
 		fmt.Println(firstIncidentID(body))
 	case "triage-report-hash":
 		fmt.Println(triageReportHash(body))
+	case "blast-affected-services":
+		fmt.Println(blastAffectedServices(body))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		os.Exit(2)
@@ -108,6 +119,32 @@ func hasPaymentError(body []byte) bool {
 		}
 	}
 	return false
+}
+
+func paymentErrorCount(body []byte) int {
+	var resp errorsResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0
+	}
+	for _, row := range resp.Rows {
+		if isPayment502(row) {
+			return row.Count
+		}
+	}
+	return 0
+}
+
+func paymentAffectedTraces(body []byte) int {
+	var resp errorsResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0
+	}
+	for _, row := range resp.Rows {
+		if isPayment502(row) {
+			return row.AffectedTraces
+		}
+	}
+	return 0
 }
 
 func firstPaymentTrace(body []byte) string {
@@ -196,4 +233,12 @@ func triageReportHash(body []byte) string {
 		return ""
 	}
 	return rep.ReportHash
+}
+
+func blastAffectedServices(body []byte) int {
+	var resp blastResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0
+	}
+	return resp.AffectedServices
 }

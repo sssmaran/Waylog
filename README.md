@@ -273,7 +273,10 @@ make test-race      # race detector
 make ts-test        # TypeScript SDK vitest suite
 make ci             # fmt + vet + test-race + test-sdk + ts-test + doc-link + rollup-contract
 make demo-acceptance # with make demo running, verify demo + CLI triage loop
+make rollup-comparison # demo proof: root-cause counts vs naive propagated counts
 ```
+
+`make rollup-comparison` runs the checkout demo burst and prints the PMT_502 root-cause count next to a naive propagated count across touched services. It is the quickest local proof that Waylog's default rollups count the originating failure once per failed request instead of inflating it by every downstream hop.
 
 ## Auth
 
