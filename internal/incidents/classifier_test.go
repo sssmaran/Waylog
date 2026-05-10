@@ -202,3 +202,51 @@ func TestNextChecksRuntime(t *testing.T) {
 		t.Fatalf("expected non-empty next checks for runtime cause")
 	}
 }
+
+func TestClassifyIncludesAlertEvidenceWithoutChangingCause(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	base := Incident{Service: "checkout", Env: "prod", StartedAt: now, ErrorFamily: testFamily()}
+	paymentEvent := testIncidentEvent("e1", "trace-a", now, "checkout", "payment.charge", "PMT_502", "payment")
+
+	got := Classify(ClassificationInput{
+		Incident: base,
+		Events:   []*eventv2.Event{paymentEvent},
+		Signals: []signals.Signal{{
+			SignalID:  "sig_alert",
+			Type:      signals.TypeAlert,
+			Source:    "grafana",
+			Service:   "checkout",
+			Env:       "prod",
+			Severity:  signals.SeverityCritical,
+			Reason:    "PMT_502 spike",
+			Timestamp: now,
+			Metadata:  map[string]any{"alert_id": "alert_1", "provider_url": "https://grafana/alert"},
+		}, {
+			SignalID:  "sig_other_env",
+			Type:      signals.TypeAlert,
+			Source:    "grafana",
+			Service:   "checkout",
+			Env:       "staging",
+			Severity:  signals.SeverityCritical,
+			Reason:    "staging alert",
+			Timestamp: now,
+			Metadata:  map[string]any{"alert_id": "alert_staging"},
+		}},
+		Now: now,
+	})
+	if got.Cause != CauseDependency {
+		t.Fatalf("alert should not override dependency cause: %+v", got)
+	}
+	for _, ev := range got.Evidence {
+		if ev.SignalID == "sig_other_env" {
+			t.Fatalf("alert evidence from another env should not be included: %+v", ev)
+		}
+		if ev.SignalID == "sig_alert" && ev.Title == "External alert overlaps incident window" {
+			if ev.Fields["alert_id"] != "alert_1" {
+				t.Fatalf("alert metadata missing: %+v", ev.Fields)
+			}
+			return
+		}
+	}
+	t.Fatalf("alert evidence missing: %+v", got.Evidence)
+}

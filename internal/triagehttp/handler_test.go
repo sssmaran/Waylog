@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,22 @@ func TestTriageHandlerUnknownIncidentIsNotFound(t *testing.T) {
 	h.Triage(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown incident, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestTriageReportHandlerRendersMarkdown(t *testing.T) {
+	eng := newTriageEngineForHandler(t)
+	h := triagehttp.NewHandler(eng)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/triage/inc_abc/report?format=markdown", nil)
+	rr := httptest.NewRecorder()
+	h.Triage(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Waylog Triage Report") || !strings.Contains(rr.Body.String(), "inc_abc") {
+		t.Fatalf("unexpected report:\n%s", rr.Body.String())
 	}
 }
 

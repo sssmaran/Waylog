@@ -417,6 +417,43 @@ func TestSignalQueryAdapter_UnavailableReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestAlertQueryAdapter_UsesIncidentWindowPlusMatchWindow(t *testing.T) {
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	started := now.Add(-2 * time.Hour)
+	store := &fakeSignalStore{out: []signals.Signal{{
+		SignalID:  "sig_alert",
+		Type:      signals.TypeAlert,
+		Source:    "grafana",
+		Service:   "checkout",
+		Env:       "demo",
+		Severity:  signals.SeverityCritical,
+		Reason:    "PMT_502 spike",
+		Timestamp: started.Add(-20 * time.Minute),
+		Metadata:  map[string]any{"alert_id": "alert_1"},
+	}}}
+	a := triage.NewAlertQueryAdapter(store, 30*time.Minute)
+	got, err := a.AlertsFor(context.Background(), triage.IncidentSummary{
+		Service:   "checkout",
+		Env:       "demo",
+		StartedAt: started,
+		UpdatedAt: now,
+	}, triage.BuildOptions{Window: 15 * time.Minute, Now: now})
+	if err != nil {
+		t.Fatalf("AlertsFor: %v", err)
+	}
+	wantSince := started.Add(-30 * time.Minute)
+	if !store.got.Since.Equal(wantSince) {
+		t.Fatalf("filter.Since = %v, want %v", store.got.Since, wantSince)
+	}
+	wantUntil := now.Add(30 * time.Minute)
+	if !store.got.Until.Equal(wantUntil) {
+		t.Fatalf("filter.Until = %v, want %v", store.got.Until, wantUntil)
+	}
+	if len(got) != 1 || got[0].AlertID != "alert_1" {
+		t.Fatalf("alert refs wrong: %+v", got)
+	}
+}
+
 // ----- NextChecksAdapter -----
 
 func TestNextChecksAdapter_ConsumesIncidentNextChecks(t *testing.T) {

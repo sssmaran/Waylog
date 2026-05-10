@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sssmaran/WaylogCLI/internal/alerts"
 	"github.com/sssmaran/WaylogCLI/internal/auth"
 	"github.com/sssmaran/WaylogCLI/internal/cli"
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
@@ -136,6 +137,13 @@ func main() {
 	otlpGRPCAddr := config.Getenv("OTLP_GRPC_ADDR", ":4317")
 	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", false)
 	signalRetention := config.GetenvDuration("WAYLOG_SIGNAL_RETENTION", 72*time.Hour)
+	alertMatchWindow := config.GetenvDuration("ALERT_MATCH_WINDOW", 15*time.Minute)
+	if alertMatchWindow <= 0 {
+		alertMatchWindow = 15 * time.Minute
+	}
+	if alertMatchWindow > 24*time.Hour {
+		alertMatchWindow = 24 * time.Hour
+	}
 	incidentsEnabled := config.GetenvBool("WAYLOG_INCIDENTS_ENABLED", true)
 	incidentCfg := incidents.Config{
 		TickInterval:            config.GetenvDuration("WAYLOG_INCIDENT_TICK_INTERVAL", 30*time.Second),
@@ -530,6 +538,7 @@ func main() {
 						},
 					),
 					Signals:    triage.NewSignalQueryAdapter(signalStore),
+					Alerts:     triage.NewAlertQueryAdapter(signalStore, alertMatchWindow),
 					NextChecks: triage.NewNextChecksAdapter(),
 				})
 				if err != nil {
@@ -538,6 +547,10 @@ func main() {
 				}
 				if err := tools.RegisterTriageTool(reg, triageEng); err != nil {
 					slog.Error("triage tool register failed", "err", err)
+					os.Exit(1)
+				}
+				if err := tools.RegisterTriageReportTool(reg, triageEng); err != nil {
+					slog.Error("triage report tool register failed", "err", err)
 					os.Exit(1)
 				}
 				triageHandler := triagehttp.NewHandler(triageEng)
@@ -561,6 +574,8 @@ func main() {
 	mux.Handle("/v1/topology", readCORS(ingestServer.Topology))
 	mux.Handle("/v1/stream/dashboard", readCORS(ingestServer.SSEStream))
 	mux.Handle("/v1/insight", readCORS(ingestServer.Insight))
+	alertHandler := alerts.NewHandler(signalStore, incidentEngine, v2Reader, alertMatchWindow)
+	mux.Handle("/v1/alerts", writeAuth(http.HandlerFunc(alertHandler.Alerts)))
 
 	// Deployments — dual method: GET=read, POST=write.
 	mux.Handle("/v1/deployments", http.HandlerFunc(

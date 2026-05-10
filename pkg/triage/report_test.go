@@ -18,6 +18,7 @@ func TestReportJSONRoundTrip(t *testing.T) {
 				{Service: "payment", Step: "payment.charge", ErrorCode: "PMT_502", Count: 11},
 			},
 		},
+		Alerts:      []triage.AlertRef{{SignalID: "sig_2", AlertID: "alert_1", Source: "grafana", Severity: "critical", Reason: "PMT_502 spike", EvidenceIDs: []string{"sig_2"}}},
 		Signals:     []triage.SignalRef{{ID: "sig_1", Type: "deploy", EvidenceIDs: []string{"e1"}}},
 		NextChecks:  []triage.NextCheck{{ID: "check_1", Prompt: "verify x"}},
 		Confidence:  triage.ConfidenceMedium,
@@ -40,6 +41,9 @@ func TestReportJSONRoundTrip(t *testing.T) {
 	}
 	if out.Confidence != triage.ConfidenceMedium {
 		t.Fatalf("confidence mismatch: got %q", out.Confidence)
+	}
+	if len(out.Alerts) != 1 || out.Alerts[0].AlertID != "alert_1" {
+		t.Fatalf("alerts round-trip lost data: %+v", out.Alerts)
 	}
 }
 
@@ -113,6 +117,24 @@ func TestCanonicalHashChangesWhenContentChanges(t *testing.T) {
 	h2, _ := mutated.CanonicalHash()
 	if h1 == h2 {
 		t.Fatalf("hash must change when incident_ref.id changes")
+	}
+}
+
+func TestCanonicalHashChangesWhenAlertEvidenceChanges(t *testing.T) {
+	base := triage.Report{
+		SchemaVersion: "triage.v1",
+		IncidentRef:   triage.IncidentRef{ID: "inc_1"},
+		Confidence:    triage.ConfidenceMedium,
+		GeneratedAt:   "t",
+		ReportHash:    "h",
+	}
+	h1, _ := base.CanonicalHash()
+
+	withAlert := base
+	withAlert.Alerts = []triage.AlertRef{{SignalID: "sig_alert", AlertID: "alert_1", Source: "grafana", Severity: "critical", Reason: "PMT_502 spike", EvidenceIDs: []string{"sig_alert"}}}
+	h2, _ := withAlert.CanonicalHash()
+	if h1 == h2 {
+		t.Fatalf("hash must change when alert evidence changes")
 	}
 }
 

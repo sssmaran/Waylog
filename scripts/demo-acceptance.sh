@@ -4,6 +4,7 @@ set -euo pipefail
 GATEWAY_URL="${GATEWAY_URL:-http://localhost:9081}"
 INGEST_URL="${INGEST_URL:-http://localhost:8080}"
 WAYLOG_READ_KEY="${WAYLOG_READ_KEY:-demo}"
+WAYLOG_WRITE_KEY="${WAYLOG_WRITE_KEY:-demo}"
 REQUESTS="${REQUESTS:-20}"
 CONCURRENCY="${CONCURRENCY:-5}"
 TIMEOUT="${WAYLOG_CLI_TIMEOUT:-5s}"
@@ -72,6 +73,19 @@ CLI=("$CLI_BIN" --addr "$INGEST_URL" --api-key "$WAYLOG_READ_KEY" --timeout "$TI
 
 "${CLI[@]}" --json capabilities >/dev/null || fail "waylog capabilities failed"
 echo "PASS: waylog capabilities"
+
+alert_id="alert_demo_pmt_502"
+alert_timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+alert_body="{\"source\":\"waylog\",\"alert_id\":\"${alert_id}\",\"service\":\"checkout\",\"env\":\"demo\",\"severity\":\"critical\",\"reason\":\"PMT_502 spike\",\"message\":\"demo alert for checkout payment failures\",\"error_code\":\"PMT_502\",\"timestamp\":\"${alert_timestamp}\"}"
+alert_status="$(curl -s -o /tmp/waylog-demo-alert.json -w "%{http_code}" \
+  -X POST "${INGEST_URL}/v1/alerts" \
+  -H "Authorization: Bearer ${WAYLOG_WRITE_KEY}" \
+  -H 'Content-Type: application/json' \
+  --data "$alert_body" || echo "000")"
+[[ "$alert_status" == "201" ]] || fail "alert webhook failed: HTTP $alert_status"
+grep -q '"signal_id"' /tmp/waylog-demo-alert.json || fail "alert webhook response did not include a signal"
+grep -q '"matched"' /tmp/waylog-demo-alert.json || fail "alert webhook response did not include match state"
+echo "PASS: alert webhook accepted"
 
 burst_body="{\"requests\":${REQUESTS},\"concurrency\":${CONCURRENCY}}"
 burst_status="$(curl -s -o /tmp/waylog-demo-burst.json -w "%{http_code}" \
@@ -145,5 +159,13 @@ hash_b="$(json_triage_report_hash <<<"$triage_b")"
 
 [[ "$hash_a" == "$hash_b" ]] || fail "triage report_hash unstable across runs: A=$hash_a B=$hash_b"
 echo "PASS: waylog triage stable report_hash=$hash_a"
+
+report_status="$(curl -s -o /tmp/waylog-demo-triage-report.md -w "%{http_code}" \
+  -H "Authorization: Bearer ${WAYLOG_READ_KEY}" \
+  "${INGEST_URL}/v1/triage/${incident_id}/report?format=markdown&snapshot=true" || echo "000")"
+[[ "$report_status" == "200" ]] || fail "triage markdown report failed: HTTP $report_status"
+grep -q "$hash_a" /tmp/waylog-demo-triage-report.md || fail "triage markdown report did not cite report_hash"
+grep -q "$alert_id" /tmp/waylog-demo-triage-report.md || fail "triage markdown report did not cite alert evidence"
+echo "PASS: triage markdown report cites alert evidence"
 
 echo "Demo acceptance passed."

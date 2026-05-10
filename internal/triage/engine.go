@@ -59,6 +59,10 @@ type SignalQuery interface {
 	SignalsFor(ctx context.Context, inc IncidentSummary, opts BuildOptions) ([]SignalEvidence, error)
 }
 
+type AlertQuery interface {
+	AlertsFor(ctx context.Context, inc IncidentSummary, opts BuildOptions) ([]pkgtriage.AlertRef, error)
+}
+
 type NextChecksProvider interface {
 	NextChecks(ctx context.Context, inc IncidentSummary) ([]NextCheckSpec, error)
 }
@@ -68,6 +72,7 @@ type Deps struct {
 	Blast      BlastQuery
 	Story      StoryBuilder
 	Signals    SignalQuery
+	Alerts     AlertQuery
 	NextChecks NextChecksProvider
 	Now        func() time.Time
 }
@@ -107,6 +112,13 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 	if err != nil {
 		return nil, fmt.Errorf("triage: signals: %w", err)
 	}
+	var alerts []pkgtriage.AlertRef
+	if e.deps.Alerts != nil {
+		alerts, err = e.deps.Alerts.AlertsFor(ctx, inc, opts)
+		if err != nil {
+			return nil, fmt.Errorf("triage: alerts: %w", err)
+		}
+	}
 	checks, err := e.deps.NextChecks.NextChecks(ctx, inc)
 	if err != nil {
 		return nil, fmt.Errorf("triage: next_checks: %w", err)
@@ -122,6 +134,7 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 		FirstFailure: story.Payload,
 		SampleTraces: story.SampleTraces,
 		Signals:      sigs,
+		Alerts:       alerts,
 		NextChecks:   checks,
 		Confidence:   inc.Confidence,
 		GeneratedAt:  e.deps.Now().UTC().Format(time.RFC3339Nano),

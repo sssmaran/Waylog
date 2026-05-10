@@ -23,6 +23,7 @@ type Report struct {
 	FirstFailure  json.RawMessage `json:"first_failure,omitempty"`
 	SampleTraces  []TraceSample   `json:"sample_traces,omitempty"`
 	Signals       []SignalRef     `json:"signals,omitempty"`
+	Alerts        []AlertRef      `json:"alerts,omitempty"`
 	NextChecks    []NextCheck     `json:"next_checks,omitempty"`
 	Confidence    Confidence      `json:"confidence"`
 	GeneratedAt   string          `json:"generated_at"`
@@ -57,6 +58,16 @@ type TraceSample struct {
 type SignalRef struct {
 	ID          string   `json:"id"`
 	Type        string   `json:"type"`
+	EvidenceIDs []string `json:"evidence_ids"`
+}
+
+type AlertRef struct {
+	SignalID    string   `json:"signal_id"`
+	AlertID     string   `json:"alert_id,omitempty"`
+	Source      string   `json:"source"`
+	Severity    string   `json:"severity"`
+	Reason      string   `json:"reason"`
+	ProviderURL string   `json:"provider_url,omitempty"`
 	EvidenceIDs []string `json:"evidence_ids"`
 }
 

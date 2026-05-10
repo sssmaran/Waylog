@@ -28,6 +28,7 @@ type Classification struct {
 
 func Classify(input ClassificationInput) Classification {
 	evidence := collectTraceEvidence(input.Events)
+	evidence = append(evidence, matchingAlertEvidence(input)...)
 	warnings := instrumentationWarnings(input.Events, input.Signals)
 
 	if dep := matchingDependencySignal(input); dep != nil {
@@ -142,6 +143,32 @@ func matchingSignal(input ClassificationInput, typ signals.Type) *signals.Signal
 	return nil
 }
 
+func matchingAlertEvidence(input ClassificationInput) []Evidence {
+	start := input.Incident.StartedAt
+	lo := start.Add(-15 * time.Minute)
+	hi := input.Now
+	if hi.IsZero() {
+		hi = input.Incident.UpdatedAt
+	}
+	out := []Evidence{}
+	for _, sig := range input.Signals {
+		if sig.Type != signals.TypeAlert {
+			continue
+		}
+		if input.Incident.Env != "" && sig.Env != input.Incident.Env {
+			continue
+		}
+		if sig.Service != input.Incident.Service {
+			continue
+		}
+		if sig.Timestamp.Before(lo) || sig.Timestamp.After(hi) {
+			continue
+		}
+		out = append(out, signalEvidence(sig, "External alert overlaps incident window"))
+	}
+	return out
+}
+
 func collectTraceEvidence(events []*eventv2.Event) []Evidence {
 	out := make([]Evidence, 0, 2)
 	for _, ev := range events {
@@ -173,6 +200,17 @@ func deploymentEvidence(dep Deployment) Evidence {
 }
 
 func signalEvidence(sig signals.Signal, title string) Evidence {
+	fields := map[string]any{
+		"type":     string(sig.Type),
+		"severity": string(sig.Severity),
+		"source":   sig.Source,
+	}
+	if alertID := stringField(sig.Metadata, "alert_id"); alertID != "" {
+		fields["alert_id"] = alertID
+	}
+	if providerURL := stringField(sig.Metadata, "provider_url"); providerURL != "" {
+		fields["provider_url"] = providerURL
+	}
 	return Evidence{
 		Kind:       EvidenceSignal,
 		Title:      title,
@@ -180,11 +218,7 @@ func signalEvidence(sig signals.Signal, title string) Evidence {
 		Service:    sig.Service,
 		SignalID:   sig.SignalID,
 		OccurredAt: sig.Timestamp,
-		Fields: map[string]any{
-			"type":     string(sig.Type),
-			"severity": string(sig.Severity),
-			"source":   sig.Source,
-		},
+		Fields:     fields,
 	}
 }
 

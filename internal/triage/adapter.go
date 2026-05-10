@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/incidents"
 	"github.com/sssmaran/WaylogCLI/internal/signals"
@@ -208,10 +209,24 @@ func storySummary(s apiv2.StoryResponse, inc IncidentSummary) string {
 	return "first failure"
 }
 
-type signalQueryAdapter struct{ s SignalStore }
+type signalQueryAdapter struct {
+	s                SignalStore
+	alertMatchWindow time.Duration
+}
 
 func NewSignalQueryAdapter(s SignalStore) SignalQuery {
 	return signalQueryAdapter{s: s}
+}
+
+func NewAlertQueryAdapter(s SignalStore, matchWindow ...time.Duration) AlertQuery {
+	window := 15 * time.Minute
+	if len(matchWindow) > 0 && matchWindow[0] > 0 {
+		window = matchWindow[0]
+	}
+	if window > 24*time.Hour {
+		window = 24 * time.Hour
+	}
+	return signalQueryAdapter{s: s, alertMatchWindow: window}
 }
 
 func (a signalQueryAdapter) SignalsFor(ctx context.Context, inc IncidentSummary, opts BuildOptions) ([]SignalEvidence, error) {
@@ -247,6 +262,59 @@ func (a signalQueryAdapter) SignalsFor(ctx context.Context, inc IncidentSummary,
 		})
 	}
 	return out, nil
+}
+
+func (a signalQueryAdapter) AlertsFor(ctx context.Context, inc IncidentSummary, opts BuildOptions) ([]pkgtriage.AlertRef, error) {
+	end := opts.Now
+	if end.IsZero() {
+		end = inc.UpdatedAt
+	}
+	since := inc.StartedAt.Add(-a.alertMatchWindow)
+	if inc.StartedAt.IsZero() {
+		window := opts.Window
+		if window <= 0 {
+			window = defaultWindow
+		}
+		since = end.Add(-window)
+	}
+	until := end.Add(a.alertMatchWindow)
+	rows, err := a.s.Query(ctx, signals.Filter{
+		Env:     inc.Env,
+		Service: inc.Service,
+		Types:   []signals.Type{signals.TypeAlert},
+		Since:   since,
+		Until:   until,
+		Limit:   200,
+	})
+	if err != nil {
+		if errors.Is(err, signals.ErrUnavailable) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]pkgtriage.AlertRef, 0, len(rows))
+	for _, sig := range rows {
+		out = append(out, pkgtriage.AlertRef{
+			SignalID:    sig.SignalID,
+			AlertID:     stringField(sig.Metadata, "alert_id"),
+			Source:      sig.Source,
+			Severity:    string(sig.Severity),
+			Reason:      sig.Reason,
+			ProviderURL: stringField(sig.Metadata, "provider_url"),
+			EvidenceIDs: []string{sig.SignalID},
+		})
+	}
+	return out, nil
+}
+
+func stringField(m map[string]any, key string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
 }
 
 type nextChecksAdapter struct{}

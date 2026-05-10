@@ -54,6 +54,7 @@ Scoped keys. See the Auth section of the [README](../README.md).
 | `WRITE_TIMEOUT` | `10s` | HTTP write timeout |
 | `IDLE_TIMEOUT` | `120s` | HTTP idle timeout |
 | `CORS_ORIGIN` | `*` | Allowed CORS origin for read APIs |
+| `ALERT_MATCH_WINDOW` | `15m` | Window for matching `/v1/alerts` to active incidents by `env + service + error_code`; capped at `24h` |
 
 ## CLI
 
