@@ -137,6 +137,8 @@ func TestRenderCapabilitiesPrintsReadableFlags(t *testing.T) {
 	var out bytes.Buffer
 	resp := CapabilitiesResponse{}
 	resp.OTLP.HTTPTraces = true
+	resp.OTLP.GRPCTraces = true
+	resp.OTLP.GRPCAddr = ":4317"
 	resp.LLM.Provider = "none"
 	resp.Incidents.Enabled = true
 	resp.Incidents.Persistent = true
@@ -146,6 +148,7 @@ func TestRenderCapabilitiesPrintsReadableFlags(t *testing.T) {
 	for _, want := range []string{
 		"v2_reads: disabled",
 		"otlp_http_traces: enabled",
+		"otlp_grpc_traces: enabled addr=:4317",
 		"llm: provider=none configured=false ask_enabled=false",
 		"incidents: enabled=true persistent=true rebuild_supported=true rebuild_scope=hot-window",
 	} {
@@ -158,7 +161,7 @@ func TestRenderCapabilitiesPrintsReadableFlags(t *testing.T) {
 func TestCapabilitiesJSONPreservesM2Fields(t *testing.T) {
 	raw := []byte(`{
 		"v2_reads":{"enabled":true},
-		"otlp":{"http_traces":true},
+		"otlp":{"http_traces":true,"grpc_traces":true,"grpc_addr":":4317"},
 		"llm":{"provider":"none","model":"","tool_mode":"","configured":false,"ask_enabled":false},
 		"incidents":{"enabled":true,"persistent":true,"rebuild":{"supported":true,"scope":"hot-window"}}
 	}`)
@@ -170,7 +173,7 @@ func TestCapabilitiesJSONPreservesM2Fields(t *testing.T) {
 	if err := renderJSON(&out, resp); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"llm"`, `"provider": "none"`, `"incidents"`, `"scope": "hot-window"`} {
+	for _, want := range []string{`"llm"`, `"provider": "none"`, `"incidents"`, `"scope": "hot-window"`, `"grpc_traces": true`} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("json missing %q:\n%s", want, out.String())
 		}

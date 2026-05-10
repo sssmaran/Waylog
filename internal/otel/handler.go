@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"mime"
@@ -32,6 +33,29 @@ type Handler struct {
 	v2Ingest     *ingestv2.Handler
 	metrics      *metrics.Metrics
 	maxBodyBytes int64
+}
+
+// ExportError is returned when decoded OTLP spans cannot be processed after
+// transport-level parsing has succeeded.
+type ExportError struct {
+	StatusCode int
+	Bucket     string
+	Message    string
+	Cause      error
+}
+
+func (e *ExportError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
+func (e *ExportError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
 }
 
 // NewHandler constructs an OTLP traces handler.
@@ -104,7 +128,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	convResult := convert.SpansToEvents(&req)
+	resp, err := h.Export(r.Context(), &req)
+	if err != nil {
+		var exportErr *ExportError
+		if errors.As(err, &exportErr) {
+			h.respondStatus(w, exportErr.Bucket, exportErr.StatusCode, exportErr.Message)
+			return
+		}
+		h.respondStatus(w, "5xx", http.StatusInternalServerError, "infrastructure error")
+		return
+	}
+	respBytes, err := proto.Marshal(resp)
+	if err != nil {
+		h.respondStatus(w, "5xx", http.StatusInternalServerError, "failed to encode response")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-protobuf")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(respBytes)
+}
+
+// Export converts an OTLP trace export request into schema-2.0 events and
+// writes them through the same ingest path used by SDK events.
+func (h *Handler) Export(ctx context.Context, req *coltracepb.ExportTraceServiceRequest) (*coltracepb.ExportTraceServiceResponse, error) {
+	convResult := convert.SpansToEvents(req)
 
 	// Mirror the future-timestamp guard from Server.Events: drop any span
 	// dated more than 5 minutes ahead of wall-clock so a skewed collector
@@ -141,8 +189,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if h.metrics != nil {
 				h.metrics.OTLPInfraFailures.Inc()
 			}
-			h.respondStatus(w, "5xx", http.StatusServiceUnavailable, "infrastructure error")
-			return
+			return nil, &ExportError{StatusCode: http.StatusServiceUnavailable, Bucket: "5xx", Message: "infrastructure error"}
 		}
 		bodies, err := marshalEvents(convResult.Events)
 		if err != nil {
@@ -150,21 +197,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if h.metrics != nil {
 				h.metrics.OTLPInfraFailures.Inc()
 			}
-			h.respondStatus(w, "5xx", http.StatusServiceUnavailable, "infrastructure error")
-			return
+			return nil, &ExportError{StatusCode: http.StatusServiceUnavailable, Bucket: "5xx", Message: "infrastructure error", Cause: err}
 		}
-		env, err = h.v2Ingest.IngestRaw(r.Context(), bodies, true)
+		env, err = h.v2Ingest.IngestRaw(ctx, bodies, true)
 		if err != nil {
 			if err == context.Canceled || err == context.DeadlineExceeded {
-				h.respondStatus(w, "5xx", http.StatusServiceUnavailable, "request canceled")
-				return
+				return nil, &ExportError{StatusCode: http.StatusServiceUnavailable, Bucket: "5xx", Message: "request canceled", Cause: err}
 			}
 			slog.Error("otlp: v2 ingest infrastructure failure", "err", err)
 			if h.metrics != nil {
 				h.metrics.OTLPInfraFailures.Inc()
 			}
-			h.respondStatus(w, "5xx", http.StatusServiceUnavailable, "infrastructure error")
-			return
+			return nil, &ExportError{StatusCode: http.StatusServiceUnavailable, Bucket: "5xx", Message: "infrastructure error", Cause: err}
 		}
 		if h.metrics != nil && len(env.Rejected) > 0 {
 			h.metrics.OTLPValidationRejects.Add(float64(len(env.Rejected)))
@@ -180,19 +224,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	respBytes, err := proto.Marshal(resp)
-	if err != nil {
-		h.respondStatus(w, "5xx", http.StatusInternalServerError, "failed to encode response")
-		return
-	}
-
 	if h.metrics != nil {
 		h.metrics.OTLPRequestsTotal.WithLabelValues("2xx").Inc()
 	}
 
-	w.Header().Set("Content-Type", "application/x-protobuf")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(respBytes)
+	return resp, nil
 }
 
 func (h *Handler) respondStatus(w http.ResponseWriter, bucket string, code int, msg string) {

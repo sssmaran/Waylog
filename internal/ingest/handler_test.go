@@ -349,6 +349,38 @@ func TestCapabilities_V2ReadsEnabled(t *testing.T) {
 	}
 }
 
+func TestCapabilities_OTLPGRPCBlock(t *testing.T) {
+	srv := NewServer(ServerConfig{
+		OTLPEnabled:     true,
+		OTLPGRPCEnabled: true,
+		OTLPGRPCAddr:    ":4317",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
+	w := httptest.NewRecorder()
+	srv.Capabilities(w, req)
+
+	var resp struct {
+		OTLP struct {
+			HTTPTraces bool   `json:"http_traces"`
+			GRPCTraces bool   `json:"grpc_traces"`
+			GRPCAddr   string `json:"grpc_addr"`
+		} `json:"otlp"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !resp.OTLP.HTTPTraces {
+		t.Fatal("otlp.http_traces = false, want true")
+	}
+	if !resp.OTLP.GRPCTraces {
+		t.Fatal("otlp.grpc_traces = false, want true")
+	}
+	if resp.OTLP.GRPCAddr != ":4317" {
+		t.Fatalf("otlp.grpc_addr = %q, want :4317", resp.OTLP.GRPCAddr)
+	}
+}
+
 func TestCapabilities_IncidentsBlock(t *testing.T) {
 	tests := []struct {
 		name             string

@@ -20,7 +20,7 @@ tags:
   - name: Ingest
     description: Schema-2.0 event ingest and validation.
   - name: OTLP
-    description: OTLP/HTTP trace ingest converted into schema-2.0 events.
+    description: OTLP trace ingest converted into schema-2.0 events. HTTP is documented here; gRPC uses OTLP TraceService on the configured OTLP_GRPC_ADDR.
   - name: Signals
     description: Production-context facts used by incident triage.
   - name: Events
@@ -207,7 +207,9 @@ paths:
         Accepts OTLP ExportTraceServiceRequest protobuf bodies. HTTP spans are
         converted into schema-2.0 WideEvents and ingested through the same WAL
         and projector as SDK events. Unsupported spans and validation rejects
-        are reported via OTLP partial_success.
+        are reported via OTLP partial_success. The same trace conversion path
+        is available over OTLP/gRPC TraceService when the gRPC receiver is
+        enabled.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -1949,6 +1951,8 @@ components:
       example:
         otlp:
           http_traces: true
+          grpc_traces: true
+          grpc_addr: ":4317"
         v2_reads:
           enabled: true
         graph: false
@@ -1989,6 +1993,10 @@ components:
           properties:
             http_traces:
               type: boolean
+            grpc_traces:
+              type: boolean
+            grpc_addr:
+              type: string
         v2_reads:
           type: object
           properties:

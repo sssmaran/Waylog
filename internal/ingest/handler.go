@@ -136,6 +136,8 @@ type Server struct {
 	// OTLP capability flag — reported by /v1/capabilities. Set via
 	// ServerConfig when the OTLP handler is mounted in main.go.
 	otlpEnabled               bool
+	otlpGRPCEnabled           bool
+	otlpGRPCAddr              string
 	v2ReadsEnabled            bool
 	incidentsEnabled          bool
 	incidentsPersistent       bool
@@ -204,6 +206,8 @@ type ServerConfig struct {
 	PlanStore                *PlanStore
 	GraphHotWindow           time.Duration
 	OTLPEnabled              bool
+	OTLPGRPCEnabled          bool
+	OTLPGRPCAddr             string
 	V2ReadsEnabled           bool
 	IncidentsEnabled         bool
 	IncidentsPersistent      bool
@@ -246,6 +250,8 @@ func NewServer(cfg ServerConfig) *Server {
 		planStore:                 cfg.PlanStore,
 		graphHotWindow:            cfg.GraphHotWindow,
 		otlpEnabled:               cfg.OTLPEnabled,
+		otlpGRPCEnabled:           cfg.OTLPGRPCEnabled,
+		otlpGRPCAddr:              cfg.OTLPGRPCAddr,
 		v2ReadsEnabled:            cfg.V2ReadsEnabled,
 		incidentsEnabled:          cfg.IncidentsEnabled,
 		incidentsPersistent:       cfg.IncidentsPersistent,
@@ -404,6 +410,12 @@ func (s *Server) AcceptedPtr() *atomic.Uint64 { return &s.accepted }
 // SetOTLPEnabled toggles the OTLP capability flag reported by /v1/capabilities.
 // Called once at startup after the OTLP route has been registered.
 func (s *Server) SetOTLPEnabled(enabled bool) { s.otlpEnabled = enabled }
+
+// SetOTLPGRPC marks the OTLP/gRPC trace receiver as mounted.
+func (s *Server) SetOTLPGRPC(enabled bool, addr string) {
+	s.otlpGRPCEnabled = enabled
+	s.otlpGRPCAddr = addr
+}
 
 // EventSearch handles GET /v1/events/search.
 // Both cold-store and JSONL paths return the same []coldstore.SearchResult shape.
@@ -597,6 +609,8 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 		"graph": s.graphUI,
 		"otlp": map[string]any{
 			"http_traces": s.otlpEnabled,
+			"grpc_traces": s.otlpGRPCEnabled,
+			"grpc_addr":   s.otlpGRPCAddr,
 		},
 		"v2_reads": map[string]any{
 			"enabled": s.v2ReadsEnabled,

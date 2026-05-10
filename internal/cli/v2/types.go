@@ -13,7 +13,9 @@ type CapabilitiesResponse struct {
 		Enabled bool `json:"enabled"`
 	} `json:"v2_reads"`
 	OTLP struct {
-		HTTPTraces bool `json:"http_traces"`
+		HTTPTraces bool   `json:"http_traces"`
+		GRPCTraces bool   `json:"grpc_traces"`
+		GRPCAddr   string `json:"grpc_addr"`
 	} `json:"otlp"`
 	LLM struct {
 		Provider   string `json:"provider"`

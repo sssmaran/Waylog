@@ -3,7 +3,7 @@
 
 <p align="center">
   <strong>Structured logging that explains failed requests and active incidents.</strong><br>
-  Drop-in SDKs (Go, TypeScript) or OTLP/HTTP. Agent-native by design.
+  Drop-in SDKs (Go, TypeScript) or OTLP HTTP/gRPC traces. Agent-native by design.
 </p>
 
 <p align="center">
@@ -133,9 +133,9 @@ func main() {
 
 The recommended SDK path is framework middleware plus `waylog.From(ctx)` / `useLogger(...)` inside handlers. Low-level request APIs such as `Begin`, `Finalize`, and `setField` are for adapter authors, tests, and unusual custom integrations. Full copy-paste examples for `net/http`, chi, gin, echo, standalone TypeScript, Express, Hono, Next.js, and NestJS are in [`docs/sdk-examples.md`](docs/sdk-examples.md).
 
-### OTLP/HTTP traces
+### OTLP traces
 
-Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1/traces`. Protobuf bodies are accepted (gzip optional) and HTTP spans convert to schema-2.0 WideEvents on the way in, then show up in the same errors, explain, blast, and recent-trace APIs as SDK events when `WAYLOG_V2_READS=true`. **Phase A covers traces over HTTP.** gRPC, logs, and metrics are not yet shipping.
+Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1/traces` for OTLP/HTTP or `localhost:4317` for OTLP/gRPC. Protobuf trace exports convert to schema-2.0 WideEvents on the way in, then show up in the same errors, explain, blast, and recent-trace APIs as SDK events when `WAYLOG_V2_READS=true`. A collector config lives in [`examples/otel-collector/`](examples/otel-collector/). **Only traces are supported.** OTLP logs and metrics are not shipping yet.
 
 ### Alternative: local ingest server (no Docker)
 
@@ -244,8 +244,8 @@ The embedded dashboard at `/ui` is a v2 triage surface over the same read APIs a
 ## Architecture
 
 ```text
-Go / TS services (SDK) · OTLP/HTTP collectors
-        │  schema-2.0 WideEvents · OTLP/HTTP traces
+Go / TS services (SDK) · OTLP collectors
+        │  schema-2.0 WideEvents · OTLP HTTP/gRPC traces
         ▼
   ingest server
     ├─ event log (append-only WAL, source of truth)
@@ -297,7 +297,7 @@ Public alpha. APIs may break before 1.0.
 **Shipped:**
 
 - Go SDK v2 (`net/http`, chi, gin, echo) and TypeScript SDK v2 (`@waylog/sdk`, ESM, Node 18+, standalone core, Express, Hono, Next.js, NestJS)
-- OTLP/HTTP traces at `/v1/otlp/v1/traces` (Phase A — traces only)
+- OTLP traces over HTTP at `/v1/otlp/v1/traces` and gRPC at `:4317` (traces only)
 - durable ingest with WAL + replay
 - hot graph with flattened 3-node model + dedicated trace store
 - schema-2.0 recent-index read APIs behind `WAYLOG_V2_READS=true`
@@ -314,7 +314,7 @@ Public alpha. APIs may break before 1.0.
 
 **Planned:**
 
-- OTLP gRPC, logs, and metrics (Phase B)
+- OTLP logs and metrics
 - Python SDK
 - Mintlify docs site
 
@@ -322,7 +322,7 @@ Public alpha. APIs may break before 1.0.
 
 - Single-node only. No HA, no clustering.
 - Alpha quality. APIs may break before 1.0.
-- OTLP is HTTP/traces only. gRPC, logs, and metrics are not shipping yet.
+- OTLP supports traces only. Logs and metrics are not shipping yet.
 - Only Go and TypeScript SDKs today. Python / Java / Ruby are not available.
 - SQLite cold store fits demos and small deployments; not sized for production-scale retention.
 - Signal records are SQLite-backed. Incident rows are a SQLite read cache and can be rebuilt within the hot window from the schema-2.0 WAL plus signals.

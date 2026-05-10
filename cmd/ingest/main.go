@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -41,6 +42,8 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/triagehttp"
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/grpc"
 )
 
 var graphStore *graphstore.Store
@@ -130,6 +133,7 @@ func main() {
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
 	graphUI := config.GetenvBool("GRAPH_UI", false)
 	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
+	otlpGRPCAddr := config.Getenv("OTLP_GRPC_ADDR", ":4317")
 	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", false)
 	signalRetention := config.GetenvDuration("WAYLOG_SIGNAL_RETENTION", 72*time.Hour)
 	incidentsEnabled := config.GetenvBool("WAYLOG_INCIDENTS_ENABLED", true)
@@ -262,6 +266,8 @@ func main() {
 		PlanStore:                planStore,
 		GraphHotWindow:           graphHotWindow,
 		OTLPEnabled:              otlpEnabled,
+		OTLPGRPCEnabled:          otlpEnabled && otlpGRPCAddr != "",
+		OTLPGRPCAddr:             otlpGRPCAddr,
 		V2ReadsEnabled:           v2ReadsEnabled,
 		IncidentsEnabled:         v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
 		IncidentsPersistent:      v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
@@ -390,10 +396,19 @@ func main() {
 	mux.Handle("/v1/signals", writeAuth(http.HandlerFunc(signalHandler.Signals)))
 
 	// OTLP/HTTP traces reuse the same schema-2.0 WAL and projector as the SDK path.
+	var otlpGRPCServer *grpc.Server
 	if otlpEnabled {
 		otlpHandler := otelhttp.NewHandler(eventsV2, m, maxBody)
 		mux.Handle("/v1/otlp/v1/traces", writeAuth(http.HandlerFunc(otlpHandler.ServeHTTP)))
 		slog.Info("otlp enabled", "endpoint", "/v1/otlp/v1/traces")
+		if otlpGRPCAddr != "" {
+			otlpGRPCServer = grpc.NewServer(
+				grpc.UnaryInterceptor(otelhttp.AuthUnaryInterceptor(authCfg.WriteKeys)),
+				grpc.MaxRecvMsgSize(int(maxBody)),
+			)
+			coltracepb.RegisterTraceServiceServer(otlpGRPCServer, otelhttp.NewTraceServiceServer(eventsV2, m, maxBody))
+			ingestServer.SetOTLPGRPC(true, otlpGRPCAddr)
+		}
 	}
 
 	// Read endpoints — CORS outermost so OPTIONS preflight passes without auth.
@@ -618,6 +633,21 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	if otlpGRPCServer != nil {
+		lis, err := net.Listen("tcp", otlpGRPCAddr)
+		if err != nil {
+			slog.Error("otlp grpc listen failed", "addr", otlpGRPCAddr, "err", err)
+			os.Exit(1)
+		}
+		go func() {
+			slog.Info("otlp grpc enabled", "addr", otlpGRPCAddr)
+			if err := otlpGRPCServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				slog.Error("otlp grpc server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
 
 	// ---------------- Embedded CLI ----------------
 
@@ -866,6 +896,10 @@ func main() {
 		slog.Error("ingest graceful shutdown failed", "err", err)
 	} else {
 		slog.Info("ingest shutdown complete")
+	}
+	if otlpGRPCServer != nil {
+		otlpGRPCServer.GracefulStop()
+		slog.Info("otlp grpc shutdown complete")
 	}
 
 	planStore.Close()

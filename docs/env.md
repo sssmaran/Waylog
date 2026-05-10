@@ -46,7 +46,9 @@ Scoped keys. See the Auth section of the [README](../README.md).
 | Variable | Default | Purpose |
 |---|---|---|
 | `INGEST_ADDR` | `:8080` | Listen address |
-| `MAX_BODY_BYTES` | `1048576` (1 MB) | Max body size for `/v1/events` |
+| `OTLP_ENABLED` | `true` | Enable OTLP trace ingest over HTTP and gRPC |
+| `OTLP_GRPC_ADDR` | `:4317` | OTLP/gRPC trace receiver listen address. Set empty to disable the gRPC receiver |
+| `MAX_BODY_BYTES` | `1048576` (1 MB) | Max body size for `/v1/events`, `/v1/otlp/v1/traces`, and OTLP/gRPC receive messages |
 | `READ_HEADER_TIMEOUT` | `5s` | HTTP read header timeout |
 | `READ_TIMEOUT` | `10s` | HTTP read timeout |
 | `WRITE_TIMEOUT` | `10s` | HTTP write timeout |
