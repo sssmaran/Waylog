@@ -1,24 +1,47 @@
-<div align="center"><pre><img width="461" height="129" alt="Screenshot 2026-03-17 at 2 36 01 PM" src="https://github.com/user-attachments/assets/fdec0a1b-055a-47e3-b52c-cf1cf80fe373" />
-</pre></div>
+<div align="center">
+  <img width="461" height="129" alt="Waylog" src="https://github.com/user-attachments/assets/fdec0a1b-055a-47e3-b52c-cf1cf80fe373" />
 
-<p align="center">
-  <strong>Structured logging that explains failed requests and active incidents.</strong><br>
-  Drop-in SDKs (Go, TypeScript) or OTLP HTTP/gRPC traces. Agent-native by design.
-</p>
+  <p>
+    <strong>Production incident triage you can hash, cite, and hand to an agent.</strong><br>
+    Drop-in SDKs (Go, TypeScript) or OTLP HTTP/gRPC. Deterministic. Single Go binary.
+  </p>
 
-<p align="center">
-  <code>polyglot SDKs</code> · <code>agent-native API</code> · <code>failure tree</code> · <code>rollup-correct root cause</code>
-</p>
+  <p>
+    <code>schema 2.0 WideEvents</code> · <code>signal-correlated incidents</code> · <code>cited operator reports</code> · <code>rollup-correct root cause</code> · <code>agent-native</code>
+  </p>
 
-<p align="center">
-  <em>Public alpha — request triage plus signal-driven incident triage for backend systems.</em>
-</p>
+  <p>
+    <code>alpha</code> · <code>go 1.24+</code> · <code>single-node</code> · <code>OTLP-compatible</code> · <code>MCP-native</code> · <code>LLM-optional</code>
+  </p>
+</div>
+
+> **Public alpha for single-node production-style incident triage.** APIs may break before 1.0.
 
 ---
 
-## What Waylog does
+## Try it in 60 seconds
 
-A request hits your API gateway, fans out to three services, and one of them fails. The gateway returns 502. Your logs say "upstream error." Waylog tells you exactly what happened in the request, then groups repeated failures into an incident with signal-backed cause evidence:
+```bash
+git clone https://github.com/sssmaran/WaylogCLI
+cd WaylogCLI
+make demo
+```
+
+Then open <http://localhost:9081/demo> and click **Run proof loop**.
+
+You'll see the full v2.1 flow run end-to-end: an external alert is accepted, a payment-failure burst spikes an error family, the spike detector opens an incident, the cause is classified as `dependency`, a triage report is built across four surfaces (CLI, read endpoint, direct tool, plan template) and verified byte-stable, and Markdown / Slack / PagerDuty operator reports are rendered with citations to every alert, signal, and trace.
+
+Stop with `make demo-stop`. No Docker. No Kafka. No bridge process. SQLite + a single Go binary.
+
+---
+
+## What Waylog is
+
+Waylog turns failed requests and external alerts into **incidents with deterministic, cited triage reports** that humans and agents can both consume. Three things make it different:
+
+- **Deterministic.** Every triage report has a `report_hash` that is byte-stable across CLI, REST read, direct tool call, and plan template — within a single engine tick. No LLM required to get an answer; LLMs are an optional UX layer over the same bytes.
+- **Agent-native.** The same tool registry powers the CLI, MCP stdio, REST `/v1/tools/*`, and `/v1/plans/execute`. Agents read the exact bytes the human read. Built-in triage plan template, idempotency keys, structured envelopes.
+- **Drop-in.** Go SDK (`net/http`, chi, gin, echo), TypeScript SDK (Express, Hono, Next.js, NestJS), or OTLP HTTP / gRPC. Use what you already have. Single binary + embedded SQLite. No Docker required.
 
 ```text
   trace 7f3a2b9c…   flow=purchase   user=standard   region=us-east-1
@@ -28,56 +51,44 @@ A request hits your API gateway, fans out to three services, and one of them fai
           └─ db      200   —                      3 ms
           └─ payment 502   PMT_502                5 ms   ← first failure
 
-  blast radius:  12 requests · 8 users · 4 services
+  blast radius:    12 requests · 8 users · 4 services
+  incident:        inc_a43c189fc63eff31   (cause=dependency · confidence=high)
+  report_hash:     sha256:1ed7c21b…       (stable across cli / read / tool / plan)
 ```
 
-This is not log search, metrics storage, or incident management. Waylog builds request-triage views from WideEvents, accepts production-context signals such as deploys and dependency health, and returns deterministic answers for "why did this trace fail?", "what incident is active?", and "who is affected by `PMT_502`?". Root-cause rollups count the originating failure once, not once per propagated hop.
+Root-cause rollups count the originating failure **once**, not once per propagated hop. The same hash answers "what failed" identically whether the question came from a terminal, a webhook, or an LLM tool call.
 
-Run `make demo` and see it yourself.
+---
 
-## Quick start
+## The incident loop
+
+The v2.1 product in one paragraph: services emit WideEvents (or push OTel spans). External systems post production-context signals (deploys, dependency health, runtime events) and alerts (Alertmanager, Grafana, PagerDuty webhooks, or Waylog-native JSON). When an error family spikes, Waylog opens an **incident**, correlates the signals and alerts that overlap its window, classifies the cause deterministically (`deploy | app | dependency | runtime | unknown`), and exposes a cited **TriageReport** to humans (CLI, dashboard) and agents (REST, plan template, MCP) — same bytes, same hash.
 
 ```bash
-make demo
+# 1. Drive a real failure through the demo stack
+curl -X POST http://localhost:9081/purchase \
+  -H 'Content-Type: application/json' \
+  -d '{"sku":"X1","scenario":"payment_502"}'
+
+# 2. List active incidents
+waylog incidents
+
+# 3. Get the cited triage report — and verify hash agreement across surfaces
+waylog triage inc_a43c189fc63eff31 --snapshot
+curl -H "Authorization: Bearer $WAYLOG_AGENT_KEY" \
+  -d '{"incident_id":"inc_a43c189fc63eff31","snapshot":true}' \
+  http://localhost:8080/v1/tools/triage_incident
+
+# 4. Render an operator report (Markdown / Slack Block Kit / PagerDuty note)
+curl -H "Authorization: Bearer $WAYLOG_READ_KEY" \
+  "http://localhost:8080/v1/triage/inc_a43c189fc63eff31/report?format=slack"
 ```
 
-This starts the ingest server plus four real Go demo services wired through the schema-2.0 Go SDK (`api-gateway → checkout → db/payment`), enables `WAYLOG_V2_READS=true`, stores demo signals/incidents in local SQLite, and does not require Docker, Kafka, or the bridge process.
+> **Alerts correlate; they do not create incidents.** Incidents are opened by the spike detector. Alerts and signals attach as evidence and shape the deterministic cause classification.
 
-Once the stack is up:
+---
 
-1. Open demo controls at <http://localhost:9081/demo>, or open the dashboard at <http://localhost:8080/ui/>. The local demo disables dashboard login.
-2. Click **Run traffic burst** to post demo deploy/dependency signals and fire a production-like mix through the checkout chain. For a focused single-trace look, click **Run payment outage** instead, or run:
-   ```bash
-   curl -s -X POST http://localhost:9081/purchase \
-     -H 'Content-Type: application/json' \
-     --data '{"sku":"X1","scenario":"payment_502"}'
-   ```
-3. Investigate with the v2 CLI:
-   ```bash
-   ./waylog incidents
-   ./waylog incident <incident_id> --snapshot
-   ./waylog errors --window 15m
-   ./waylog explain <trace_id>
-   ./waylog blast --service checkout --step payment.charge --code PMT_502 --window 15m
-   ./waylog blast --code PMT_502 --window 15m
-   ./waylog triage <incident_id>
-   ```
-
-The traffic burst posts fresh demo deploy/dependency signals on each run so the incident panel has evidence to attach. The demo also supports `happy` and `suppressed_payment_502` scenarios through the UI or `POST /purchase`.
-
-Stop with `make demo-stop`.
-
-Prefer Docker? Use `make docker-dev` / `make docker-down`. Prefer foreground service logs while hacking on Go code? Use `make micro-demo` and stop with `make micro-demo-stop`.
-
-
-## How it works
-
-1. **Capture** — services emit [WideEvents](docs/waylog-sdk-contract.md) via the Go or TypeScript SDK, or push OpenTelemetry spans to `/v1/otlp/v1/traces`. Every event is durably logged (WAL + fsync) before it enters the derived read models.
-2. **Signal** — deploy systems, dependency monitors, or operators post small production-context facts to `/v1/signals`.
-3. **Triage** — the ingest server projects request views (`recent`, `errors`, `explain`, `blast`) and opens incidents when error families spike against overlapping signals.
-4. **Operator** — CLI, REST, MCP, TUI, and the embedded dashboard query the same derived views. Primary incident surfaces are `waylog incidents`, `waylog incident <id>`, `/v1/incidents/*`, and the dashboard incident cards.
-
-## Get traces in
+## Capture: send Waylog your traces
 
 All three paths feed the same schema-2.0 ingest and read APIs. Pick whichever matches your stack.
 
@@ -105,7 +116,7 @@ app.post("/buy", (req, res) => {
 });
 ```
 
-`@waylog/sdk` is ESM-only, Node 18+, and ships standalone core APIs plus Express, Hono, Next.js, and NestJS entrypoints (`@waylog/sdk/express`, `@waylog/sdk/hono`, `@waylog/sdk/next`, `@waylog/sdk/nest`).
+ESM-only, Node 18+. Standalone core plus framework entrypoints: `@waylog/sdk/express`, `@waylog/sdk/hono`, `@waylog/sdk/next`, `@waylog/sdk/nest`. Full examples in [`docs/sdk-examples.md`](docs/sdk-examples.md).
 
 ### Go SDK
 
@@ -131,208 +142,313 @@ func main() {
 }
 ```
 
-The recommended SDK path is framework middleware plus `waylog.From(ctx)` / `useLogger(...)` inside handlers. Low-level request APIs such as `Begin`, `Finalize`, and `setField` are for adapter authors, tests, and unusual custom integrations. Full copy-paste examples for `net/http`, chi, gin, echo, standalone TypeScript, Express, Hono, Next.js, and NestJS are in [`docs/sdk-examples.md`](docs/sdk-examples.md).
+Middleware adapters for `net/http`, chi, gin, and echo are in [`docs/sdk-examples.md`](docs/sdk-examples.md). The recommended path is framework middleware plus `waylog.From(ctx)` / `useLogger(...)` inside handlers — low-level `Begin` / `Finalize` / `setField` APIs are for adapter authors.
 
-### OTLP traces
+### OTLP / OpenTelemetry
 
-Point your existing OpenTelemetry collector at `http://localhost:8080/v1/otlp/v1/traces` for OTLP/HTTP or `localhost:4317` for OTLP/gRPC. Protobuf trace exports convert to schema-2.0 WideEvents on the way in, then show up in the same errors, explain, blast, and recent-trace APIs as SDK events when `WAYLOG_V2_READS=true`. A collector config lives in [`examples/otel-collector/`](examples/otel-collector/). **Only traces are supported.** OTLP logs and metrics are not shipping yet.
+Point your existing OTel collector at Waylog. Both protocols, same conversion path, same downstream views.
 
-### Alternative: local ingest server (no Docker)
+```yaml
+exporters:
+  otlphttp/waylog:
+    endpoint: http://localhost:8080/v1/otlp/v1/traces
+    headers:
+      authorization: "Bearer ${WAYLOG_WRITE_KEY}"
+  otlp/waylog:
+    endpoint: localhost:4317
+    headers:
+      authorization: "Bearer ${WAYLOG_WRITE_KEY}"
+```
+
+Sample collector config: [`examples/otel-collector/`](examples/otel-collector/). Only traces are accepted; OTLP logs and metrics are not shipping. Bind `OTLP_GRPC_ADDR=127.0.0.1:4317` for single-host installs that don't need cross-host collectors.
+
+**Auth.** Both endpoints require `WAYLOG_WRITE_KEY` when `WAYLOG_PROFILE=prod`; the server refuses to boot with unauthenticated OTLP in prod. `make demo` runs unauthenticated by design.
+
+### Local ingest only (no demo services)
 
 ```bash
 make ingest
 ```
 
-Runs only the ingest server. Point your own services at it via an SDK or OTLP. Full env-var reference: [`docs/env.md`](docs/env.md).
+Runs only the ingest server. Point your own services at it via SDK or OTLP. Full env reference: [`docs/env.md`](docs/env.md).
 
-## What you can ask
+---
+
+## Operate: CLI, dashboard, agents
 
 ### CLI
 
 ```bash
-WAYLOG_V2_READS=true ./ingest
+./ingest                                 # v2 reads are on by default
 
-waylog capabilities
-waylog recent --limit 5
-waylog errors --window 15m
-waylog blast checkout:payment.charge:PMT_502 --window 15m
-waylog explain trace_01HX...
-waylog trace trace_01HX...
-waylog event event_01HX...
-waylog search PMT_502 --window 1h
+waylog capabilities                      # diagnose server config / profile / feature flags
+waylog incidents                         # active incidents, deterministic order
+waylog incident <incident_id> --snapshot # full detail with frozen sample traces
+waylog triage   <incident_id>            # cited triage report
+waylog errors   --window 15m             # top error families
+waylog explain  <trace_id>               # first observable failing step
+waylog blast    checkout:payment.charge:PMT_502 --window 15m
+waylog recent   --limit 5
+waylog event    <event_id>
+waylog trace    <trace_id>
+waylog search   PMT_502 --window 1h
 ```
 
-The `waylog` binary is now the v2 operator CLI over the running ingest server's read APIs. Most verbs require the server to advertise `v2_reads.enabled=true` from `/v1/capabilities`; `waylog capabilities` is intentionally ungated so it can diagnose server setup. The CLI uses `INGEST_ADDR`, `WAYLOG_READ_KEY`, and `WAYLOG_CLI_TIMEOUT` by default. Add `--json` to any verb for machine-readable output.
+`waylog capabilities` is intentionally ungated so it can diagnose server setup; other verbs require `v2_reads.enabled=true` (the default). Defaults: `INGEST_ADDR`, `WAYLOG_READ_KEY`, `WAYLOG_CLI_TIMEOUT`. Add `--json` to any verb for machine-readable output.
 
-### REST (direct tool call)
+### Dashboard
 
-```bash
-curl -X POST http://localhost:8080/v1/tools/blast_radius \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $WAYLOG_AGENT_KEY" \
-  -d '{"error_code":"PMT_502","window":"10m","include_services":true}'
-```
+Embedded Geist UI at <http://localhost:8080/ui/>. Uses the dashboard session cookie for read-scope auth and runs against the default `WAYLOG_V2_READS=true` reader.
 
-### REST (multi-step plan)
-
-```bash
-curl -X POST http://localhost:8080/v1/plans/execute \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $WAYLOG_AGENT_KEY" \
-  -d '{
-    "steps": [
-      {"id":"patterns", "tool":"failure_patterns", "params":{"window":"10m"}},
-      {"id":"blast",    "tool":"blast_radius",     "params":{"error_code":"PMT_502","window":"10m"}}
-    ]
-  }'
-```
-
-Plans execute deterministically server-side with SSE progress on `/v1/stream/plans/{id}`.
-
-### Trace story
-
-```bash
-curl "http://localhost:8080/v1/traces/story?trace_id=$TRACE" \
-  -H "Authorization: Bearer $WAYLOG_READ_KEY"
-```
-
-Returns the first failing step, contributing path, logs, downstream calls, and linkage mode used by the dashboard and `waylog explain`.
-
-### MCP (agent surface)
-
-```bash
-make ingest-mcp    # MCP_STDIO=1
-```
-
-Exposes the same tool registry over MCP stdio for Claude, Cursor, and other MCP clients. Same semantics as the REST API.
-
-### Analysis tools
-
-All twelve tools are deterministic, idempotent, and available via CLI, REST `/v1/tools/{name}`, MCP, and plan execution.
-
-Agents can call the built-in triage plan template with `POST /v1/plans/execute` and `{"template":"triage","params":{"incident_id":"inc_...","snapshot":true}}`; the TriageReport is returned at `steps[0].result`.
-
-External alerts can be posted to `POST /v1/alerts` as Waylog-normalized JSON or Alertmanager, Grafana, or PagerDuty webhooks. Waylog stores them as alert signals, links them to active incidents when possible, and can render cited Markdown, Slack Block Kit, or PagerDuty-note reports from the same deterministic triage artifact.
-
-| Tool               | Answers                                                       |
-| ------------------ | ------------------------------------------------------------- |
-| `graph_stats`      | Overall shape of the graph right now                          |
-| `explain_request`  | Why did this specific trace fail?                             |
-| `trace_summary`    | Span tree and timing for a trace                              |
-| `graph_failures`   | Which requests are currently failing?                         |
-| `failure_patterns` | What error codes dominate this window?                        |
-| `blast_radius`     | How many requests, users, and services does this error touch? |
-| `failure_chain`    | How did this failure propagate through services?              |
-| `graph_query`      | DSL query over the graph (`expr` + `window`)                  |
-| `compare_windows`  | Diff error rates between two windows                          |
-| `graph_insights`   | Windowed rollup of top errors and patterns                    |
-| `triage_incident`  | One structured TriageReport for an open incident (blast + first failure + signals + next checks) |
-| `render_triage_report` | Markdown, Slack Block Kit JSON, or PagerDuty note text rendered from a TriageReport |
-
-Full schemas: `GET /v1/tools` or [`docs/openapi.yaml`](docs/openapi.yaml).
-
-## Dashboard
-
-The embedded dashboard at `/ui` is a v2 triage surface over the same read APIs as the CLI. It requires `WAYLOG_V2_READS=true` and uses the dashboard session cookie for read-scope auth.
-
-- dark, minimal Geist UI with aligned KPI modules and inline SVG mini-graphs
 - `#/errors` — top error families over `/v1/errors`
+- `#/incident/<id>` — incident evidence and next checks over `/v1/incidents/{id}`
 - `#/explain/<id>` — first observable failing step over `/v1/traces/story`
 - `#/blast/<key>` — impact panel over `/v1/blast_radius`
-- `#/incident/<id>` — incident evidence and next checks over `/v1/incidents/{id}`
-- recent-request stream from `/v1/traces/recent`, polled every 5s
-- no Chart.js, Cytoscape, topology-first UI, Ask panel, deploy diff, or large dashboard charts
+- recent-request stream from `/v1/traces/recent`, polled every 5 s
 
+No Chart.js, Cytoscape, topology-first UI, Ask panel, deploy diff, or large dashboard charts. Just the triage loop.
+
+### Agent surface
+
+Twelve deterministic tools, exposed identically through CLI, REST `/v1/tools/{name}`, MCP stdio, and plan execution. Same idempotency keys, same structured envelopes, same bytes.
+
+| Tool                   | Answers                                                                                      |
+| ---------------------- | -------------------------------------------------------------------------------------------- |
+| `triage_incident`      | Structured TriageReport for an open incident (blast + first failure + signals + next checks) |
+| `render_triage_report` | Markdown, Slack Block Kit JSON, or PagerDuty note from a TriageReport                        |
+| `explain_request`      | Why did this specific trace fail?                                                            |
+| `trace_summary`        | Span tree and timing for a trace                                                             |
+| `graph_failures`       | Which requests are currently failing?                                                        |
+| `failure_patterns`     | What error codes dominate this window?                                                       |
+| `blast_radius`         | How many requests, users, and services does this error touch?                                |
+| `failure_chain`        | How did this failure propagate through services?                                             |
+| `graph_query`          | DSL query over the graph (`expr` + `window`)                                                 |
+| `compare_windows`      | Diff error rates between two windows                                                         |
+| `graph_insights`       | Windowed rollup of top errors and patterns                                                   |
+| `graph_stats`          | Overall shape of the graph right now                                                         |
+
+```bash
+# Direct tool call
+curl -X POST http://localhost:8080/v1/tools/blast_radius \
+  -H "Authorization: Bearer $WAYLOG_AGENT_KEY" \
+  -d '{"error_code":"PMT_502","window":"10m","include_services":true}'
+
+# Built-in triage plan template — same hash as the CLI/read/tool surfaces
+curl -X POST http://localhost:8080/v1/plans/execute \
+  -H "Authorization: Bearer $WAYLOG_AGENT_KEY" \
+  -d '{"template":"triage","params":{"incident_id":"inc_...","snapshot":true}}'
+```
+
+Plans execute deterministically server-side with SSE progress on `/v1/stream/plans/{id}`. Full schemas: `GET /v1/tools` or [`docs/openapi.yaml`](docs/openapi.yaml).
+
+### MCP
+
+```bash
+make ingest-mcp     # MCP_STDIO=1
+```
+
+Same registry, same idempotency keys. Plugs into Claude, Cursor, and other MCP clients.
+
+### External alerts
+
+```bash
+curl -X POST http://localhost:8080/v1/alerts \
+  -H "Authorization: Bearer $WAYLOG_WRITE_KEY" \
+  -d @grafana-webhook.json
+```
+
+`POST /v1/alerts` accepts Waylog-normalized JSON plus Alertmanager, Grafana, and PagerDuty webhook payloads. Accepted alerts are stored as `type=alert` signals and **correlated** with active incidents when possible — alerts do not create incidents. The matching alert evidence then appears in cited Markdown / Slack / PagerDuty triage reports.
+
+---
 
 ## Architecture
 
 ```text
-Go / TS services (SDK) · OTLP collectors
-        │  schema-2.0 WideEvents · OTLP HTTP/gRPC traces
-        ▼
-  ingest server
-    ├─ event log (append-only WAL, source of truth)
-    ├─ derived read models (errors · explain · blast · recent traces · incidents)
-    ├─ SQLite cold store (events · deployments · signals · incidents · causal claims)
-    ├─ tool registry · Ask · plan execution
-    └─ v2 dashboard · health · metrics · OpenAPI
-        │
-        ├──▶ /ui dashboard (Geist, no vendored chart/topology libs)
-        ├──▶ /v1/tools/* · /v1/plans/execute (agent-native)
-        └──▶ CLI · TUI · MCP · agents
+   Go / TS services (SDK)               OTel collectors
+              │                                │
+   schema-2.0 WideEvents                OTLP HTTP / gRPC
+              ╰──────────────┬─────────────────╯
+                             ▼
+                      ingest server
+              ┌──────────────┴──────────────┐
+              │                              │
+   event log (append-only WAL,       SQLite cold store
+       source of truth)              (events · deployments ·
+              │                       signals · incidents ·
+              ▼                       causal claims)
+   derived read models
+   (errors · explain · blast ·
+    recent · incidents · triage)
+              │
+              ├──▶ /ui dashboard           (Geist, no vendored chart/topology)
+              ├──▶ /v1/tools/*             (deterministic agent surface)
+              ├──▶ /v1/plans/execute       (server-side plan execution + SSE)
+              └──▶ waylog CLI · TUI · MCP
 ```
 
-Events are durably logged before projection — if the process crashes, replay rebuilds the read models from the WAL on next boot.
+- **Single binary** plus embedded SQLite. No Docker, no Kafka, no bridge.
+- **WAL is source of truth.** Crash → replay on next boot rebuilds the derived read models.
+- **Hot graph + dedicated trace store.** Pruned per snapshot tick to bound memory.
+- **`report_hash` excludes `generated_at`, `plan_run_id`, and itself.** Same upstream state → same bytes across every surface.
+- **OTLP path reuses the same WAL and projector** as the SDK path. No separate ingestion plane.
 
-Durability model, retention, merge semantics, readiness policy, and counter buffer: [`docs/internals.md`](docs/internals.md). Full v2 HTTP contract: [`docs/openapi.yaml`](docs/openapi.yaml).
+Durability model, retention, merge semantics, readiness policy, and counter buffer details: [`docs/internals.md`](docs/internals.md). Full HTTP contract: [`docs/openapi.yaml`](docs/openapi.yaml).
+
+---
+
+## Auth & profiles
+
+Three independent scoped keys. The dashboard never holds the agent key.
+
+| Key                | Protects                                                    |
+| ------------------ | ----------------------------------------------------------- |
+| `WAYLOG_WRITE_KEY` | `/v1/events`, OTLP HTTP + gRPC, `/v1/signals`, `/v1/alerts` |
+| `WAYLOG_READ_KEY`  | Read APIs, dashboard session                                |
+| `WAYLOG_AGENT_KEY` | `/v1/tools/*`, `/v1/ask`, `/v1/plans/*`                     |
+
+`WAYLOG_API_KEY` is a legacy alias for the write scope. `ParseConfig` validates the auth matrix at startup and refuses to boot with an unsafe combination.
+
+`WAYLOG_PROFILE` controls auth strictness. The current profile is reported on `/v1/capabilities`.
+
+| Profile | Use case                    | Defaults                                                                                              |
+| ------- | --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `demo`  | `make demo` showcase        | All endpoints open. **Not safe to expose to a network.**                                              |
+| `dev`   | Local development (default) | Open OTLP, optional read auth                                                                         |
+| `prod`  | Real deployments            | Refuses to boot without all three scoped keys **and** without `WAYLOG_WRITE_KEY` when OTLP is enabled |
+
+Set `WAYLOG_PROFILE=prod` for any deployment that crosses a trust boundary.
+
+---
+
+## Try every claim locally
+
+```bash
+make demo                # one-shot local stack (no Docker)
+make demo-acceptance     # 15-check gate over CLI + browser proof
+make proof-loop          # full alert → incident → triage → cited reports loop
+make rca-scorecard       # cold-start latency + measured report_hash_stable
+make rollup-comparison   # rollup-correct counts vs naive propagated counts
+make demo-stop
+```
+
+`make proof-loop` writes shareable artifacts to `./data/demo-state/proof/`:
+
+- `triage.json` — the TriageReport from the read endpoint
+- `report.md`, `slack.json`, `pagerduty.txt` — the same triage rendered for three operator surfaces
+- `rollup-comparison.txt` — root-cause counts next to naive propagated counts
+- `scorecard.json` — measured `report_hash_stable`, `triage_latency_ms`, `scenario` (`cold-demo` for `rca-scorecard`, `warm-demo` chained from `proof-loop`), inflation-avoided count, and the `report_hash` itself
+
+The browser has the same flow at <http://localhost:9081/demo> → **Run proof loop**.
+
+> Artifacts are local-only. Alert payloads include the demo write key (`Bearer demo`). `data/demo-state/` is gitignored.
+
+---
 
 ## Development
 
 ```bash
-make build          # core binaries
-make build-examples # demo services
-make fmt vet test   # checks
-make test-race      # race detector
-make ts-test        # TypeScript SDK vitest suite
-make ci             # fmt + vet + test-race + test-sdk + ts-test + doc-link + rollup-contract
-make demo-acceptance # with make demo running, verify demo + CLI triage loop
-make rollup-comparison # demo proof: root-cause counts vs naive propagated counts
+make build              # core binaries
+make build-examples     # demo services
+make fmt vet test       # checks
+make test-race          # race detector
+make ts-test            # TypeScript SDK vitest suite
+make ci                 # fmt + vet + test-race + test-sdk + ts-test + doc-link + rollup-contract
 ```
 
-`make rollup-comparison` runs the checkout demo burst and prints the PMT_502 root-cause count next to a naive propagated count across touched services. It is the quickest local proof that Waylog's default rollups count the originating failure once per failed request instead of inflating it by every downstream hop.
+Full env-var reference: [`docs/env.md`](docs/env.md). Reproducible demo gate: `make demo-acceptance`.
 
-## Auth
+---
 
-Waylog uses three scoped keys. They are independent — the dashboard never holds the agent key.
+## What's new in v2.1
 
-| Key                | Protects                                              |
-| ------------------ | ----------------------------------------------------- |
-| `WAYLOG_WRITE_KEY` | `/v1/events`, `/v1/otlp/v1/traces`, `/v1/signals` (SDKs, collectors, production signals) |
-| `WAYLOG_READ_KEY`  | Read APIs, dashboard session                          |
-| `WAYLOG_AGENT_KEY` | `/v1/tools/*`, `/v1/ask`, `/v1/plans/*`               |
+- **Signal-correlated incident engine** at `/v1/incidents/*` with deterministic cause classification (`deploy | app | dependency | runtime | unknown`).
+- **Deterministic TriageReport** (`triage.v1`) with stable per-tick `report_hash` across CLI, read endpoint, direct tool, and plan template.
+- **Alert intake** at `POST /v1/alerts` for Waylog-native, Alertmanager, Grafana, and PagerDuty webhooks. Alerts correlate with active incidents; they do not create incidents.
+- **Cited operator reports** rendered as Markdown, Slack Block Kit, or PagerDuty notes via `GET /v1/triage/{id}/report`.
+- **OTLP/gRPC trace receiver** on `OTLP_GRPC_ADDR` (default `:4317`).
+- **Provider-neutral Ask** configuration: `gemini`, `anthropic`, `openai`, or `none`. All deterministic surfaces work with no LLM configured.
+- **`WAYLOG_PROFILE=demo|dev|prod`** gates auth defaults; `prod` hard-fails on unsafe configs.
+- **`WAYLOG_V2_READS` defaults to `true`.** Set `false` only for legacy v1-only stacks.
+- **`/v1/insight`** retained as a compat shim returning the top active incident. New clients should use `/v1/incidents/*`.
 
-`WAYLOG_API_KEY` is a legacy alias for the write scope. `ParseConfig` validates the auth matrix at startup and refuses to boot with an unsafe combination.
+---
 
 ## Status
 
-Public alpha. APIs may break before 1.0.
+Public alpha for single-node production-style incident triage. APIs may break before 1.0.
 
-**Shipped:**
+**Shipped**
 
 - Go SDK v2 (`net/http`, chi, gin, echo) and TypeScript SDK v2 (`@waylog/sdk`, ESM, Node 18+, standalone core, Express, Hono, Next.js, NestJS)
-- OTLP traces over HTTP at `/v1/otlp/v1/traces` and gRPC at `:4317` (traces only)
-- durable ingest with WAL + replay
-- hot graph with flattened 3-node model + dedicated trace store
-- schema-2.0 recent-index read APIs behind `WAYLOG_V2_READS=true`
+- OTLP HTTP at `/v1/otlp/v1/traces` and OTLP/gRPC at `OTLP_GRPC_ADDR` (traces only)
+- Durable ingest with WAL + replay
+- Hot graph with flattened 3-node model + dedicated trace store
+- Schema-2.0 recent-index read APIs (default)
 - SQLite cold store (events, deployments, signals, incidents, causal claims)
-- signal-driven incident engine with `waylog incidents`, `waylog incident <id>`, dashboard incident cards, runtime cause classification, and startup hot-window rebuild from the schema-2.0 WAL
-- alert intake for Waylog, Alertmanager, Grafana, and PagerDuty webhooks, stored as signals and linked to incidents when possible
-- provider-neutral Ask configuration via `WAYLOG_LLM_PROVIDER` (`none`, `gemini`, `anthropic`, `openai`); deterministic CLI, tools, plans, triage, and MCP work with no LLM configured
-- 12 deterministic analysis tools, rollup-correct root-cause attribution
-- agent-native REST (`/v1/tools/*`, `/v1/ask`, `/v1/plans/execute`) with idempotency and structured envelopes
-- `/v1/traces/story` and indented failure-path rendering in the dashboard
-- dashboard: minimal v2 triage loop (errors, explain, blast, recent requests)
-- v2 operator CLI (`capabilities`, `recent`, `incidents`, `incident`, `triage`, `errors`, `event`, `trace`, `explain`, `blast`, `search`) over read APIs
-- live TUI (`waylog-live --dev` streams via SSE), MCP stdio
-- scoped auth (write/read/agent) with startup validation
+- Signal-correlated incident engine with stable IDs, deterministic classification, and startup hot-window rebuild from the schema-2.0 WAL
+- Alert intake from four webhook formats, stored as signals and correlated with active incidents
+- Deterministic triage report with stable hash across CLI / read endpoint / direct tool / plan template within a single engine tick
+- Provider-neutral Ask configuration; deterministic CLI, tools, plans, triage, and MCP work with no LLM configured
+- Twelve deterministic analysis tools, rollup-correct root-cause attribution
+- Agent-native REST with idempotency and structured envelopes
+- MCP stdio, live TUI (`waylog-live --dev` streams via SSE), embedded Geist dashboard
+- Scoped auth (write / read / agent) with startup validation and `WAYLOG_PROFILE=prod` hard-fail
 
-**Planned:**
+**Planned**
 
 - OTLP logs and metrics
 - Python SDK
+- Resolved-incident retention janitor
 - Mintlify docs site
+
+---
 
 ## Known limitations
 
-- Single-node only. No HA, no clustering.
-- Alpha quality. APIs may break before 1.0.
-- OTLP supports traces only. Logs and metrics are not shipping yet.
-- Only Go and TypeScript SDKs today. Python / Java / Ruby are not available.
-- SQLite cold store fits demos and small deployments; not sized for production-scale retention.
-- Signal records are SQLite-backed. Incident rows are a SQLite read cache and can be rebuilt within the hot window from the schema-2.0 WAL plus signals.
-- Incident cause classification is deterministic and heuristic.
-- No outbound alerting or paging delivery. Waylog accepts external alerts and renders operator reports, but it doesn't wake you up.
-- No multi-tenancy. One instance = one trust boundary.
-- No full log search, Slack/PagerDuty automation, RBAC/SSO, or automatic remediation.
+- **Public alpha.** APIs may break before 1.0. Not production-ready. Not HA.
+- **Triage report hash is stable per tick, not forever.** Hash changes when the underlying recent-index window changes (≈30 s default). Use as a short-window dedup key, not a long-term incident fingerprint.
+- **Alerts correlate; they do not create incidents.** Incidents are opened by the spike detector. The alert path is for routing context, not paging primitives.
+- **Resolved incidents are not pruned automatically.** Per the v2.1 plan, the retention janitor is deferred. Manual cleanup:
+  ```sql
+  DELETE FROM incidents WHERE status = 'resolved' AND resolved_at < datetime('now', '-7 days');
+  ```
+- **Stale `active` rows after long downtime.** If the WAL has rolled past an incident's `started_at` and `WAYLOG_REBUILD_INCIDENTS_ON_START=true`, the engine transitions only the stale rows to `recovering` on next start; they resolve after `WAYLOG_INCIDENT_RESOLVE_AFTER` without new evidence.
+- **Single-node only.** No HA, no clustering, no multi-tenant.
+- **SQLite cold store** fits demos and small deployments. Postgres is not shipping.
+- **OTLP supports traces only.** Logs and metrics are not shipping yet.
+- **Only Go and TypeScript SDKs today.** Python / Java / Ruby are not available.
+- **No outbound paging.** Waylog accepts external alerts and renders operator reports; it does not page.
+- **No multi-tenancy.** One instance = one trust boundary.
+- **No full log search, Slack/PagerDuty automation, RBAC/SSO, or automatic remediation.**
+- **Incident cause classification is heuristic and deterministic.** Intentionally explainable, not ML-based.
 
-**Fastest walkthrough:** `make demo`, open <http://localhost:9081/demo>, click **Run traffic burst**, then use the dashboard or `waylog incidents`, `waylog recent`, `waylog errors`, `waylog explain`, and `waylog blast` to answer what failed, which downstream was involved, and how broad the impact is.
+---
+
+## Documentation
+
+| File                                                         | What's in it                                                                             |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| [`docs/env.md`](docs/env.md)                                 | Full env-var reference (auth, profiles, retention, OTLP, incident engine, LLM providers) |
+| [`docs/sdk-examples.md`](docs/sdk-examples.md)               | Copy-paste SDK examples for every supported framework                                    |
+| [`docs/waylog-sdk-contract.md`](docs/waylog-sdk-contract.md) | WideEvent schema and validation rules                                                    |
+| [`docs/openapi.yaml`](docs/openapi.yaml)                     | Full HTTP contract                                                                       |
+| [`docs/internals.md`](docs/internals.md)                     | Durability model, retention, merge semantics, readiness policy, counter buffer           |
+
+---
+
+## Project layout
+
+```
+cmd/         executable binaries (ingest, waylog, waylog-live, ...)
+pkg/         public SDK importable by external services
+internal/    private implementation (auth, incidents, triage, ingest, ...)
+examples/    demo services + collector config + microdemo
+scripts/     demo + proof + ci helpers
+docs/        reference and contracts
+```
+
+---
+
+## License
+
+Not yet declared. The project is in public alpha; a license will be added before tagging 1.0. Until then, contact the maintainers if you'd like to use Waylog in a context where licensing matters to you.

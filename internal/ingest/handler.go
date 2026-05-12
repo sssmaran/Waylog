@@ -142,6 +142,7 @@ type Server struct {
 	incidentsEnabled          bool
 	incidentsPersistent       bool
 	incidentsRebuildSupported bool
+	profile                   string
 
 	// SSE
 	sseHub               *SSEHub
@@ -212,6 +213,7 @@ type ServerConfig struct {
 	IncidentsEnabled         bool
 	IncidentsPersistent      bool
 	IncidentRebuildSupported bool
+	Profile                  string
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -256,6 +258,7 @@ func NewServer(cfg ServerConfig) *Server {
 		incidentsEnabled:          cfg.IncidentsEnabled,
 		incidentsPersistent:       cfg.IncidentsPersistent,
 		incidentsRebuildSupported: cfg.IncidentRebuildSupported,
+		profile:                   cfg.Profile,
 		replayStatus:              "none",
 	}
 	if s.sampler == nil {
@@ -615,6 +618,7 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 		"v2_reads": map[string]any{
 			"enabled": s.v2ReadsEnabled,
 		},
+		"profile": s.profile,
 		"incidents": map[string]any{
 			"enabled":    s.incidentsEnabled,
 			"persistent": s.incidentsPersistent,

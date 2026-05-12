@@ -32,14 +32,15 @@ Scoped keys. See the Auth section of the [README](../README.md).
 
 | Variable | Scope |
 |---|---|
-| `WAYLOG_WRITE_KEY` | Write auth for `/v1/events` (preferred) |
+| `WAYLOG_PROFILE`   | Auth strictness profile: `demo` (open), `dev` (default — open OTLP, optional auth), `prod` (refuses to boot without write/read/agent keys, and without write auth on OTLP HTTP+gRPC) |
+| `WAYLOG_WRITE_KEY` | Write auth for `/v1/events`, `/v1/otlp/v1/traces`, OTLP/gRPC, `/v1/signals`, `/v1/alerts` (preferred) |
 | `WAYLOG_API_KEY`   | Legacy alias for write scope. Supports `Authorization: Bearer` and `X-API-Key` headers |
 | `WAYLOG_READ_KEY`  | Read auth for read endpoints + dashboard session validation |
 | `WAYLOG_AGENT_KEY` | Agent auth for `/v1/tools/*`, `/v1/ask`, `/v1/plans/*`. No session fallback |
 | `DASHBOARD_AUTH`   | Dashboard auth mode: `off` \| `basic:<user>:<pass>` \| `key:<secret>` |
-| `DASHBOARD_SESSION_SECRET` | Session signing key (derived from `DASHBOARD_AUTH` if unset) |
+| `DASHBOARD_SESSION_SECRET` | Session signing key (derived from `DASHBOARD_AUTH` if unset; required when `WAYLOG_PROFILE=prod`) |
 
-`ParseConfig` validates the auth matrix at startup and refuses to boot with an unsafe combination.
+`ParseConfig` validates the auth matrix at startup and refuses to boot with an unsafe combination. When `WAYLOG_PROFILE=prod`, all three scoped keys (`WAYLOG_WRITE_KEY`, `WAYLOG_READ_KEY`, `WAYLOG_AGENT_KEY`) are required, and OTLP cannot run unauthenticated.
 
 ## Ingest server
 
@@ -47,7 +48,7 @@ Scoped keys. See the Auth section of the [README](../README.md).
 |---|---|---|
 | `INGEST_ADDR` | `:8080` | Listen address |
 | `OTLP_ENABLED` | `true` | Enable OTLP trace ingest over HTTP and gRPC |
-| `OTLP_GRPC_ADDR` | `:4317` | OTLP/gRPC trace receiver listen address. Set empty to disable the gRPC receiver |
+| `OTLP_GRPC_ADDR` | `:4317` | OTLP/gRPC trace receiver listen address. Set empty to disable the gRPC receiver. For single-host installs, bind `127.0.0.1:4317`. When `WAYLOG_PROFILE=prod`, the server refuses to boot if OTLP is enabled without `WAYLOG_WRITE_KEY` |
 | `MAX_BODY_BYTES` | `1048576` (1 MB) | Max body size for `/v1/events`, `/v1/otlp/v1/traces`, and OTLP/gRPC receive messages |
 | `READ_HEADER_TIMEOUT` | `5s` | HTTP read header timeout |
 | `READ_TIMEOUT` | `10s` | HTTP read timeout |
@@ -58,7 +59,7 @@ Scoped keys. See the Auth section of the [README](../README.md).
 
 ## CLI
 
-The `waylog` CLI calls the running ingest server's v2 read APIs. The server must run with `WAYLOG_V2_READS=true`.
+The `waylog` CLI calls the running ingest server's v2 read APIs. The server runs with `WAYLOG_V2_READS=true` by default; only set it to `false` for legacy v1-only stacks.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -106,7 +107,7 @@ See [Internals](internals.md) for the full durability model.
 | Variable | Default | Purpose |
 |---|---|---|
 | `GRAPH_UI` | `false` | Enable optional graph topology endpoint `/v1/graph/topology` |
-| `WAYLOG_V2_READS` | `false` | Route v2 read endpoints to the schema-2.0 recent index |
+| `WAYLOG_V2_READS` | `true` | Route v2 read endpoints to the schema-2.0 recent index. Set `false` only for legacy v1-only stacks |
 | `CAUSAL_ENABLED` | `false` | Enable shadow-mode causal inference |
 | `CAUSAL_INTERVAL` | `30s` | Causal inference ticker interval |
 | `HAPPY_SAMPLE_RATE_PCT` | `2` | Success-event sampling rate. Set `100` in dev profiles |

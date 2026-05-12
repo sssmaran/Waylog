@@ -202,11 +202,12 @@ paths:
     post:
       tags: [Signals]
       operationId: ingestAlert
-      summary: Ingest an external alert and match it to an active incident
+      summary: Ingest an external alert and correlate it with an active incident
       description: |
         Accepts Waylog-normalized alerts plus Alertmanager, Grafana, and
         PagerDuty webhook payloads. Accepted alerts are stored as `type=alert`
-        signals. Matching is best-effort and does not create incidents directly.
+        signals and correlated with active incidents when possible. Alerts do
+        not create incidents — the spike detector owns incident lifecycle.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []

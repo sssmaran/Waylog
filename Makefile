@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
@@ -19,6 +19,8 @@ help:
 	@echo "  demo     - start dashboard demo locally (detached, no Docker)"
 	@echo "  demo-stop - stop demo processes"
 	@echo "  demo-acceptance - verify a running local demo end-to-end"
+	@echo "  proof-loop - run alert -> incident -> triage -> report -> rollup proof"
+	@echo "  rca-scorecard - run deterministic RCA scorecard over the demo scenario"
 	@echo "  rollup-comparison - run demo proof for root-cause vs naive rollup counts"
 	@echo "  otlp-conformance - run deterministic OTLP HTTP/gRPC fixture checks"
 	@echo "  demo-up  - start v2 demo stack in Docker (detached)"
@@ -124,6 +126,12 @@ demo-stop:
 
 demo-acceptance:
 	./scripts/demo-acceptance.sh
+
+proof-loop:
+	bash ./scripts/proof-loop.sh
+
+rca-scorecard:
+	bash ./scripts/rca-scorecard.sh
 
 rollup-comparison:
 	./scripts/rollup-comparison.sh

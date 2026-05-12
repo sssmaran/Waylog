@@ -181,6 +181,16 @@ func TestParseOpenAIResponseMessageText(t *testing.T) {
 	}
 }
 
+func TestOpenAIDefaultModel(t *testing.T) {
+	client := NewOpenAIClient("test-key")
+	if client.Model != "gpt-4o-mini" {
+		t.Fatalf("default model = %q, want gpt-4o-mini", client.Model)
+	}
+	if defaultOpenAIModel != "gpt-4o-mini" {
+		t.Fatalf("defaultOpenAIModel = %q, want gpt-4o-mini", defaultOpenAIModel)
+	}
+}
+
 func TestOpenAIGenerateAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)

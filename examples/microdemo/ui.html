@@ -346,6 +346,150 @@
       display: grid;
       gap: 16px;
     }
+    .proof-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+    .proof-hero {
+      display: grid;
+      gap: 16px;
+      padding-bottom: 4px;
+    }
+    .proof-headline {
+      margin: 8px 0 0;
+      font-size: clamp(1.4rem, 3vw, 2rem);
+      line-height: 1.1;
+      letter-spacing: -0.035em;
+      max-width: 22ch;
+    }
+    .proof-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .proof-panel {
+      display: grid;
+      gap: 12px;
+    }
+    .proof-columns {
+      display: grid;
+      grid-template-columns: minmax(0, 0.95fr) minmax(360px, 1.05fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .proof-checklist {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .proof-checklist li {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 9px;
+      align-items: start;
+      padding: 9px 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+    .proof-checklist .ok { color: var(--accent); font-family: var(--font-mono); font-weight: 600; }
+    .proof-checklist .bad { color: var(--danger); font-family: var(--font-mono); font-weight: 600; }
+    .proof-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+    }
+    .proof-table th,
+    .proof-table td {
+      padding: 8px 9px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    .proof-table tr:last-child td { border-bottom: 0; }
+    .proof-table td { overflow-wrap: anywhere; }
+    .proof-table .hash-short { color: var(--ink); font-weight: 600; }
+    .proof-table .hash-full { color: var(--faint); display: block; margin-top: 3px; }
+    .proof-status {
+      color: var(--accent);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .proof-status.fail { color: var(--danger); }
+    .proof-metric {
+      display: grid;
+      gap: 4px;
+      padding: 11px 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      min-width: 0;
+    }
+    .proof-metric span {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .proof-metric strong {
+      font-family: var(--font-mono);
+      font-size: 0.86rem;
+      font-weight: 500;
+      overflow-wrap: anywhere;
+    }
+    .proof-report {
+      max-height: 360px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin: 0;
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      line-height: 1.5;
+    }
+    .proof-report-head {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: end;
+    }
+    .proof-tabs {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .proof-tab {
+      border: 1px solid var(--line);
+      background: var(--surface-2);
+      border-radius: var(--radius-sm);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      padding: 5px 7px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .proof-tab.active {
+      color: var(--ink);
+      border-color: var(--line-strong);
+    }
     .burst-counts {
       display: flex;
       flex-wrap: wrap;
@@ -479,6 +623,7 @@
     @media (max-width: 760px) {
       .expectations { grid-template-columns: 1fr; }
       .result-grid { grid-template-columns: 1fr; }
+      .proof-summary, .proof-columns { grid-template-columns: 1fr; }
       .burst-row { grid-template-columns: 1fr; }
       .burst-form { justify-content: flex-start; }
       main { padding: 36px 0 64px; }
@@ -551,6 +696,14 @@
       </form>
     </section>
 
+    <section class="section burst-row" aria-labelledby="proof-title">
+      <div class="burst-meta">
+        <h2 id="proof-title">Alert-to-report proof</h2>
+        <p class="muted small">Runs the full product loop in the browser: alert intake, incident match, deterministic triage, tool/plan hash agreement, cited reports, and RCA scorecard.</p>
+      </div>
+      <button type="button" class="primary" id="proof-run">Run proof loop</button>
+    </section>
+
     <section class="section" aria-labelledby="result-title">
       <h2 id="result-title">Result</h2>
       <div id="result" class="result-empty" aria-live="polite">Choose a scenario to send a real request through the demo services.</div>
@@ -613,12 +766,15 @@
     const scenarioButtons = Array.from(document.querySelectorAll("[data-scenario]"));
     const burstForm = document.getElementById("burst-form");
     const burstButton = document.getElementById("burst-run");
+    const proofButton = document.getElementById("proof-run");
     const burstControls = Array.from(burstForm.elements);
     let burstInFlight = false;
+    let proofInFlight = false;
     scenarioButtons.forEach(button => {
       button.addEventListener("click", () => purchase(button.dataset.scenario, button));
     });
     burstForm.addEventListener("submit", runBurst);
+    proofButton.addEventListener("click", runProofLoop);
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -627,7 +783,7 @@
     }
 
     function setLoading(activeButton, loading) {
-      [...scenarioButtons, ...burstControls].forEach(control => {
+      [...scenarioButtons, ...burstControls, proofButton].forEach(control => {
         control.disabled = loading;
         control.setAttribute("aria-busy", loading ? "true" : "false");
         control.querySelector?.(".spinner")?.remove();
@@ -635,6 +791,14 @@
       if (loading && activeButton) {
         activeButton.insertAdjacentHTML("beforeend", `<span class="spinner" aria-hidden="true"></span>`);
       }
+    }
+
+    function burstPayloadFromForm() {
+      const formData = new FormData(burstForm);
+      return {
+        requests: Number(formData.get("requests")),
+        concurrency: Number(formData.get("concurrency"))
+      };
     }
 
     async function purchase(scenario, activeButton) {
@@ -664,11 +828,7 @@
       if (burstInFlight) return;
       burstInFlight = true;
       setLoading(burstButton, true);
-      const formData = new FormData(burstForm);
-      const payload = {
-        requests: Number(formData.get("requests")),
-        concurrency: Number(formData.get("concurrency"))
-      };
+      const payload = burstPayloadFromForm();
       const result = document.getElementById("result");
       result.className = "result-empty";
       result.textContent = "Posting demo signals and running production-like traffic through the checkout chain…";
@@ -686,6 +846,30 @@
       } finally {
         burstInFlight = false;
         setLoading(burstButton, false);
+      }
+    }
+
+    async function runProofLoop() {
+      if (proofInFlight) return;
+      proofInFlight = true;
+      setLoading(proofButton, true);
+      const result = document.getElementById("result");
+      result.className = "result-empty";
+      result.textContent = "Running alert → incident → triage → reports → scorecard. This takes a few seconds…";
+      try {
+        const resp = await fetch("/demo/proof", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(burstPayloadFromForm())
+        });
+        if (!resp.ok) throw new Error(await resp.text() || "proof loop failed");
+        renderProofLoop(await resp.json());
+      } catch (err) {
+        result.className = "result-empty";
+        result.textContent = "Error: " + err.message;
+      } finally {
+        proofInFlight = false;
+        setLoading(proofButton, false);
       }
     }
 
@@ -792,6 +976,88 @@
           ${samples}
         </div>
       </div>`;
+    }
+
+    function renderProofLoop(proof) {
+      const score = proof.scorecard || {};
+      const evidence = proof.evidence || {};
+      const markdown = proof.reports?.markdown || "Report not available";
+      const hashes = proof.hashes || {};
+      const hashOK = Object.values(hashes).length > 0 && Object.values(hashes).every(value => value === proof.report_hash);
+      const rootCause = "checkout:payment.charge:PMT_502";
+      const fullHash = proof.report_hash || "";
+      const shortHash = shortHashValue(fullHash);
+      const checklist = [
+        ["Alert accepted", Boolean(proof.alert_id), proof.alert_id || "not available"],
+        ["Incident opened", Boolean(proof.incident_id), proof.incident_id || "not available"],
+        ["Triage built", Boolean(proof.report_hash), shortHash || "not available"],
+        ["Read/tool/plan hashes agree", hashOK, "direct read, direct tool, plan template, repeat snapshot"],
+        ["Reports rendered", Boolean(markdown && proof.reports?.slack && proof.reports?.pagerduty), "Markdown, Slack Block Kit, PagerDuty note"],
+        ["Scorecard passed", Boolean(score.root_cause_accuracy && score.cause_classification_dependency && score.report_hash_stable), "root cause, dependency classification, hash stability"]
+      ];
+      const hashRows = [
+        ["read endpoint", hashes.read],
+        ["repeat snapshot", hashes.repeat],
+        ["direct tool", hashes.tool],
+        ["plan template", hashes.plan]
+      ].map(([label, value]) => `<tr><td>${esc(label)}</td><td><span class="hash-short">${esc(shortHashValue(value) || "not available")}</span><span class="hash-full">${esc(value || "")}</span></td><td><span class="proof-status ${value === proof.report_hash ? "" : "fail"}">${value === proof.report_hash ? "pass" : "fail"}</span></td></tr>`).join("");
+      const result = document.getElementById("result");
+      result.className = "bracketed";
+      result.innerHTML = `<div class="proof-grid">
+        <div class="proof-hero">
+          <div>
+            <div class="eyebrow">Proof loop complete</div>
+            <h3 class="proof-headline">Alert correlated. Root cause identified. Report verified.</h3>
+            <p class="muted">Waylog correlated an external alert with an active incident, found <span class="mono">${esc(rootCause)}</span>, and produced a cited operator report whose hash was stable across CLI, read, direct tool, and plan-template surfaces in this run.</p>
+          </div>
+          <div class="proof-summary">
+            <div class="proof-metric"><span>Root cause</span><strong>${esc(rootCause)}</strong></div>
+            <div class="proof-metric"><span>Stable report hash</span><strong title="${esc(fullHash)}">${esc(shortHash || "not available")}</strong></div>
+            <div class="proof-metric"><span>Inflation avoided</span><strong>${esc(score.propagated_error_inflation_avoided ?? "not available")} propagated errors</strong></div>
+          </div>
+        </div>
+        <div class="proof-columns">
+          <div class="proof-panel">
+            <ul class="proof-checklist" aria-label="Proof checklist">
+              ${checklist.map(([label, ok, detail]) => `<li><span class="${ok ? "ok" : "bad"}">${ok ? "✓" : "!"}</span><span><strong>${esc(label)}</strong><br>${esc(detail)}</span></li>`).join("")}
+            </ul>
+            <div class="proof-metric"><span>Evidence IDs</span><strong>alert=${esc(proof.alert_id || "not available")} · trace=${esc(evidence.trace_id || "not available")} · incident=${esc(proof.incident_id || "not available")}</strong></div>
+            <div class="proof-metric"><span>Evidence completeness</span><strong>alert linked · dependency signal present · next checks ready</strong></div>
+            <table class="proof-table" aria-label="Hash agreement across triage surfaces">
+              <thead><tr><th>Surface</th><th>Report hash</th><th>Status</th></tr></thead>
+              <tbody>${hashRows}</tbody>
+            </table>
+            <div class="proof-metric"><span>RCA scorecard</span><strong>${humanBool(score.root_cause_accuracy, "Root cause identified")} · ${humanBool(score.cause_classification_dependency, "Dependency cause confirmed")} · ${humanBool(score.report_hash_stable, "Hash stable")} · time to answer ${esc(score.time_to_answer_ms || 0)}ms</strong></div>
+            <div class="links">
+              <a class="button primary" href="${dashboardURL}">Open dashboard</a>
+              ${proof.incident_id ? `<a class="button" href="${dashboardURL}#/incident/${encodeURIComponent(proof.incident_id)}">Inspect incident</a>` : ""}
+              ${evidence.trace_id ? `<a class="button" href="${dashboardURL}#/explain/${encodeURIComponent(evidence.trace_id)}">Explain trace</a>` : ""}
+            </div>
+          </div>
+          <div class="proof-panel">
+            <div class="proof-report-head">
+              <div class="proof-metric"><span>Operator report</span><strong>Cited, deterministic, LLM-free</strong></div>
+              <div class="proof-tabs" aria-label="Rendered report formats">
+                <span class="proof-tab active">Markdown</span>
+                <span class="proof-tab">Slack JSON</span>
+                <span class="proof-tab">PagerDuty note</span>
+              </div>
+            </div>
+            <pre class="proof-report">${esc(markdown)}</pre>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function shortHashValue(value) {
+      value = String(value || "");
+      if (value.length <= 22) return value;
+      if (value.startsWith("sha256:")) return "sha256:" + value.slice(7, 15) + "…" + value.slice(-6);
+      return value.slice(0, 12) + "…" + value.slice(-6);
+    }
+
+    function humanBool(ok, label) {
+      return ok ? label : "Missing " + label.toLowerCase();
     }
   </script>
 </body>

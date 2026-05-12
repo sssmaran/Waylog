@@ -115,7 +115,7 @@ func main() {
 	var sm *auth.SessionManager
 	if authCfg.DashboardMode != "off" {
 		sm = auth.NewSessionManager(authCfg.SessionSecret, auth.DefaultSessionMaxAge)
-		sm.Secure = os.Getenv("WAYLOG_PROFILE") == "prod"
+		sm.Secure = authCfg.Profile == auth.ProfileProd
 	}
 	sessionCheck := auth.SessionCheckFunc(sm)
 
@@ -135,7 +135,11 @@ func main() {
 	graphUI := config.GetenvBool("GRAPH_UI", false)
 	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
 	otlpGRPCAddr := config.Getenv("OTLP_GRPC_ADDR", ":4317")
-	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", false)
+	if authCfg.Profile == auth.ProfileProd && otlpEnabled && len(authCfg.WriteKeys) == 0 {
+		slog.Error("WAYLOG_PROFILE=prod with OTLP enabled requires WAYLOG_WRITE_KEY — refusing to boot with unauthenticated OTLP")
+		os.Exit(1)
+	}
+	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", true)
 	signalRetention := config.GetenvDuration("WAYLOG_SIGNAL_RETENTION", 72*time.Hour)
 	alertMatchWindow := config.GetenvDuration("ALERT_MATCH_WINDOW", 15*time.Minute)
 	if alertMatchWindow <= 0 {
@@ -280,6 +284,7 @@ func main() {
 		IncidentsEnabled:         v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
 		IncidentsPersistent:      v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
 		IncidentRebuildSupported: v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
+		Profile:                  authCfg.Profile,
 	})
 
 	// SSE hub for real-time dashboard updates
@@ -496,8 +501,46 @@ func main() {
 						os.Exit(1)
 					}
 					if replay.Projected == 0 {
+						// Empty WAL replay while rebuild was explicitly requested.
+						// Transition only the seed rows whose StartedAt precedes
+						// replaySince — those are stale beyond the hot window and
+						// their continuing "active" status is no longer evidence-
+						// backed. Non-stale active rows in the same seed are left
+						// untouched and will be re-evaluated by the next live tick.
+						staleTransitioned := 0
 						if len(seed) > 0 {
-							slog.Warn("incidents rebuild skipped: WAL replay returned no events; preserving SQLite as-is")
+							incidentStoreRef := incidentStore
+							now := time.Now().UTC()
+							for _, inc := range seed {
+								if inc.Status != incidents.StatusActive {
+									continue
+								}
+								if !inc.StartedAt.Before(replaySince) {
+									continue
+								}
+								row := inc
+								row.Status = incidents.StatusRecovering
+								t := now
+								row.RecoveringAt = &t
+								row.UpdatedAt = now
+								if err := incidentStoreRef.Upsert(context.Background(), row); err != nil {
+									slog.Warn("stale-active rebuild transition failed",
+										"incident_id", row.IncidentID, "err", err)
+									continue
+								}
+								staleTransitioned++
+							}
+							if staleTransitioned > 0 {
+								if err := incidentEngine.Bootstrap(context.Background()); err != nil {
+									slog.Error("incident engine re-bootstrap after stale transition failed", "err", err)
+									os.Exit(1)
+								}
+								slog.Info("incidents rebuild: stale active rows transitioned to recovering",
+									"transitioned", staleTransitioned,
+									"replay_since", replaySince)
+							} else {
+								slog.Warn("incidents rebuild skipped: WAL replay returned no events; preserving SQLite as-is")
+							}
 						}
 					} else {
 						result, err := incidents.Rebuild(context.Background(), incidents.RebuildDeps{

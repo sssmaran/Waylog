@@ -94,7 +94,7 @@ func TestTriageReportHandlerRendersMarkdown(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "Waylog Triage Report") || !strings.Contains(rr.Body.String(), "inc_abc") {
+	if !strings.Contains(rr.Body.String(), "Waylog Operator Report") || !strings.Contains(rr.Body.String(), "inc_abc") {
 		t.Fatalf("unexpected report:\n%s", rr.Body.String())
 	}
 }

@@ -30,6 +30,7 @@ if [[ "$DASHBOARD_AUTH" == "off" ]]; then
 else
   export WAYLOG_READ_KEY="${WAYLOG_READ_KEY:-demo}"
 fi
+export WAYLOG_PROFILE="${WAYLOG_PROFILE:-demo}"
 export WAYLOG_V2_READS="${WAYLOG_V2_READS:-true}"
 export WAYLOG_INCIDENT_TICK_INTERVAL="${WAYLOG_INCIDENT_TICK_INTERVAL:-5s}"
 export EVENT_LOG_DIR="${EVENT_LOG_DIR:-${STATE_DIR}/eventlog}"
@@ -142,9 +143,10 @@ Open:
   Dashboard:     http://localhost:8080/ui/
 
 How to demo it:
-  1. Open Demo controls and click "Run traffic burst".
-  2. Open Dashboard and inspect the active incident, errors, impact, and trace explanation.
-  3. Or run: make demo-acceptance
+  1. Open Demo controls and click "Run proof loop".
+  2. Inspect the alert, incident, triage hash, operator report, and scorecard.
+  3. Open Dashboard to inspect the active incident, errors, impact, and trace explanation.
+  4. Or run: make demo-acceptance
 
 Useful CLI checks:
   ./waylog capabilities

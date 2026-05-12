@@ -587,12 +587,13 @@
       }
       .incident-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
         gap: 8px;
       }
       .incident-card {
         display: grid;
         gap: 8px;
+        min-width: 0;
         min-height: 44px;
         border: 1px solid var(--line);
         border-radius: var(--radius-md);
@@ -601,7 +602,16 @@
         transition: border-color 0.15s ease, background 0.15s ease;
       }
       .incident-card:hover { border-color: var(--line-strong); background: var(--row-hover); }
-      .incident-title { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+      .incident-title { display: flex; justify-content: space-between; gap: 8px; align-items: start; min-width: 0; }
+      .incident-title strong { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
+      .incident-title .status { flex-shrink: 0; }
+      .incident-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        min-width: 0;
+      }
+      .incident-meta span { min-width: 0; overflow-wrap: anywhere; }
       .incident-detail { display: grid; gap: 12px; }
       .evidence-list, .check-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
       .evidence-list li, .check-list li {
@@ -870,8 +880,16 @@
                 <strong>${esc(formatFamily(incident.error_family))}</strong>
                 <span class="status ${statusClass(incident.status)}">${esc(incident.status)}</span>
               </div>
-              <div class="item-meta">${esc(incident.cause || "unknown")} · ${esc(incident.confidence || "low")} confidence · severity ${nf.format(incident.severity || 0)}</div>
-              <div class="item-meta">${nf.format(incident.affected_requests || 0)} requests · ${nf.format(incident.affected_services || 0)} services · started ${esc(ago(incident.started_at))}</div>
+              <div class="item-meta incident-meta">
+                <span>${esc(incident.cause || "unknown")}</span>
+                <span>${esc(incident.confidence || "low")} confidence</span>
+                <span>severity ${nf.format(incident.severity || 0)}</span>
+              </div>
+              <div class="item-meta incident-meta">
+                <span>${nf.format(incident.affected_requests || 0)} requests</span>
+                <span>${nf.format(incident.affected_services || 0)} services</span>
+                <span>started ${esc(ago(incident.started_at))}</span>
+              </div>
             </a>`).join("")}</div>
         </section>`;
       }

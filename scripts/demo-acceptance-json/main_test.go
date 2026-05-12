@@ -31,3 +31,48 @@ func TestTriageReportHash(t *testing.T) {
 		t.Fatalf("malformed input should return empty, got %q", got)
 	}
 }
+
+func TestPlanTriageReportHash(t *testing.T) {
+	body := []byte(`{"steps":[{"result":{"schema_version":"triage.v1","report_hash":"sha256:plan"}}]}`)
+	if got := planTriageReportHash(body); got != "sha256:plan" {
+		t.Fatalf("planTriageReportHash = %q, want sha256:plan", got)
+	}
+	if got := planTriageReportHash([]byte(`{"steps":[]}`)); got != "" {
+		t.Fatalf("missing plan result should return empty, got %q", got)
+	}
+}
+
+func TestTriageEvidenceHelpers(t *testing.T) {
+	body := []byte(`{
+		"blast_snapshot":{"top_error_families":[{"service":"checkout","step":"payment.charge","error_code":"PMT_502"}]},
+		"sample_traces":[{"trace_id":"trace_1"}],
+		"signals":[{"id":"sig_dep","type":"dependency"}],
+		"alerts":[{"signal_id":"sig_alert","alert_id":"alert_1"}],
+		"next_checks":[{"id":"check_0","prompt":"Check payment health"}]
+	}`)
+	if !triageRootCauseAccurate(body) || !triageHasTrace(body) || !triageHasDependencySignal(body) || !triageHasAlert(body) || !triageHasNextCheck(body) {
+		t.Fatalf("expected all triage helpers to pass")
+	}
+	if !triageHasAlertID(body, "alert_1") {
+		t.Fatalf("expected alert_1 to be present")
+	}
+	if triageHasAlertID(body, "alert_other") {
+		t.Fatalf("unexpected alert_other match")
+	}
+	if triageHasAlert([]byte(`{"alerts":[]}`)) {
+		t.Fatalf("empty alerts should fail")
+	}
+}
+
+func TestIncidentCauseIsDependency(t *testing.T) {
+	body := []byte(`{"incidents":[
+		{"incident_id":"inc_a","cause":"app"},
+		{"incident_id":"inc_b","cause":"dependency"}
+	]}`)
+	if !incidentCauseIsDependency(body, "inc_b") {
+		t.Fatalf("expected inc_b to be dependency")
+	}
+	if incidentCauseIsDependency(body, "inc_a") {
+		t.Fatalf("inc_a should not be dependency")
+	}
+}

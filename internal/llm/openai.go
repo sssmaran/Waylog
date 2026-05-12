@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const defaultOpenAIModel = "gpt-5.4-mini"
+const defaultOpenAIModel = "gpt-4o-mini"
 const defaultOpenAIBaseURL = "https://api.openai.com/v1"
 
 type OpenAIClient struct {

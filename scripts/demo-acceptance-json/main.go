@@ -56,7 +56,43 @@ type incident struct {
 }
 
 type triageReport struct {
-	ReportHash string `json:"report_hash"`
+	ReportHash    string         `json:"report_hash"`
+	BlastSnapshot blastSnapshot  `json:"blast_snapshot"`
+	SampleTraces  []traceSample  `json:"sample_traces"`
+	Signals       []triageSignal `json:"signals"`
+	Alerts        []triageAlert  `json:"alerts"`
+	NextChecks    []nextCheck    `json:"next_checks"`
+}
+
+type blastSnapshot struct {
+	TopErrorFamilies []errorFamily `json:"top_error_families"`
+}
+
+type traceSample struct {
+	TraceID string `json:"trace_id"`
+}
+
+type triageSignal struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+type triageAlert struct {
+	SignalID string `json:"signal_id"`
+	AlertID  string `json:"alert_id"`
+}
+
+type nextCheck struct {
+	ID     string `json:"id"`
+	Prompt string `json:"prompt"`
+}
+
+type planResult struct {
+	Steps []planStep `json:"steps"`
+}
+
+type planStep struct {
+	Result json.RawMessage `json:"result"`
 }
 
 type blastResponse struct {
@@ -64,8 +100,8 @@ type blastResponse struct {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: demo-acceptance-json <has-payment-error|payment-error-count|payment-affected-traces|first-payment-trace|first-event-id|burst-signals-accepted|has-dependency-incident|first-incident-id|triage-report-hash|blast-affected-services>")
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: demo-acceptance-json <has-payment-error|payment-error-count|payment-affected-traces|first-payment-trace|first-event-id|burst-signals-accepted|has-dependency-incident|incident-cause-is-dependency|first-incident-id|triage-report-hash|plan-triage-report-hash|triage-first-trace|triage-has-alert|triage-has-alert-id|triage-has-trace|triage-has-dependency-signal|triage-has-next-check|triage-root-cause-accurate|blast-affected-services> [arg]")
 		os.Exit(2)
 	}
 
@@ -96,10 +132,50 @@ func main() {
 		if !hasDependencyIncident(body) {
 			os.Exit(1)
 		}
+	case "incident-cause-is-dependency":
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "incident-cause-is-dependency requires an incident_id")
+			os.Exit(2)
+		}
+		if !incidentCauseIsDependency(body, os.Args[2]) {
+			os.Exit(1)
+		}
 	case "first-incident-id":
 		fmt.Println(firstIncidentID(body))
 	case "triage-report-hash":
 		fmt.Println(triageReportHash(body))
+	case "plan-triage-report-hash":
+		fmt.Println(planTriageReportHash(body))
+	case "triage-first-trace":
+		fmt.Println(triageFirstTrace(body))
+	case "triage-has-alert":
+		if !triageHasAlert(body) {
+			os.Exit(1)
+		}
+	case "triage-has-alert-id":
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "triage-has-alert-id requires an alert_id")
+			os.Exit(2)
+		}
+		if !triageHasAlertID(body, os.Args[2]) {
+			os.Exit(1)
+		}
+	case "triage-has-trace":
+		if !triageHasTrace(body) {
+			os.Exit(1)
+		}
+	case "triage-has-dependency-signal":
+		if !triageHasDependencySignal(body) {
+			os.Exit(1)
+		}
+	case "triage-has-next-check":
+		if !triageHasNextCheck(body) {
+			os.Exit(1)
+		}
+	case "triage-root-cause-accurate":
+		if !triageRootCauseAccurate(body) {
+			os.Exit(1)
+		}
 	case "blast-affected-services":
 		fmt.Println(blastAffectedServices(body))
 	default:
@@ -221,6 +297,19 @@ func firstIncidentID(body []byte) string {
 	return ""
 }
 
+func incidentCauseIsDependency(body []byte, incidentID string) bool {
+	var resp incidentsResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false
+	}
+	for _, inc := range resp.Incidents {
+		if inc.IncidentID == incidentID {
+			return inc.Cause == "dependency"
+		}
+	}
+	return false
+}
+
 func isPaymentFamily(f errorFamily) bool {
 	return f.Service == "checkout" &&
 		f.Step == "payment.charge" &&
@@ -233,6 +322,96 @@ func triageReportHash(body []byte) string {
 		return ""
 	}
 	return rep.ReportHash
+}
+
+func planTriageReportHash(body []byte) string {
+	var plan planResult
+	if err := json.Unmarshal(body, &plan); err != nil || len(plan.Steps) == 0 {
+		return ""
+	}
+	return triageReportHash(plan.Steps[0].Result)
+}
+
+func triageHasAlert(body []byte) bool {
+	var rep triageReport
+	if err := json.Unmarshal(body, &rep); err != nil {
+		return false
+	}
+	for _, alert := range rep.Alerts {
+		if alert.SignalID != "" && alert.AlertID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func triageHasAlertID(body []byte, alertID string) bool {
+	var rep triageReport
+	if err := json.Unmarshal(body, &rep); err != nil {
+		return false
+	}
+	for _, alert := range rep.Alerts {
+		if alert.AlertID == alertID && alert.SignalID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func triageHasTrace(body []byte) bool {
+	return triageFirstTrace(body) != ""
+}
+
+func triageFirstTrace(body []byte) string {
+	var rep triageReport
+	if err := json.Unmarshal(body, &rep); err != nil {
+		return ""
+	}
+	for _, sample := range rep.SampleTraces {
+		if sample.TraceID != "" {
+			return sample.TraceID
+		}
+	}
+	return ""
+}
+
+func triageHasDependencySignal(body []byte) bool {
+	var rep triageReport
+	if err := json.Unmarshal(body, &rep); err != nil {
+		return false
+	}
+	for _, sig := range rep.Signals {
+		if sig.ID != "" && sig.Type == "dependency" {
+			return true
+		}
+	}
+	return false
+}
+
+func triageHasNextCheck(body []byte) bool {
+	var rep triageReport
+	if err := json.Unmarshal(body, &rep); err != nil {
+		return false
+	}
+	for _, check := range rep.NextChecks {
+		if check.ID != "" && check.Prompt != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func triageRootCauseAccurate(body []byte) bool {
+	var rep triageReport
+	if err := json.Unmarshal(body, &rep); err != nil {
+		return false
+	}
+	for _, family := range rep.BlastSnapshot.TopErrorFamilies {
+		if isPaymentFamily(family) {
+			return true
+		}
+	}
+	return false
 }
 
 func blastAffectedServices(body []byte) int {
