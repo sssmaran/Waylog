@@ -67,4 +67,3 @@ func TestStaleActiveTransitionTransitionsOnlyStaleRows(t *testing.T) {
 		t.Fatal("fresh row recovering_at must be unset")
 	}
 }
-
