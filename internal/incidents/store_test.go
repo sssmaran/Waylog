@@ -68,17 +68,3 @@ func TestStaleActiveTransitionTransitionsOnlyStaleRows(t *testing.T) {
 	}
 }
 
-// TestStaleActiveTransitionNoActiveRowsIsNoOp covers the "normal empty-WAL
-// startup with no active incidents" path. Nothing should change in the store.
-func TestStaleActiveTransitionNoActiveRowsIsNoOp(t *testing.T) {
-	store := NewMemoryStore()
-	active, _ := store.ListActive(context.Background())
-	if len(active) != 0 {
-		t.Fatalf("expected empty store, got %d rows", len(active))
-	}
-	// No rows = no transitions. Listing again must still be empty.
-	active, _ = store.ListActive(context.Background())
-	if len(active) != 0 {
-		t.Fatalf("unexpected mutation: %d rows", len(active))
-	}
-}

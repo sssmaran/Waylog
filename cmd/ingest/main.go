@@ -956,8 +956,18 @@ func main() {
 		slog.Info("ingest shutdown complete")
 	}
 	if otlpGRPCServer != nil {
-		otlpGRPCServer.GracefulStop()
-		slog.Info("otlp grpc shutdown complete")
+		done := make(chan struct{})
+		go func() {
+			otlpGRPCServer.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+			slog.Info("otlp grpc shutdown complete")
+		case <-time.After(5 * time.Second):
+			otlpGRPCServer.Stop()
+			slog.Warn("otlp grpc graceful shutdown timed out; forced stop")
+		}
 	}
 
 	planStore.Close()

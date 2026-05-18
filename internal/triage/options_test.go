@@ -5,46 +5,39 @@ import (
 	"time"
 )
 
-func TestBuildOptionsDefaults(t *testing.T) {
+func TestParseBuildOptions(t *testing.T) {
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
-	opts, err := ParseBuildOptions("", false, now)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+	cases := []struct {
+		name     string
+		window   string
+		snapshot bool
+		want     time.Duration
+	}{
+		{"default window", "", false, 15 * time.Minute},
+		{"explicit 30m", "30m", false, 30 * time.Minute},
+		{"snapshot flag honored", "15m", true, 15 * time.Minute},
 	}
-	if opts.Window != 15*time.Minute {
-		t.Fatalf("default window should be 15m, got %s", opts.Window)
-	}
-	if opts.Snapshot {
-		t.Fatalf("default snapshot should be false")
-	}
-	if !opts.Now.Equal(now) {
-		t.Fatalf("Now should be passed through")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := ParseBuildOptions(tc.window, tc.snapshot, now)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if opts.Window != tc.want {
+				t.Fatalf("window = %s, want %s", opts.Window, tc.want)
+			}
+			if opts.Snapshot != tc.snapshot {
+				t.Fatalf("snapshot = %v, want %v", opts.Snapshot, tc.snapshot)
+			}
+			if !opts.Now.Equal(now) {
+				t.Fatalf("Now should be passed through")
+			}
+		})
 	}
 }
 
-func TestBuildOptionsWindowParse(t *testing.T) {
-	now := time.Now()
-	opts, err := ParseBuildOptions("30m", false, now)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if opts.Window != 30*time.Minute {
-		t.Fatalf("got %s want 30m", opts.Window)
-	}
-}
-
-func TestBuildOptionsBadWindow(t *testing.T) {
+func TestParseBuildOptionsBadWindow(t *testing.T) {
 	if _, err := ParseBuildOptions("forever", false, time.Now()); err == nil {
 		t.Fatalf("expected error for bad window")
-	}
-}
-
-func TestBuildOptionsSnapshotFlag(t *testing.T) {
-	opts, err := ParseBuildOptions("15m", true, time.Now())
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if !opts.Snapshot {
-		t.Fatalf("snapshot flag not honored")
 	}
 }
