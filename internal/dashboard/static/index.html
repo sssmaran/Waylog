@@ -580,6 +580,46 @@
       }
       .empty strong { color: var(--text); display: block; margin-bottom: 6px; }
       .error-box { color: var(--danger); border-color: var(--danger-soft); background: var(--danger-soft); }
+      .incident-strip {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .incident-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+        gap: 8px;
+      }
+      .incident-card {
+        display: grid;
+        gap: 8px;
+        min-width: 0;
+        min-height: 44px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: linear-gradient(135deg, var(--item-bg), transparent);
+        padding: 12px;
+        transition: border-color 0.15s ease, background 0.15s ease;
+      }
+      .incident-card:hover { border-color: var(--line-strong); background: var(--row-hover); }
+      .incident-title { display: flex; justify-content: space-between; gap: 8px; align-items: start; min-width: 0; }
+      .incident-title strong { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
+      .incident-title .status { flex-shrink: 0; }
+      .incident-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        min-width: 0;
+      }
+      .incident-meta span { min-width: 0; overflow-wrap: anywhere; }
+      .incident-detail { display: grid; gap: 12px; }
+      .evidence-list, .check-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+      .evidence-list li, .check-list li {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--item-bg);
+        padding: 10px 12px;
+      }
       .disabled {
         display: grid;
         place-items: center;
@@ -619,6 +659,7 @@
         capabilities: null,
         errors: null,
         recent: null,
+        incidents: null,
         errorTrend: [],
         latencyTrend: [],
         timers: [],
@@ -736,13 +777,23 @@
       async function loadCapabilities() {
         state.capabilities = await fetchJSON("/v1/capabilities");
       }
+      async function loadIncidents() {
+        try {
+          return await fetchJSON("/v1/incidents/active");
+        } catch (err) {
+          if (err.status === 404 || err.status === 503) return { incidents: [] };
+          throw err;
+        }
+      }
       async function loadDashboardData() {
-        const [errors, recent] = await Promise.all([
+        const [errors, recent, incidents] = await Promise.all([
           fetchJSON("/v1/errors?" + params({ window: state.window, limit: 50 })),
           fetchJSON("/v1/traces/recent?" + params({ window: state.window, limit: 50, include_suppressed: true })),
+          loadIncidents(),
         ]);
         state.errors = errors;
         state.recent = recent;
+        state.incidents = incidents;
         const errorEvents = (errors.rows || []).reduce((sum, row) => sum + Number(row.count || 0), 0);
         const durations = (recent.traces || []).map(t => Number(t.duration_ms || 0));
         pushTrend(state.errorTrend, errorEvents);
@@ -791,7 +842,10 @@
             ${tab("#/blast/" + encodeURIComponent(firstFamily()), "Blast", route.screen === "blast", !firstFamily())}
           </nav>
           <main id="main" class="shell">
-            <section class="card panel bracketed" aria-live="polite">${content}</section>
+            <section>
+              ${renderIncidentStrip()}
+              <div class="card panel bracketed" aria-live="polite">${content}</div>
+            </section>
             <aside>${renderRecent()}</aside>
           </main>
         `;
@@ -809,6 +863,35 @@
       }
       function firstTraceID() {
         return state.recent?.traces?.[0]?.trace_id || state.errors?.rows?.[0]?.sample_traces?.[0] || "";
+      }
+
+      function renderIncidentStrip() {
+        const incidents = state.incidents?.incidents || [];
+        if (!incidents.length) {
+          return `<section class="card panel bracketed incident-strip" aria-labelledby="incidents-title">
+            <div class="panel-head"><div><h2 id="incidents-title" class="panel-title">Active incidents</h2><div class="panel-sub">No active incidents.</div></div></div>
+          </section>`;
+        }
+        return `<section class="card panel bracketed incident-strip" aria-labelledby="incidents-title">
+          <div class="panel-head"><div><h2 id="incidents-title" class="panel-title">Active incidents</h2><div class="panel-sub">${nf.format(incidents.length)} incident${incidents.length === 1 ? "" : "s"} detected</div></div></div>
+          <div class="incident-grid">${incidents.map(incident => `
+            <a class="incident-card" href="#/incident/${encodeURIComponent(incident.incident_id)}">
+              <div class="incident-title">
+                <strong>${esc(formatFamily(incident.error_family))}</strong>
+                <span class="status ${statusClass(incident.status)}">${esc(incident.status)}</span>
+              </div>
+              <div class="item-meta incident-meta">
+                <span>${esc(incident.cause || "unknown")}</span>
+                <span>${esc(incident.confidence || "low")} confidence</span>
+                <span>severity ${nf.format(incident.severity || 0)}</span>
+              </div>
+              <div class="item-meta incident-meta">
+                <span>${nf.format(incident.affected_requests || 0)} requests</span>
+                <span>${nf.format(incident.affected_services || 0)} services</span>
+                <span>started ${esc(ago(incident.started_at))}</span>
+              </div>
+            </a>`).join("")}</div>
+        </section>`;
       }
 
       function renderRecent() {
@@ -927,6 +1010,51 @@
             ${storyCard("Sample traces", `<div class="list">${(blast.sample_traces || []).map(id => `<a class="item" href="#/explain/${encodeURIComponent(id)}"><span class="item-title mono">${esc(shortID(id))}</span></a>`).join("") || "<div class='empty'>No sample traces.</div>"}</div>`)}
           </div>`);
       }
+
+      async function renderIncident(id) {
+        if (!id) return shell(`<div class="empty">Choose an incident to inspect.</div>`);
+        const resp = await fetchJSON("/v1/incidents/" + encodeURIComponent(id));
+        const incident = resp.incident || {};
+        return shell(`<div class="incident-detail">
+          <div class="hero">
+            <div class="panel-sub">incident summary</div>
+            <h2>${esc(formatFamily(incident.error_family))}</h2>
+            <div class="hero-anchor">${esc(incident.cause || "unknown")} · ${esc(incident.confidence || "low")} confidence</div>
+            <div class="muted">${esc(incident.status || "unknown")} · severity ${nf.format(incident.severity || 0)} · started ${esc(ago(incident.started_at))}</div>
+          </div>
+          <section class="impact">
+            ${impact("Affected requests", incident.affected_requests || 0)}
+            ${impact("Affected users", incident.affected_users == null ? "unknown" : incident.affected_users)}
+            ${impact("Affected services", incident.affected_services || 0)}
+            ${impact("Lift", Number(incident.lift || 0).toFixed(2) + "x")}
+          </section>
+          <div class="section-grid">
+            ${storyCard("Evidence", renderEvidence(incident.evidence || []))}
+            ${storyCard("Next checks", renderChecks(incident.next_checks || []))}
+            ${storyCard("Sample traces", renderIncidentSamples(incident.sample_traces || []))}
+            ${storyCard("Instrumentation warnings", renderWarnings(incident.instrumentation_warnings || []))}
+          </div>
+        </div>`);
+      }
+      function renderEvidence(items) {
+        if (!items.length) return `<div class="empty">No incident evidence attached.</div>`;
+        return `<ul class="evidence-list">${items.map(item => `<li>
+          <div class="item-title">${esc(item.title || item.kind || "evidence")}</div>
+          <div class="item-meta">${esc(item.kind || "unknown")}${item.detail ? " · " + esc(item.detail) : ""}${item.service ? " · " + esc(item.service) : ""}</div>
+        </li>`).join("")}</ul>`;
+      }
+      function renderChecks(items) {
+        if (!items.length) return `<div class="empty">No next checks generated.</div>`;
+        return `<ul class="check-list">${items.map(check => `<li>${esc(check)}</li>`).join("")}</ul>`;
+      }
+      function renderIncidentSamples(ids) {
+        if (!ids.length) return `<div class="empty">No sample traces attached.</div>`;
+        return `<div class="list">${ids.map(id => `<a class="item" href="#/explain/${encodeURIComponent(id)}"><span class="item-title mono">${esc(shortID(id))}</span><span class="item-meta">open explain</span></a>`).join("")}</div>`;
+      }
+      function renderWarnings(items) {
+        if (!items.length) return `<div class="empty">No instrumentation warnings.</div>`;
+        return `<ul class="check-list">${items.map(warning => `<li>${esc(warning)}</li>`).join("")}</ul>`;
+      }
       function impact(label, value) {
         return `<article class="subcard"><div class="panel-sub">${esc(label)}</div><div class="impact-value">${esc(typeof value === "number" ? nf.format(value) : value)}</div></article>`;
       }
@@ -943,6 +1071,8 @@
             document.getElementById("app").innerHTML = await renderExplain(route.id);
           } else if (route.screen === "blast") {
             document.getElementById("app").innerHTML = await renderBlast(route.id);
+          } else if (route.screen === "incident") {
+            document.getElementById("app").innerHTML = await renderIncident(route.id);
           } else {
             document.getElementById("app").innerHTML = shell(renderErrors());
           }
@@ -985,18 +1115,9 @@
         const recent = document.getElementById("recent-list");
         const scrollTop = recent ? recent.scrollTop : 0;
         await loadDashboardData();
-        if (parseHash().screen === "errors") {
-          await renderCurrentScreen();
-          const nextRecent = document.getElementById("recent-list");
-          if (nextRecent) nextRecent.scrollTop = scrollTop;
-        } else {
-          // /explain and /blast own their own DOM; just refresh the recent panel in place.
-          const list = document.getElementById("recent-list");
-          if (list) {
-            list.innerHTML = recentItemsHTML();
-            list.scrollTop = scrollTop;
-          }
-        }
+        await renderCurrentScreen();
+        const nextRecent = document.getElementById("recent-list");
+        if (nextRecent) nextRecent.scrollTop = scrollTop;
       }
       function reportPollError(err) {
         const live = document.getElementById("live-region");

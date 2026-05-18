@@ -115,3 +115,59 @@ func TestParseConfig_DashboardAuthWithoutSessionSecret_Dev(t *testing.T) {
 		t.Fatal("expected derived session secret in dev mode")
 	}
 }
+
+func TestParseConfig_ProfileDefaultsToDev(t *testing.T) {
+	cfg, err := ParseConfig(map[string]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Profile != ProfileDev {
+		t.Fatalf("profile = %q, want %q", cfg.Profile, ProfileDev)
+	}
+}
+
+func TestParseConfig_ProfileRejectsUnknown(t *testing.T) {
+	_, err := ParseConfig(map[string]string{"WAYLOG_PROFILE": "staging"})
+	if err == nil || !strings.Contains(err.Error(), "WAYLOG_PROFILE") {
+		t.Fatalf("expected WAYLOG_PROFILE validation error, got %v", err)
+	}
+}
+
+func TestParseConfig_ProfileProdRequiresAllKeys(t *testing.T) {
+	_, err := ParseConfig(map[string]string{"WAYLOG_PROFILE": "prod"})
+	if err == nil {
+		t.Fatal("expected error for prod profile with no keys")
+	}
+	for _, want := range []string{"WAYLOG_WRITE_KEY", "WAYLOG_READ_KEY", "WAYLOG_AGENT_KEY", "refusing"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err.Error(), want)
+		}
+	}
+}
+
+func TestParseConfig_ProfileProdBootsWithAllKeys(t *testing.T) {
+	cfg, err := ParseConfig(map[string]string{
+		"WAYLOG_PROFILE":           "prod",
+		"WAYLOG_WRITE_KEY":         "w",
+		"WAYLOG_READ_KEY":          "r",
+		"WAYLOG_AGENT_KEY":         "a",
+		"DASHBOARD_AUTH":           "key:dash",
+		"DASHBOARD_SESSION_SECRET": "secret",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Profile != ProfileProd {
+		t.Fatalf("profile = %q, want %q", cfg.Profile, ProfileProd)
+	}
+}
+
+func TestParseConfig_ProfileDemoAllowsOpen(t *testing.T) {
+	cfg, err := ParseConfig(map[string]string{"WAYLOG_PROFILE": "demo"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Profile != ProfileDemo {
+		t.Fatalf("profile = %q, want %q", cfg.Profile, ProfileDemo)
+	}
+}

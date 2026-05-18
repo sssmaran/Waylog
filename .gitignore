@@ -29,6 +29,7 @@ profile.cov
 
 /*.log
 /data/
+data/demo-state/
 *.md
 
 # Local runtime/build artifacts

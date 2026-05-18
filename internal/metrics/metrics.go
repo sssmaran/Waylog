@@ -67,6 +67,22 @@ type Metrics struct {
 	DeployUpsertsTotal prometheus.Counter
 	DeployUpsertErrors prometheus.Counter
 
+	SignalsAccepted       prometheus.Counter
+	SignalsRejected       *prometheus.CounterVec
+	SignalRetentionPruned prometheus.Counter
+
+	IncidentOpened          prometheus.Counter
+	IncidentUpdated         prometheus.Counter
+	IncidentRecovered       prometheus.Counter
+	IncidentResolved        prometheus.Counter
+	IncidentTickLatency     prometheus.Histogram
+	IncidentActive          prometheus.Gauge
+	IncidentClassifications *prometheus.CounterVec
+	IncidentRebuildDuration prometheus.Histogram
+	IncidentRebuildRows     prometheus.Counter
+	IncidentRebuildFailures prometheus.Counter
+	IncidentRebuildReplayed prometheus.Counter
+
 	CausalRunsTotal   prometheus.Counter
 	CausalRunDuration prometheus.Histogram
 	CausalRunFailures prometheus.Counter
@@ -316,6 +332,78 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help: "Failed deployment upserts (non-env-conflict).",
 	})
 
+	m.SignalsAccepted = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_signals_accepted_total",
+		Help: "Production-context signals accepted into durable storage.",
+	})
+	m.SignalsRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_signals_rejected_total",
+		Help: "Production-context signals rejected by reason.",
+	}, []string{"reason"})
+	for _, reason := range []string{
+		"invalid_field", "unknown_type", "unknown_severity", "timestamp_too_far_in_future",
+		"body_oversize", "invalid_body", "invalid_json", "unsupported_method",
+		"durability_unavailable", "internal_error",
+	} {
+		m.SignalsRejected.WithLabelValues(reason).Add(0)
+	}
+	m.SignalRetentionPruned = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_signal_retention_pruned_total",
+		Help: "Production-context signals pruned by retention.",
+	})
+
+	m.IncidentOpened = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incidents_opened_total",
+		Help: "Incidents opened by the v2.1 incident engine.",
+	})
+	m.IncidentUpdated = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incidents_updated_total",
+		Help: "Incidents updated by the v2.1 incident engine.",
+	})
+	m.IncidentRecovered = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incidents_recovered_total",
+		Help: "Incidents moved to recovering by the v2.1 incident engine.",
+	})
+	m.IncidentResolved = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incidents_resolved_total",
+		Help: "Incidents resolved by the v2.1 incident engine.",
+	})
+	m.IncidentTickLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_incident_tick_latency_seconds",
+		Help:    "Incident engine tick duration.",
+		Buckets: defaultBuckets,
+	})
+	m.IncidentActive = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "waylog_incidents_active",
+		Help: "Active or recovering incidents currently tracked by the v2.1 incident engine.",
+	})
+	m.IncidentClassifications = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_incident_classifications_total",
+		Help: "Incident classifications by cause and confidence.",
+	}, []string{"cause", "confidence"})
+	for _, cause := range []string{"deploy", "app", "dependency", "runtime", "unknown"} {
+		for _, confidence := range []string{"high", "medium", "low"} {
+			m.IncidentClassifications.WithLabelValues(cause, confidence).Add(0)
+		}
+	}
+	m.IncidentRebuildDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "waylog_incident_rebuild_duration_seconds",
+		Help:    "Startup hot-window incident rebuild duration.",
+		Buckets: defaultBuckets,
+	})
+	m.IncidentRebuildRows = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incident_rebuild_rows_replaced",
+		Help: "Incident rows replaced by startup hot-window rebuild.",
+	})
+	m.IncidentRebuildFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incident_rebuild_failures_total",
+		Help: "Failed startup hot-window incident rebuild attempts.",
+	})
+	m.IncidentRebuildReplayed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incident_rebuild_replayed_events_total",
+		Help: "Schema-2.0 events replayed for startup hot-window incident rebuild.",
+	})
+
 	m.CausalRunsTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_causal_runs_total",
 		Help: "Total causal inference runs.",
@@ -392,6 +480,10 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
 		m.ColdEventsWritten, m.ColdEventsDropped, m.ColdBatchLatency,
 		m.DeployUpsertsTotal, m.DeployUpsertErrors,
+		m.SignalsAccepted, m.SignalsRejected, m.SignalRetentionPruned,
+		m.IncidentOpened, m.IncidentUpdated, m.IncidentRecovered, m.IncidentResolved,
+		m.IncidentTickLatency, m.IncidentActive, m.IncidentClassifications,
+		m.IncidentRebuildDuration, m.IncidentRebuildRows, m.IncidentRebuildFailures, m.IncidentRebuildReplayed,
 		m.CausalRunsTotal, m.CausalRunDuration, m.CausalRunFailures, m.CausalClaimsTotal,
 		m.OTLPRequestsTotal, m.OTLPSpansReceived, m.OTLPSpansConverted,
 		m.OTLPSpansDropped, m.OTLPValidationRejects, m.OTLPDecodeFailures,

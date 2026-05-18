@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sssmaran/WaylogCLI/internal/alerts"
 	"github.com/sssmaran/WaylogCLI/internal/auth"
 	"github.com/sssmaran/WaylogCLI/internal/cli"
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
@@ -26,14 +28,23 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
 	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
+	"github.com/sssmaran/WaylogCLI/internal/incidents"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
+	"github.com/sssmaran/WaylogCLI/internal/llm"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	otelhttp "github.com/sssmaran/WaylogCLI/internal/otel"
 	"github.com/sssmaran/WaylogCLI/internal/persist"
+	"github.com/sssmaran/WaylogCLI/internal/signals"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 	"github.com/sssmaran/WaylogCLI/internal/tracestore"
+	"github.com/sssmaran/WaylogCLI/internal/triage"
+	"github.com/sssmaran/WaylogCLI/internal/triagehttp"
+	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
+	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/grpc"
 )
 
 var graphStore *graphstore.Store
@@ -104,7 +115,7 @@ func main() {
 	var sm *auth.SessionManager
 	if authCfg.DashboardMode != "off" {
 		sm = auth.NewSessionManager(authCfg.SessionSecret, auth.DefaultSessionMaxAge)
-		sm.Secure = os.Getenv("WAYLOG_PROFILE") == "prod"
+		sm.Secure = authCfg.Profile == auth.ProfileProd
 	}
 	sessionCheck := auth.SessionCheckFunc(sm)
 
@@ -123,12 +134,43 @@ func main() {
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
 	graphUI := config.GetenvBool("GRAPH_UI", false)
 	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
-	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", false)
+	otlpGRPCAddr := config.Getenv("OTLP_GRPC_ADDR", ":4317")
+	if authCfg.Profile == auth.ProfileProd && otlpEnabled && len(authCfg.WriteKeys) == 0 {
+		slog.Error("WAYLOG_PROFILE=prod with OTLP enabled requires WAYLOG_WRITE_KEY — refusing to boot with unauthenticated OTLP")
+		os.Exit(1)
+	}
+	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", true)
+	signalRetention := config.GetenvDuration("WAYLOG_SIGNAL_RETENTION", 72*time.Hour)
+	alertMatchWindow := config.GetenvDuration("ALERT_MATCH_WINDOW", 15*time.Minute)
+	if alertMatchWindow <= 0 {
+		alertMatchWindow = 15 * time.Minute
+	}
+	if alertMatchWindow > 24*time.Hour {
+		alertMatchWindow = 24 * time.Hour
+	}
+	incidentsEnabled := config.GetenvBool("WAYLOG_INCIDENTS_ENABLED", true)
+	incidentCfg := incidents.Config{
+		TickInterval:            config.GetenvDuration("WAYLOG_INCIDENT_TICK_INTERVAL", 30*time.Second),
+		Window:                  config.GetenvDuration("WAYLOG_INCIDENT_WINDOW", 10*time.Minute),
+		MinCount:                config.GetenvInt("WAYLOG_INCIDENT_MIN_COUNT", 5),
+		MinLift:                 config.GetenvFloat("WAYLOG_INCIDENT_MIN_LIFT", 3.0),
+		ResolveAfter:            config.GetenvDuration("WAYLOG_INCIDENT_RESOLVE_AFTER", 2*time.Minute),
+		DeployCorrelationWindow: config.GetenvDuration("WAYLOG_DEPLOY_CORRELATION_WINDOW", 15*time.Minute),
+		SampleLimit:             config.GetenvInt("WAYLOG_INCIDENT_SAMPLE_LIMIT", 5),
+	}
+	if signalRetention <= 0 {
+		slog.Error("WAYLOG_SIGNAL_RETENTION must be positive", "value", signalRetention)
+		os.Exit(1)
+	}
 
 	causalEnabled := config.GetenvBool("CAUSAL_ENABLED", false)
 	causalInterval := config.GetenvDuration("CAUSAL_INTERVAL", 30*time.Second)
 
 	trustProxy := config.GetenvBool("WAYLOG_TRUST_PROXY", false)
+	if _, err := llm.SelectFromEnv(); err != nil {
+		slog.Error("LLM provider config error", "err", err)
+		os.Exit(1)
+	}
 
 	dedupCache := ingest.NewDedupCache()
 	planStore := ingest.NewPlanStore()
@@ -188,6 +230,7 @@ func main() {
 	// Optional SQLite cold store
 	var coldDB coldstore.ManagedStore
 	var coldWriter *coldstore.BatchWriter
+	var signalStore signals.Store = signals.UnavailableStore{}
 	if sqlitePath != "" {
 		if eventLogDir == "" {
 			slog.Warn("SQLITE_PATH set without EVENT_LOG_DIR — cold store is async-only, " +
@@ -207,34 +250,41 @@ func main() {
 			FlushInterval: config.GetenvDuration("SQLITE_FLUSH_INTERVAL", 500*time.Millisecond),
 		}, m)
 		coldWriter.Start()
+		signalStore = coldstore.NewSignalStore(coldDB.(*coldstore.SQLiteStore))
 
 		slog.Info("coldstore enabled", "path", sqlitePath)
 	}
 
 	// Create ingest server with the store
 	ingestServer := ingest.NewServer(ingest.ServerConfig{
-		Store:               graphStore,
-		TraceStore:          traceStore,
-		MaxBodyBytes:        maxBody,
-		EventLogDir:         eventLogDir,
-		Metrics:             m,
-		StartTime:           time.Now(),
-		AskRegistry:         reg,
-		AskMaxStepsDefault:  askMaxStepsDefault,
-		AskMaxStepsMax:      askMaxStepsMax,
-		DashboardRefreshSec: dashboardRefreshSec,
-		PrometheusURL:       prometheusURL,
-		GrafanaURL:          grafanaURL,
-		GraphUI:             graphUI,
-		DedupCache:          dedupCache,
-		AgentKey:            agentKey,
-		TrustProxy:          trustProxy,
-		ColdWriter:          coldWriter,
-		ColdStore:           coldDB,
-		PlanStore:           planStore,
-		GraphHotWindow:      graphHotWindow,
-		OTLPEnabled:         otlpEnabled,
-		V2ReadsEnabled:      v2ReadsEnabled,
+		Store:                    graphStore,
+		TraceStore:               traceStore,
+		MaxBodyBytes:             maxBody,
+		EventLogDir:              eventLogDir,
+		Metrics:                  m,
+		StartTime:                time.Now(),
+		AskRegistry:              reg,
+		AskMaxStepsDefault:       askMaxStepsDefault,
+		AskMaxStepsMax:           askMaxStepsMax,
+		DashboardRefreshSec:      dashboardRefreshSec,
+		PrometheusURL:            prometheusURL,
+		GrafanaURL:               grafanaURL,
+		GraphUI:                  graphUI,
+		DedupCache:               dedupCache,
+		AgentKey:                 agentKey,
+		TrustProxy:               trustProxy,
+		ColdWriter:               coldWriter,
+		ColdStore:                coldDB,
+		PlanStore:                planStore,
+		GraphHotWindow:           graphHotWindow,
+		OTLPEnabled:              otlpEnabled,
+		OTLPGRPCEnabled:          otlpEnabled && otlpGRPCAddr != "",
+		OTLPGRPCAddr:             otlpGRPCAddr,
+		V2ReadsEnabled:           v2ReadsEnabled,
+		IncidentsEnabled:         v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
+		IncidentsPersistent:      v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
+		IncidentRebuildSupported: v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
+		Profile:                  authCfg.Profile,
 	})
 
 	// SSE hub for real-time dashboard updates
@@ -355,12 +405,23 @@ func main() {
 	}
 	mux.Handle("/v1/events", writeAuth(http.HandlerFunc(eventsV2.Events)))
 	mux.Handle("/v1/events/validate", writeAuth(http.HandlerFunc(eventsV2.Validate)))
+	signalHandler := signals.NewHandler(signalStore, m)
+	mux.Handle("/v1/signals", writeAuth(http.HandlerFunc(signalHandler.Signals)))
 
 	// OTLP/HTTP traces reuse the same schema-2.0 WAL and projector as the SDK path.
+	var otlpGRPCServer *grpc.Server
 	if otlpEnabled {
 		otlpHandler := otelhttp.NewHandler(eventsV2, m, maxBody)
 		mux.Handle("/v1/otlp/v1/traces", writeAuth(http.HandlerFunc(otlpHandler.ServeHTTP)))
 		slog.Info("otlp enabled", "endpoint", "/v1/otlp/v1/traces")
+		if otlpGRPCAddr != "" {
+			otlpGRPCServer = grpc.NewServer(
+				grpc.UnaryInterceptor(otelhttp.AuthUnaryInterceptor(authCfg.WriteKeys)),
+				grpc.MaxRecvMsgSize(int(maxBody)),
+			)
+			coltracepb.RegisterTraceServiceServer(otlpGRPCServer, otelhttp.NewTraceServiceServer(eventsV2, m, maxBody))
+			ingestServer.SetOTLPGRPC(true, otlpGRPCAddr)
+		}
 	}
 
 	// Read endpoints — CORS outermost so OPTIONS preflight passes without auth.
@@ -370,8 +431,11 @@ func main() {
 			func(w http.ResponseWriter, r *http.Request) { inner.ServeHTTP(w, r) }))
 	}
 	mux.Handle("/v1/overview", readCORS(ingestServer.Overview))
+	var v2Reader *ingestv2.Reader
+	var incidentEngine *incidents.Engine
+	incidentRunning := false
 	if v2ReadsEnabled {
-		v2Reader := ingestv2.NewReader(v2Index)
+		v2Reader = ingestv2.NewReader(v2Index)
 		v2ReadHandler := ingestv2.NewReadHandler(v2Reader, m, graphHotWindow)
 		mux.Handle("/v1/events/search", readCORS(v2ReadHandler.EventSearch))
 		mux.Handle("/v1/errors", readCORS(v2ReadHandler.Errors))
@@ -383,6 +447,164 @@ func main() {
 		mux.Handle("/v1/events/", readCORS(v2ReadHandler.EventByID))
 		mux.Handle("/v1/traces/", readCORS(v2ReadHandler.TraceByID))
 		slog.Info("v2 read endpoints enabled")
+		if incidentsEnabled {
+			if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
+				incidentStore := coldstore.NewIncidentStore(sqlite)
+				incReader := incidentReaderAdapter{reader: v2Reader}
+				incidentEngine = incidents.NewEngine(
+					incReader,
+					signalStore,
+					coldDeployAdapter{store: sqlite},
+					incidentStore,
+					incidentCfg,
+					m,
+					slog.Default(),
+				)
+				if err := incidentEngine.Bootstrap(context.Background()); err != nil {
+					slog.Error("incident engine bootstrap failed", "err", err)
+					os.Exit(1)
+				}
+				if config.GetenvBool("WAYLOG_REBUILD_INCIDENTS_ON_START", false) {
+					rebuildMaxEvents := config.GetenvInt("WAYLOG_INCIDENT_REBUILD_MAX_EVENTS", 250000)
+					if rebuildMaxEvents <= 0 {
+						rebuildMaxEvents = 250000
+					}
+					replayWindow := graphHotWindow
+					if minWindow := 2 * incidentCfg.Window; minWindow > replayWindow {
+						replayWindow = minWindow
+					}
+					replaySince := time.Now().UTC().Add(-replayWindow)
+					seed := incidentEngine.SnapshotActive()
+					for _, inc := range seed {
+						if inc.StartedAt.Before(replaySince) {
+							slog.Info("incident continuity broken: started_at older than WAL retention",
+								"incident_id", inc.IncidentID,
+								"started_at", inc.StartedAt,
+								"replay_since", replaySince,
+							)
+							break
+						}
+					}
+					tempIndex := ingestv2.NewRecentIndex(nil)
+					tempDedup := ingestv2.NewDedup(dedupCapacity, nil)
+					tempProjector := ingestv2.NewProjector(tempIndex)
+					replay, err := ingestv2.ReplayWAL(eventLogV2Dir, tempDedup, tempProjector, replaySince, m)
+					if err != nil {
+						m.IncidentRebuildFailures.Inc()
+						slog.Error("incident rebuild WAL replay failed", "err", err)
+						os.Exit(1)
+					}
+					m.IncidentRebuildReplayed.Add(float64(replay.Projected))
+					if replay.Projected > rebuildMaxEvents {
+						m.IncidentRebuildFailures.Inc()
+						slog.Error("incident rebuild replay exceeded max events", "projected", replay.Projected, "max_events", rebuildMaxEvents)
+						os.Exit(1)
+					}
+					if replay.Projected == 0 {
+						// Empty WAL replay while rebuild was explicitly requested.
+						// Transition only the seed rows whose StartedAt precedes
+						// replaySince — those are stale beyond the hot window and
+						// their continuing "active" status is no longer evidence-
+						// backed. Non-stale active rows in the same seed are left
+						// untouched and will be re-evaluated by the next live tick.
+						staleTransitioned := 0
+						if len(seed) > 0 {
+							incidentStoreRef := incidentStore
+							now := time.Now().UTC()
+							for _, inc := range seed {
+								if inc.Status != incidents.StatusActive {
+									continue
+								}
+								if !inc.StartedAt.Before(replaySince) {
+									continue
+								}
+								row := inc
+								row.Status = incidents.StatusRecovering
+								t := now
+								row.RecoveringAt = &t
+								row.UpdatedAt = now
+								if err := incidentStoreRef.Upsert(context.Background(), row); err != nil {
+									slog.Warn("stale-active rebuild transition failed",
+										"incident_id", row.IncidentID, "err", err)
+									continue
+								}
+								staleTransitioned++
+							}
+							if staleTransitioned > 0 {
+								if err := incidentEngine.Bootstrap(context.Background()); err != nil {
+									slog.Error("incident engine re-bootstrap after stale transition failed", "err", err)
+									os.Exit(1)
+								}
+								slog.Info("incidents rebuild: stale active rows transitioned to recovering",
+									"transitioned", staleTransitioned,
+									"replay_since", replaySince)
+							} else {
+								slog.Warn("incidents rebuild skipped: WAL replay returned no events; preserving SQLite as-is")
+							}
+						}
+					} else {
+						result, err := incidents.Rebuild(context.Background(), incidents.RebuildDeps{
+							Engine: incidentEngine,
+							Reader: incidentReaderAdapter{reader: ingestv2.NewReader(tempIndex)},
+							Now:    time.Now,
+						})
+						if err != nil {
+							m.IncidentRebuildFailures.Inc()
+							slog.Error("incident rebuild failed", "err", err)
+							os.Exit(1)
+						}
+						m.IncidentRebuildDuration.Observe(result.Duration.Seconds())
+						m.IncidentRebuildRows.Add(float64(result.RowsReplaced))
+						slog.Info("incident rebuild complete",
+							"replayed_events", replay.Projected,
+							"rows_replaced", result.RowsReplaced,
+							"duration", result.Duration,
+						)
+					}
+				}
+				incidentHandler := incidents.NewHandler(incidentEngine)
+				mux.Handle("/v1/incidents/active", readCORS(incidentHandler.Active))
+				mux.Handle("/v1/incidents/", readCORS(incidentHandler.Incident))
+				ingestServer.SetDetector(incidentInsightAdapter{engine: incidentEngine})
+
+				// Triage engine: deterministic TriageReport build for a given
+				// incident. Reuses the same v2Reader-backed adapter for blast
+				// queries, the live graph + trace store for first-failure
+				// stories, and the configured signal store. Read-scope auth.
+				triageEng, err := triage.NewEngine(triage.Deps{
+					Incidents: triage.NewIncidentLookupAdapter(incidentEngine),
+					Blast:     triage.NewBlastQueryAdapter(incReader),
+					Story: triage.NewStoryBuilderAdapter(
+						incidentEngine,
+						func(traceID string) (apiv2.StoryResponse, bool) {
+							return v2Reader.TraceStoryByTraceID(traceID)
+						},
+					),
+					Signals:    triage.NewSignalQueryAdapter(signalStore),
+					Alerts:     triage.NewAlertQueryAdapter(signalStore, alertMatchWindow),
+					NextChecks: triage.NewNextChecksAdapter(),
+				})
+				if err != nil {
+					slog.Error("triage engine init failed", "err", err)
+					os.Exit(1)
+				}
+				if err := tools.RegisterTriageTool(reg, triageEng); err != nil {
+					slog.Error("triage tool register failed", "err", err)
+					os.Exit(1)
+				}
+				if err := tools.RegisterTriageReportTool(reg, triageEng); err != nil {
+					slog.Error("triage report tool register failed", "err", err)
+					os.Exit(1)
+				}
+				triageHandler := triagehttp.NewHandler(triageEng)
+				mux.Handle("/v1/triage/", readCORS(triageHandler.Triage))
+
+				incidentRunning = true
+				slog.Info("incident engine enabled", "interval", incidentCfg.TickInterval, "window", incidentCfg.Window)
+			} else {
+				slog.Warn("incidents requested but SQLite not configured; running without incidents")
+			}
+		}
 	} else {
 		mux.Handle("/v1/traces/story", readCORS(ingestServer.TraceStory))
 		mux.Handle("/v1/blast_radius", readCORS(ingestServer.BlastRadius))
@@ -395,6 +617,8 @@ func main() {
 	mux.Handle("/v1/topology", readCORS(ingestServer.Topology))
 	mux.Handle("/v1/stream/dashboard", readCORS(ingestServer.SSEStream))
 	mux.Handle("/v1/insight", readCORS(ingestServer.Insight))
+	alertHandler := alerts.NewHandler(signalStore, incidentEngine, v2Reader, alertMatchWindow)
+	mux.Handle("/v1/alerts", writeAuth(http.HandlerFunc(alertHandler.Alerts)))
 
 	// Deployments — dual method: GET=read, POST=write.
 	mux.Handle("/v1/deployments", http.HandlerFunc(
@@ -453,6 +677,13 @@ func main() {
 	)
 	defer stop()
 
+	if _, ok := signalStore.(*coldstore.SignalStore); ok {
+		go signals.RunRetention(ctx, signalStore, signalRetention, 5*time.Minute, m, slog.Default())
+	}
+	if incidentRunning {
+		go incidentEngine.Run(ctx)
+	}
+
 	go func() {
 		slog.Info("ingest listening", "addr", addr, "graph_hot_window", graphHotWindow)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -460,6 +691,21 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	if otlpGRPCServer != nil {
+		lis, err := net.Listen("tcp", otlpGRPCAddr)
+		if err != nil {
+			slog.Error("otlp grpc listen failed", "addr", otlpGRPCAddr, "err", err)
+			os.Exit(1)
+		}
+		go func() {
+			slog.Info("otlp grpc enabled", "addr", otlpGRPCAddr)
+			if err := otlpGRPCServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				slog.Error("otlp grpc server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
 
 	// ---------------- Embedded CLI ----------------
 
@@ -595,7 +841,7 @@ func main() {
 	// ---------------- Anomaly detection ticker ----------------
 
 	detectCfg := detect.ParseConfig()
-	if detectCfg.Enabled {
+	if detectCfg.Enabled && !incidentRunning {
 		var deploySrc detect.DeploySource
 		if coldDB != nil {
 			deploySrc = coldDB
@@ -603,6 +849,8 @@ func main() {
 		detector := detect.NewDetector(detectCfg, graphStore, traceStore, deploySrc)
 		ingestServer.SetDetector(detector)
 		go detector.Run(ctx)
+	} else if incidentRunning {
+		slog.Info("legacy anomaly detector disabled because v2.1 incident engine is running")
 	}
 
 	// ---------------- Causal inference ticker ----------------
@@ -707,6 +955,20 @@ func main() {
 	} else {
 		slog.Info("ingest shutdown complete")
 	}
+	if otlpGRPCServer != nil {
+		done := make(chan struct{})
+		go func() {
+			otlpGRPCServer.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+			slog.Info("otlp grpc shutdown complete")
+		case <-time.After(5 * time.Second):
+			otlpGRPCServer.Stop()
+			slog.Warn("otlp grpc graceful shutdown timed out; forced stop")
+		}
+	}
 
 	planStore.Close()
 
@@ -778,6 +1040,116 @@ func printHelp() {
 	os.Stdout.WriteString("  waylog \"\033[33msummarize trace <trace-id>\033[0m\"\n")
 	os.Stdout.WriteString("  waylog \"\033[33mexplain request <request-id>\033[0m\"\n")
 	os.Stdout.WriteString("\n\033[2mnotes: MCP stdio: run with MCP_STDIO=1\033[0m\n")
+}
+
+type coldDeployAdapter struct {
+	store *coldstore.SQLiteStore
+}
+
+func (a coldDeployAdapter) DeploymentsInWindow(ctx context.Context, start, end time.Time, serviceFilter string) ([]incidents.Deployment, error) {
+	rows, err := a.store.DeploymentsInWindow(ctx, start, end, serviceFilter)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]incidents.Deployment, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, incidents.Deployment{
+			ID:        row.ID,
+			Service:   row.Service,
+			Version:   row.Version,
+			Env:       row.Env,
+			FirstSeen: row.FirstSeen,
+			LastSeen:  row.LastSeen,
+			Metadata:  row.Metadata,
+		})
+	}
+	return out, nil
+}
+
+type incidentReaderAdapter struct {
+	reader *ingestv2.Reader
+}
+
+func (a incidentReaderAdapter) Errors(f incidents.SearchFilter, limit int) incidents.ErrorsResult {
+	res := a.reader.Errors(toV2SearchFilter(f), nil, limit)
+	return incidents.ErrorsResult{Rows: res.Rows}
+}
+
+func (a incidentReaderAdapter) BlastRadius(f incidents.SearchFilter, key apiv2.BlastKey) apiv2.BlastRadiusResponse {
+	return a.reader.BlastRadius(toV2SearchFilter(f), ingestv2.BlastKeyMode{Key: key})
+}
+
+func (a incidentReaderAdapter) SearchEvents(f incidents.SearchFilter, limit int) []*eventv2.Event {
+	res := a.reader.SearchEvents(toV2SearchFilter(f), nil, limit)
+	return res.Events
+}
+
+func toV2SearchFilter(f incidents.SearchFilter) ingestv2.SearchFilter {
+	return ingestv2.SearchFilter{
+		Service:   f.Service,
+		Statuses:  f.Statuses,
+		ErrorCode: f.ErrorCode,
+		Since:     f.Since,
+		Until:     f.Until,
+	}
+}
+
+type incidentInsightAdapter struct {
+	engine *incidents.Engine
+}
+
+func (a incidentInsightAdapter) Current() *detect.Insight {
+	if a.engine == nil {
+		return nil
+	}
+	inc, err := a.engine.TopActive(context.Background())
+	if err != nil || inc == nil {
+		return nil
+	}
+	return projectIncidentInsight(*inc, time.Now().UTC())
+}
+
+func projectIncidentInsight(inc incidents.Incident, detectedAt time.Time) *detect.Insight {
+	affectedUsers := 0
+	if inc.AffectedUsers != nil {
+		affectedUsers = *inc.AffectedUsers
+	}
+	out := &detect.Insight{
+		DetectedAt:       detectedAt,
+		TopErrorCode:     inc.ErrorFamily.ErrorCode,
+		Lift:             inc.Lift,
+		CurrentCount:     inc.CurrentCount,
+		BaselineCount:    inc.BaselineCount,
+		AffectedRequests: inc.AffectedRequests,
+		AffectedUsers:    affectedUsers,
+		Services:         append([]string(nil), inc.TopServices...),
+		SeverityScore:    float64(inc.Severity),
+	}
+	if len(out.Services) == 0 {
+		out.Services = []string{inc.Service}
+	}
+	for _, ev := range inc.Evidence {
+		if ev.Kind == incidents.EvidenceDeployment && ev.DeployID != "" {
+			out.DeployCorrelation = &detect.DeployCorrelation{
+				DeploymentID: ev.DeployID,
+				Service:      ev.Service,
+				Confidence:   incidentConfidenceFloat(inc.Confidence),
+			}
+			break
+		}
+	}
+	return out
+}
+
+func incidentConfidenceFloat(c incidents.Confidence) float64 {
+	switch c {
+	case incidents.ConfidenceHigh:
+		return 0.9
+	case incidents.ConfidenceMedium:
+		return 0.65
+	default:
+		return 0.35
+	}
 }
 
 func parseSlogLevel(s string) slog.Level {

@@ -16,12 +16,22 @@ func main() {
 	}
 
 	checkoutURL := config.Getenv("CHECKOUT_URL", "http://localhost:9082")
+	ingestURL := config.Getenv("INGEST_URL", "http://localhost:8080")
+	writeKey := config.Getenv("WAYLOG_WRITE_KEY", "")
+	readKey := config.Getenv("WAYLOG_READ_KEY", writeKey)
+	agentKey := config.Getenv("WAYLOG_AGENT_KEY", readKey)
 	gateway := microdemo.NewGatewayHandler(checkoutURL)
+	gateway.SetSignalPoster(microdemo.NewDemoSignalPoster(
+		ingestURL,
+		writeKey,
+	))
+	gateway.SetWaylogAPI(ingestURL, readKey, writeKey, agentKey)
 
 	mux := http.NewServeMux()
 	mux.Handle("/purchase", gateway.PurchaseHandler())
 	mux.HandleFunc("/demo", gateway.ServeDemo)
 	mux.HandleFunc("/demo/burst", gateway.ServeBurst)
+	mux.HandleFunc("/demo/proof", gateway.ServeProof)
 
 	microdemo.RunService("api-gateway", ":9081", mux)
 }

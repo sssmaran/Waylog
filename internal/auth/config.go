@@ -2,14 +2,22 @@ package auth
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
+)
+
+// Profile values control auth defaults and validation strictness.
+const (
+	ProfileDemo = "demo"
+	ProfileDev  = "dev"
+	ProfileProd = "prod"
 )
 
 type AuthConfig struct {
 	WriteKeys []string
 	ReadKeys  []string
 	AgentKeys []string
+
+	Profile string // "demo", "dev", or "prod". Defaults to "dev" when unset.
 
 	DashboardMode string // "off", "basic", "key"
 	DashboardUser string // for basic mode
@@ -20,6 +28,16 @@ type AuthConfig struct {
 
 func ParseConfig(env map[string]string) (AuthConfig, error) {
 	var cfg AuthConfig
+
+	profile := strings.ToLower(strings.TrimSpace(env["WAYLOG_PROFILE"]))
+	switch profile {
+	case "":
+		cfg.Profile = ProfileDev
+	case ProfileDemo, ProfileDev, ProfileProd:
+		cfg.Profile = profile
+	default:
+		return cfg, fmt.Errorf("WAYLOG_PROFILE: must be one of demo, dev, prod; got %q", profile)
+	}
 
 	legacyKey := strings.TrimSpace(env["WAYLOG_API_KEY"])
 	writeKey := strings.TrimSpace(env["WAYLOG_WRITE_KEY"])
@@ -61,8 +79,7 @@ func ParseConfig(env map[string]string) (AuthConfig, error) {
 
 	sessionSecret := strings.TrimSpace(env["DASHBOARD_SESSION_SECRET"])
 	if cfg.DashboardMode != "off" {
-		profile := strings.TrimSpace(env["WAYLOG_PROFILE"])
-		if sessionSecret == "" && profile == "prod" {
+		if sessionSecret == "" && cfg.Profile == ProfileProd {
 			return cfg, fmt.Errorf("DASHBOARD_SESSION_SECRET is required when DASHBOARD_AUTH is enabled in prod profile")
 		}
 		if sessionSecret != "" {
@@ -76,9 +93,20 @@ func ParseConfig(env map[string]string) (AuthConfig, error) {
 		return cfg, fmt.Errorf("WAYLOG_READ_KEY is set but DASHBOARD_AUTH is off; the dashboard cannot authenticate against read APIs without a session")
 	}
 
-	profile := strings.TrimSpace(env["WAYLOG_PROFILE"])
-	if profile == "prod" && len(cfg.ReadKeys) == 0 {
-		slog.Warn("WAYLOG_READ_KEY is unset in prod profile; read APIs are open to all")
+	if cfg.Profile == ProfileProd {
+		var missing []string
+		if len(cfg.WriteKeys) == 0 {
+			missing = append(missing, "WAYLOG_WRITE_KEY")
+		}
+		if len(cfg.ReadKeys) == 0 {
+			missing = append(missing, "WAYLOG_READ_KEY")
+		}
+		if len(cfg.AgentKeys) == 0 {
+			missing = append(missing, "WAYLOG_AGENT_KEY")
+		}
+		if len(missing) > 0 {
+			return cfg, fmt.Errorf("WAYLOG_PROFILE=prod requires non-empty %s — refusing to boot with an open auth surface", strings.Join(missing, ", "))
+		}
 	}
 
 	return cfg, nil

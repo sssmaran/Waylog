@@ -1,0 +1,21 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  otlp/waylog:
+    endpoint: ${env:WAYLOG_OTLP_GRPC_ENDPOINT}
+    tls:
+      insecure: true
+    headers:
+      authorization: Bearer ${env:WAYLOG_WRITE_KEY}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp/waylog]

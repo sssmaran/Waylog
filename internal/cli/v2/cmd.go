@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const version = "v2-phase-2"
+const version = "v2.1-triage"
 
 type cliConfig struct {
 	addr    string
@@ -49,6 +49,10 @@ func RunCLI(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return runCapabilities(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "recent":
 		return runRecent(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "incidents":
+		return runIncidents(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "incident":
+		return runIncident(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "errors":
 		return runErrors(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "event":
@@ -61,6 +65,8 @@ func RunCLI(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return runBlast(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "search":
 		return runSearch(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "triage":
+		return runTriage(ctx, client, cfg, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", rest[0])
 		printUsage(stderr)
@@ -180,6 +186,115 @@ func runRecent(ctx context.Context, client *Client, cfg cliConfig, args []string
 	}
 	resp, err := client.Recent(ctx, RecentParams{Window: *window, Service: *service, Status: *status, Limit: *limit, Cursor: *cursor, IncludeSuppressed: *includeSuppressed})
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderRecent)
+}
+
+func runIncidents(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 0 {
+		return usage(stderr, "usage: waylog incidents [--json]")
+	}
+	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
+		return gate
+	}
+	resp, err := client.Incidents(ctx)
+	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderIncidents)
+}
+
+func runIncident(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
+	incidentID, snapshot, err := parseIncidentArgs(args)
+	if err != nil {
+		return usage(stderr, err.Error())
+	}
+	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
+		return gate
+	}
+	if snapshot {
+		if cfg.json {
+			resp, err := client.IncidentSnapshotJSON(ctx, incidentID)
+			return renderOrError(stdout, stderr, true, resp, err, RenderIncidentSnapshot)
+		}
+		text, err := client.IncidentSnapshotText(ctx, incidentID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitCodeForError(err)
+		}
+		fmt.Fprint(stdout, text)
+		return 0
+	}
+	resp, err := client.Incident(ctx, incidentID)
+	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderIncident)
+}
+
+func parseIncidentArgs(args []string) (string, bool, error) {
+	incidentID := ""
+	snapshot := false
+	for _, arg := range args {
+		switch {
+		case arg == "--snapshot":
+			snapshot = true
+		case strings.HasPrefix(arg, "-"):
+			return "", false, fmt.Errorf("unknown flag: %s", arg)
+		default:
+			if incidentID != "" {
+				return "", false, errors.New("usage: waylog incident <incident_id> [--snapshot] [--json]")
+			}
+			incidentID = arg
+		}
+	}
+	if incidentID == "" {
+		return "", false, errors.New("usage: waylog incident <incident_id> [--snapshot] [--json]")
+	}
+	return incidentID, snapshot, nil
+}
+
+func runTriage(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
+	id, window, snapshot, err := parseTriageArgs(args)
+	if err != nil {
+		return usage(stderr, err.Error())
+	}
+	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
+		return gate
+	}
+	rep, err := client.Triage(ctx, id, TriageParams{Window: window, Snapshot: snapshot})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitCodeForError(err)
+	}
+	if cfg.json {
+		if err := renderJSON(stdout, rep); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		return 0
+	}
+	return RenderTriage(stdout, rep)
+}
+
+func parseTriageArgs(args []string) (id, window string, snapshot bool, err error) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--snapshot":
+			snapshot = true
+		case arg == "--window":
+			if i+1 >= len(args) {
+				return "", "", false, fmt.Errorf("--window requires a value")
+			}
+			window = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--window="):
+			window = strings.TrimPrefix(arg, "--window=")
+		case strings.HasPrefix(arg, "-"):
+			return "", "", false, fmt.Errorf("unknown flag: %s", arg)
+		case id == "":
+			id = arg
+		default:
+			return "", "", false, fmt.Errorf("unexpected argument: %s", arg)
+		}
+	}
+	if id == "" {
+		return "", "", false, fmt.Errorf("usage: waylog triage <incident_id> [--window 15m] [--snapshot]")
+	}
+	return id, window, snapshot, nil
 }
 
 func runEvent(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
@@ -423,6 +538,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   waylog capabilities [--json]
   waylog recent [--window <dur>] [--service <svc>] [--status <csv>] [--limit <n>] [--cursor <c>] [--include-suppressed] [--json]
+  waylog incidents [--json]
+  waylog incident <incident_id> [--snapshot] [--json]
   waylog errors [--window <dur>] [--service <svc>] [--limit <n>] [--cursor <c>] [--json]
   waylog event <event_id> [--json]
   waylog trace <trace_id> [--json]
@@ -431,6 +548,8 @@ func printUsage(w io.Writer) {
   waylog search <query> [--service <svc>] [--status <csv>] [--window <dur>] [--limit <n>] [--cursor <c>] [--json]
 
 Recommended loop:
+  waylog incidents
+  waylog incident <incident_id>
   waylog recent
   waylog errors --window 15m
   waylog blast checkout:payment.charge:PMT_502 --window 15m

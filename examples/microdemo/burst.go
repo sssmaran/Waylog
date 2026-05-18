@@ -14,6 +14,7 @@ import (
 const (
 	defaultBurstRequests    = 50
 	defaultBurstConcurrency = 10
+	incidentSeedPayments    = 6
 	maxBurstRequests        = 250
 	maxBurstConcurrency     = 50
 	maxBurstSamples         = 5
@@ -27,6 +28,7 @@ type BurstRequest struct {
 type BurstSummary struct {
 	Requested      BurstRequest   `json:"requested"`
 	Accepted       BurstRequest   `json:"accepted"`
+	Signals        []SignalResult `json:"signals,omitempty"`
 	DurationMs     int64          `json:"duration_ms"`
 	ByScenario     map[string]int `json:"by_scenario"`
 	OK             int            `json:"ok"`
@@ -87,6 +89,20 @@ func normalizeBurstRequest(raw BurstRequest) (requested, accepted BurstRequest) 
 	return requested, accepted
 }
 
+func pickBurstScenarioForIndex(i, requests int) string {
+	if i < incidentSeedPaymentCount(requests) {
+		return ScenarioPayment502
+	}
+	return pickBurstScenario()
+}
+
+func incidentSeedPaymentCount(requests int) int {
+	if requests < incidentSeedPayments {
+		return requests
+	}
+	return incidentSeedPayments
+}
+
 func runBurst(ctx context.Context, dispatch http.Handler, raw BurstRequest) BurstSummary {
 	requested, accepted := normalizeBurstRequest(raw)
 	summary := BurstSummary{
@@ -112,11 +128,11 @@ func runBurst(ctx context.Context, dispatch http.Handler, raw BurstRequest) Burs
 		// concurrency instead of stacking up `requests` blocked goroutines.
 		sem <- struct{}{}
 		wg.Add(1)
-		go func() {
+		scenario := pickBurstScenarioForIndex(i, accepted.Requests)
+		go func(scenario string) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			scenario := pickBurstScenario()
 			payload, _ := json.Marshal(PurchaseRequest{
 				SKU:      "X1",
 				Scenario: scenario,
@@ -155,7 +171,7 @@ func runBurst(ctx context.Context, dispatch http.Handler, raw BurstRequest) Burs
 					summary.SampleTraceIDs = append(summary.SampleTraceIDs, resp.TraceID)
 				}
 			}
-		}()
+		}(scenario)
 	}
 	wg.Wait()
 	summary.DurationMs = time.Since(start).Milliseconds()

@@ -119,6 +119,58 @@ type BlastRadiusResponse struct {
 	SampleTraces     []string `json:"sample_traces"`
 }
 
+type IncidentEvidence struct {
+	Kind       string         `json:"kind"`
+	Title      string         `json:"title"`
+	Detail     string         `json:"detail,omitempty"`
+	Service    string         `json:"service,omitempty"`
+	SignalID   string         `json:"signal_id,omitempty"`
+	DeployID   string         `json:"deployment_id,omitempty"`
+	TraceID    string         `json:"trace_id,omitempty"`
+	OccurredAt time.Time      `json:"occurred_at"`
+	Fields     map[string]any `json:"fields,omitempty"`
+}
+
+type Incident struct {
+	IncidentID              string             `json:"incident_id"`
+	Env                     string             `json:"env"`
+	Service                 string             `json:"service"`
+	ErrorFamily             ErrorFamily        `json:"error_family"`
+	Status                  string             `json:"status"`
+	Cause                   string             `json:"cause"`
+	Confidence              string             `json:"confidence"`
+	Severity                int                `json:"severity"`
+	StartedAt               time.Time          `json:"started_at"`
+	UpdatedAt               time.Time          `json:"updated_at"`
+	LastSeenAt              time.Time          `json:"last_seen_at"`
+	RecoveringAt            *time.Time         `json:"recovering_at,omitempty"`
+	ResolvedAt              *time.Time         `json:"resolved_at,omitempty"`
+	AffectedRequests        int                `json:"affected_requests"`
+	AffectedUsers           *int               `json:"affected_users,omitempty"`
+	AffectedServices        int                `json:"affected_services"`
+	TopServices             []string           `json:"top_services"`
+	SampleTraces            []string           `json:"sample_traces"`
+	Evidence                []IncidentEvidence `json:"evidence"`
+	NextChecks              []string           `json:"next_checks"`
+	InstrumentationWarnings []string           `json:"instrumentation_warnings,omitempty"`
+	Lift                    float64            `json:"lift"`
+	BaselineCount           int                `json:"baseline_count"`
+	CurrentCount            int                `json:"current_count"`
+}
+
+type IncidentListResponse struct {
+	Incidents []Incident `json:"incidents"`
+}
+
+type IncidentDetailResponse struct {
+	Incident Incident `json:"incident"`
+}
+
+type IncidentSnapshotResponse struct {
+	Snapshot string   `json:"snapshot"`
+	Incident Incident `json:"incident"`
+}
+
 func FormatErrorFamily(f ErrorFamily) string {
 	return escapeErrorFamilyPart(f.Service) + ":" + escapeErrorFamilyPart(f.Step) + ":" + escapeErrorFamilyPart(f.ErrorCode)
 }

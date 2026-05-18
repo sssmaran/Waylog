@@ -15,6 +15,14 @@ type PlanStep struct {
 	Params json.RawMessage `json:"params"`
 }
 
+// PlanExecuteRequest is the accepted body for POST /v1/plans/execute.
+// Callers may provide explicit steps or a built-in template shorthand.
+type PlanExecuteRequest struct {
+	Steps    []PlanStep       `json:"steps"`
+	Template string           `json:"template"`
+	Params   *json.RawMessage `json:"params"`
+}
+
 // PlanStepError is a structured error for a plan step.
 type PlanStepError struct {
 	Code      string `json:"code"`
@@ -41,6 +49,49 @@ type PlanResult struct {
 	Status    string           `json:"status"`
 	HaltedAt  *int             `json:"halted_at,omitempty"`
 	Error     *PlanStepError   `json:"error,omitempty"`
+}
+
+// ExpandPlanRequest turns a supported template shorthand into ordinary plan steps.
+func ExpandPlanRequest(req PlanExecuteRequest) ([]PlanStep, error) {
+	if len(req.Steps) > 0 && strings.TrimSpace(req.Template) != "" {
+		return nil, fmt.Errorf("provide either steps or template, not both")
+	}
+	if strings.TrimSpace(req.Template) == "" {
+		return req.Steps, nil
+	}
+
+	switch strings.TrimSpace(req.Template) {
+	case "triage":
+		return expandTriagePlan(req.Params)
+	default:
+		return nil, fmt.Errorf("unknown plan template %q", req.Template)
+	}
+}
+
+func expandTriagePlan(raw *json.RawMessage) ([]PlanStep, error) {
+	if raw == nil || len(*raw) == 0 {
+		return nil, fmt.Errorf("triage template requires params.incident_id")
+	}
+	var params struct {
+		IncidentID string `json:"incident_id"`
+		Window     string `json:"window,omitempty"`
+		Snapshot   bool   `json:"snapshot"`
+	}
+	if err := json.Unmarshal(*raw, &params); err != nil {
+		return nil, fmt.Errorf("triage template params: %w", err)
+	}
+	if strings.TrimSpace(params.IncidentID) == "" {
+		return nil, fmt.Errorf("triage template requires params.incident_id")
+	}
+	stepParams, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("triage template params: %w", err)
+	}
+	return []PlanStep{{
+		ID:     "triage",
+		Tool:   "triage_incident",
+		Params: stepParams,
+	}}, nil
 }
 
 // statusForHalt returns the appropriate status string for a halted plan.

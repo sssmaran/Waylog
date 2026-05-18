@@ -6,7 +6,25 @@ Reference for configuring the Waylog ingest server and SDK. All variables are re
 
 | Variable | Purpose |
 |---|---|
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Required when server-side Ask/tool flows use Gemini |
+| Provider credentials | Required only when natural-language Ask should call a configured LLM provider. Set the matching key for the selected provider: `GEMINI_API_KEY` or `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` |
+
+## LLM provider
+
+Deterministic tools, plans, triage, MCP, and read APIs do not require an LLM provider. The provider is only used by natural-language Ask flows. If Ask cannot construct the selected provider, it returns a provider-agnostic "LLM provider not configured" error.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WAYLOG_LLM_PROVIDER` | `none` unless a supported provider key is present | LLM provider for Ask. Supported values: `none`, `gemini`, `anthropic`, `openai` |
+| `WAYLOG_LLM_MODEL` | provider default | Provider-neutral model override. Takes precedence over provider-specific model variables |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini-specific model override when `WAYLOG_LLM_MODEL` is unset |
+| `GEMINI_API_BASE` | Gemini API default | Gemini-specific API base URL override |
+| `GEMINI_TOOL_MODE` | `text` | Gemini-specific tool-calling mode |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key for `WAYLOG_LLM_PROVIDER=anthropic` |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Anthropic-specific model override when `WAYLOG_LLM_MODEL` is unset |
+| `ANTHROPIC_API_BASE` | Anthropic API default | Anthropic-specific API base URL override |
+| `OPENAI_API_KEY` | — | OpenAI API key for `WAYLOG_LLM_PROVIDER=openai` |
+| `OPENAI_MODEL` | `gpt-5.4-mini` | OpenAI-specific model override when `WAYLOG_LLM_MODEL` is unset |
+| `OPENAI_API_BASE` | OpenAI API default | OpenAI-specific API base URL override |
 
 ## Auth
 
@@ -14,30 +32,34 @@ Scoped keys. See the Auth section of the [README](../README.md).
 
 | Variable | Scope |
 |---|---|
-| `WAYLOG_WRITE_KEY` | Write auth for `/v1/events` (preferred) |
+| `WAYLOG_PROFILE`   | Auth strictness profile: `demo` (open), `dev` (default — open OTLP, optional auth), `prod` (refuses to boot without write/read/agent keys, and without write auth on OTLP HTTP+gRPC) |
+| `WAYLOG_WRITE_KEY` | Write auth for `/v1/events`, `/v1/otlp/v1/traces`, OTLP/gRPC, `/v1/signals`, `/v1/alerts` (preferred) |
 | `WAYLOG_API_KEY`   | Legacy alias for write scope. Supports `Authorization: Bearer` and `X-API-Key` headers |
 | `WAYLOG_READ_KEY`  | Read auth for read endpoints + dashboard session validation |
 | `WAYLOG_AGENT_KEY` | Agent auth for `/v1/tools/*`, `/v1/ask`, `/v1/plans/*`. No session fallback |
 | `DASHBOARD_AUTH`   | Dashboard auth mode: `off` \| `basic:<user>:<pass>` \| `key:<secret>` |
-| `DASHBOARD_SESSION_SECRET` | Session signing key (derived from `DASHBOARD_AUTH` if unset) |
+| `DASHBOARD_SESSION_SECRET` | Session signing key (derived from `DASHBOARD_AUTH` if unset; required when `WAYLOG_PROFILE=prod`) |
 
-`ParseConfig` validates the auth matrix at startup and refuses to boot with an unsafe combination.
+`ParseConfig` validates the auth matrix at startup and refuses to boot with an unsafe combination. When `WAYLOG_PROFILE=prod`, all three scoped keys (`WAYLOG_WRITE_KEY`, `WAYLOG_READ_KEY`, `WAYLOG_AGENT_KEY`) are required, and OTLP cannot run unauthenticated.
 
 ## Ingest server
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `INGEST_ADDR` | `:8080` | Listen address |
-| `MAX_BODY_BYTES` | `1048576` (1 MB) | Max body size for `/v1/events` |
+| `OTLP_ENABLED` | `true` | Enable OTLP trace ingest over HTTP and gRPC |
+| `OTLP_GRPC_ADDR` | `:4317` | OTLP/gRPC trace receiver listen address. Set empty to disable the gRPC receiver. For single-host installs, bind `127.0.0.1:4317`. When `WAYLOG_PROFILE=prod`, the server refuses to boot if OTLP is enabled without `WAYLOG_WRITE_KEY` |
+| `MAX_BODY_BYTES` | `1048576` (1 MB) | Max body size for `/v1/events`, `/v1/otlp/v1/traces`, and OTLP/gRPC receive messages |
 | `READ_HEADER_TIMEOUT` | `5s` | HTTP read header timeout |
 | `READ_TIMEOUT` | `10s` | HTTP read timeout |
 | `WRITE_TIMEOUT` | `10s` | HTTP write timeout |
 | `IDLE_TIMEOUT` | `120s` | HTTP idle timeout |
 | `CORS_ORIGIN` | `*` | Allowed CORS origin for read APIs |
+| `ALERT_MATCH_WINDOW` | `15m` | Window for matching `/v1/alerts` to active incidents by `env + service + error_code`; capped at `24h` |
 
 ## CLI
 
-The `waylog` CLI calls the running ingest server's v2 read APIs. The server must run with `WAYLOG_V2_READS=true`.
+The `waylog` CLI calls the running ingest server's v2 read APIs. The server runs with `WAYLOG_V2_READS=true` by default; only set it to `false` for legacy v1-only stacks.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -56,6 +78,17 @@ The `waylog` CLI calls the running ingest server's v2 read APIs. The server must
 | `EVENT_LOG_SYNC` | `true` | Per-write fsync. Set `false` for dev/load testing |
 | `EVENT_LOG_MAX_FILE_MB` | `50` | Rotation size. `0` disables rotation |
 | `EVENT_LOG_RETENTION` | `72h` | Event log retention. Must be positive |
+| `WAYLOG_SIGNAL_RETENTION` | `72h` | Production-context signal retention. Must be positive. `/v1/signals` requires `SQLITE_PATH` |
+| `WAYLOG_INCIDENTS_ENABLED` | `true` | Enable the v2.1 incident engine when `SQLITE_PATH` is set and `WAYLOG_V2_READS=true` |
+| `WAYLOG_INCIDENT_TICK_INTERVAL` | `30s` | Incident engine evaluation interval |
+| `WAYLOG_INCIDENT_WINDOW` | `10m` | Current error-family spike window |
+| `WAYLOG_INCIDENT_MIN_COUNT` | `5` | Minimum current-window failures needed to open an incident |
+| `WAYLOG_INCIDENT_MIN_LIFT` | `3.0` | Minimum current-vs-baseline lift when the family already exists in the baseline window |
+| `WAYLOG_INCIDENT_RESOLVE_AFTER` | `2m` | Time without renewed matching failures before a recovering incident resolves |
+| `WAYLOG_DEPLOY_CORRELATION_WINDOW` | `15m` | Window used to attach deploy signals and deployment records as incident evidence |
+| `WAYLOG_INCIDENT_SAMPLE_LIMIT` | `5` | Maximum persisted sample traces per incident |
+| `WAYLOG_REBUILD_INCIDENTS_ON_START` | `false` | Rebuild non-resolved incident rows at startup from the schema-2.0 WAL hot window plus signals |
+| `WAYLOG_INCIDENT_REBUILD_MAX_EVENTS` | `250000` | Safety cap for startup incident rebuild replay |
 | `WAYLOG_V2_DEDUP_CAPACITY` | `65536` | Recent schema-2.0 `event_id` dedupe cache capacity |
 | `GRAPH_HOT_WINDOW` | `GRAPH_RETENTION` or `24h` | Recent in-memory graph/index retention window and max v2 read window |
 | `GRAPH_RETENTION` | `24h` | Hot graph retention. Nodes older than this are pruned every snapshot tick |
@@ -74,7 +107,7 @@ See [Internals](internals.md) for the full durability model.
 | Variable | Default | Purpose |
 |---|---|---|
 | `GRAPH_UI` | `false` | Enable optional graph topology endpoint `/v1/graph/topology` |
-| `WAYLOG_V2_READS` | `false` | Route v2 read endpoints to the schema-2.0 recent index |
+| `WAYLOG_V2_READS` | `true` | Route v2 read endpoints to the schema-2.0 recent index. Set `false` only for legacy v1-only stacks |
 | `CAUSAL_ENABLED` | `false` | Enable shadow-mode causal inference |
 | `CAUSAL_INTERVAL` | `30s` | Causal inference ticker interval |
 | `HAPPY_SAMPLE_RATE_PCT` | `2` | Success-event sampling rate. Set `100` in dev profiles |

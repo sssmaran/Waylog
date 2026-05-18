@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,8 +135,14 @@ type Server struct {
 
 	// OTLP capability flag — reported by /v1/capabilities. Set via
 	// ServerConfig when the OTLP handler is mounted in main.go.
-	otlpEnabled    bool
-	v2ReadsEnabled bool
+	otlpEnabled               bool
+	otlpGRPCEnabled           bool
+	otlpGRPCAddr              string
+	v2ReadsEnabled            bool
+	incidentsEnabled          bool
+	incidentsPersistent       bool
+	incidentsRebuildSupported bool
+	profile                   string
 
 	// SSE
 	sseHub               *SSEHub
@@ -178,31 +183,37 @@ func (s *Server) SetCausalRunResult(err error) {
 
 // ServerConfig holds configuration for creating a new Server.
 type ServerConfig struct {
-	Store               *store.Store
-	TraceStore          *tracestore.Store
-	Sampler             *sampler.Sampler
-	Metrics             *metrics.Metrics
-	MaxBodyBytes        int64
-	EventLogDir         string
-	StartTime           time.Time
-	SampleRatePct       int // 0 means use sampler's default from env
-	AskProvider         llm.Provider
-	AskRegistry         *tools.Registry
-	AskMaxStepsDefault  int
-	AskMaxStepsMax      int
-	DashboardRefreshSec int
-	PrometheusURL       string
-	GrafanaURL          string
-	GraphUI             bool
-	DedupCache          *DedupCache
-	AgentKey            string
-	TrustProxy          bool
-	ColdWriter          *coldstore.BatchWriter
-	ColdStore           coldstore.Store
-	PlanStore           *PlanStore
-	GraphHotWindow      time.Duration
-	OTLPEnabled         bool
-	V2ReadsEnabled      bool
+	Store                    *store.Store
+	TraceStore               *tracestore.Store
+	Sampler                  *sampler.Sampler
+	Metrics                  *metrics.Metrics
+	MaxBodyBytes             int64
+	EventLogDir              string
+	StartTime                time.Time
+	SampleRatePct            int // 0 means use sampler's default from env
+	AskProvider              llm.Provider
+	AskRegistry              *tools.Registry
+	AskMaxStepsDefault       int
+	AskMaxStepsMax           int
+	DashboardRefreshSec      int
+	PrometheusURL            string
+	GrafanaURL               string
+	GraphUI                  bool
+	DedupCache               *DedupCache
+	AgentKey                 string
+	TrustProxy               bool
+	ColdWriter               *coldstore.BatchWriter
+	ColdStore                coldstore.Store
+	PlanStore                *PlanStore
+	GraphHotWindow           time.Duration
+	OTLPEnabled              bool
+	OTLPGRPCEnabled          bool
+	OTLPGRPCAddr             string
+	V2ReadsEnabled           bool
+	IncidentsEnabled         bool
+	IncidentsPersistent      bool
+	IncidentRebuildSupported bool
+	Profile                  string
 }
 
 // NewServer creates a new ingest server with the given configuration.
@@ -216,33 +227,39 @@ func NewServer(cfg ServerConfig) *Server {
 		startTime = time.Now()
 	}
 	s := &Server{
-		store:               cfg.Store,
-		traceStore:          cfg.TraceStore,
-		builder:             build.NewBuilder(),
-		sampler:             cfg.Sampler,
-		metrics:             cfg.Metrics,
-		maxBodyBytes:        maxBody,
-		startTime:           startTime,
-		EventLogDir:         cfg.EventLogDir,
-		sampleRatePct:       cfg.SampleRatePct,
-		askProvider:         cfg.AskProvider,
-		askRegistry:         cfg.AskRegistry,
-		askMaxStepsDefault:  cfg.AskMaxStepsDefault,
-		askMaxStepsMax:      cfg.AskMaxStepsMax,
-		dashboardRefreshSec: cfg.DashboardRefreshSec,
-		prometheusURL:       cfg.PrometheusURL,
-		grafanaURL:          cfg.GrafanaURL,
-		graphUI:             cfg.GraphUI,
-		dedupCache:          cfg.DedupCache,
-		agentKey:            cfg.AgentKey,
-		trustProxy:          cfg.TrustProxy,
-		coldWriter:          cfg.ColdWriter,
-		coldStore:           cfg.ColdStore,
-		planStore:           cfg.PlanStore,
-		graphHotWindow:      cfg.GraphHotWindow,
-		otlpEnabled:         cfg.OTLPEnabled,
-		v2ReadsEnabled:      cfg.V2ReadsEnabled,
-		replayStatus:        "none",
+		store:                     cfg.Store,
+		traceStore:                cfg.TraceStore,
+		builder:                   build.NewBuilder(),
+		sampler:                   cfg.Sampler,
+		metrics:                   cfg.Metrics,
+		maxBodyBytes:              maxBody,
+		startTime:                 startTime,
+		EventLogDir:               cfg.EventLogDir,
+		sampleRatePct:             cfg.SampleRatePct,
+		askProvider:               cfg.AskProvider,
+		askRegistry:               cfg.AskRegistry,
+		askMaxStepsDefault:        cfg.AskMaxStepsDefault,
+		askMaxStepsMax:            cfg.AskMaxStepsMax,
+		dashboardRefreshSec:       cfg.DashboardRefreshSec,
+		prometheusURL:             cfg.PrometheusURL,
+		grafanaURL:                cfg.GrafanaURL,
+		graphUI:                   cfg.GraphUI,
+		dedupCache:                cfg.DedupCache,
+		agentKey:                  cfg.AgentKey,
+		trustProxy:                cfg.TrustProxy,
+		coldWriter:                cfg.ColdWriter,
+		coldStore:                 cfg.ColdStore,
+		planStore:                 cfg.PlanStore,
+		graphHotWindow:            cfg.GraphHotWindow,
+		otlpEnabled:               cfg.OTLPEnabled,
+		otlpGRPCEnabled:           cfg.OTLPGRPCEnabled,
+		otlpGRPCAddr:              cfg.OTLPGRPCAddr,
+		v2ReadsEnabled:            cfg.V2ReadsEnabled,
+		incidentsEnabled:          cfg.IncidentsEnabled,
+		incidentsPersistent:       cfg.IncidentsPersistent,
+		incidentsRebuildSupported: cfg.IncidentRebuildSupported,
+		profile:                   cfg.Profile,
+		replayStatus:              "none",
 	}
 	if s.sampler == nil {
 		s.sampler = sampler.New(sampler.LoadConfigFromEnv())
@@ -396,6 +413,12 @@ func (s *Server) AcceptedPtr() *atomic.Uint64 { return &s.accepted }
 // SetOTLPEnabled toggles the OTLP capability flag reported by /v1/capabilities.
 // Called once at startup after the OTLP route has been registered.
 func (s *Server) SetOTLPEnabled(enabled bool) { s.otlpEnabled = enabled }
+
+// SetOTLPGRPC marks the OTLP/gRPC trace receiver as mounted.
+func (s *Server) SetOTLPGRPC(enabled bool, addr string) {
+	s.otlpGRPCEnabled = enabled
+	s.otlpGRPCAddr = addr
+}
 
 // EventSearch handles GET /v1/events/search.
 // Both cold-store and JSONL paths return the same []coldstore.SearchResult shape.
@@ -559,18 +582,25 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	askEnabled, model, toolMode := s.askCapabilityState()
+	askState := s.askCapabilityState()
 	hotWindow := s.effectiveGraphHotWindow()
 	_, hotWindowSource := runtimeGraphHotWindow()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"ask": map[string]any{
-			"enabled":           askEnabled,
-			"model":             model,
-			"tool_mode":         toolMode,
+			"enabled":           askState.AskEnabled,
+			"model":             askState.Model,
+			"tool_mode":         askState.ToolMode,
 			"max_steps_default": s.askMaxStepsDefault,
 			"max_steps_max":     s.askMaxStepsMax,
+		},
+		"llm": map[string]any{
+			"provider":    askState.Provider,
+			"model":       askState.Model,
+			"tool_mode":   askState.ToolMode,
+			"configured":  askState.Configured,
+			"ask_enabled": askState.AskEnabled,
 		},
 		"dashboard": map[string]any{
 			"refresh_interval_sec": s.dashboardRefreshSec,
@@ -582,9 +612,25 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 		"graph": s.graphUI,
 		"otlp": map[string]any{
 			"http_traces": s.otlpEnabled,
+			"grpc_traces": s.otlpGRPCEnabled,
+			"grpc_addr":   s.otlpGRPCAddr,
 		},
 		"v2_reads": map[string]any{
 			"enabled": s.v2ReadsEnabled,
+		},
+		"profile": s.profile,
+		"incidents": map[string]any{
+			"enabled":    s.incidentsEnabled,
+			"persistent": s.incidentsPersistent,
+			"rebuild": map[string]any{
+				"supported": s.incidentsRebuildSupported,
+				"scope": func() string {
+					if s.incidentsRebuildSupported {
+						return "hot-window"
+					}
+					return ""
+				}(),
+			},
 		},
 		"architecture": map[string]any{
 			"flattened": true,
@@ -1785,40 +1831,42 @@ func normalizeJSONValue(v any) any {
 	return out
 }
 
-func (s *Server) askProviderFromEnv() (llm.Provider, string, string, error) {
-	key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
-	if key == "" {
-		key = strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
-	}
-	if key == "" {
-		return nil, "", "", errors.New("gemini api key is not configured")
-	}
-
-	client := llm.NewGeminiClient(key)
-	model := strings.TrimSpace(os.Getenv("GEMINI_MODEL"))
-	base := strings.TrimSpace(os.Getenv("GEMINI_API_BASE"))
-	mode := strings.TrimSpace(os.Getenv("GEMINI_TOOL_MODE"))
-	if model != "" {
-		client.Model = model
-	}
-	if base != "" {
-		client.BaseURL = base
-	}
-	if mode != "" {
-		client.ToolMode = mode
-	}
-	return client, client.Model, client.ToolMode, nil
+type askCapability struct {
+	Provider   string
+	Model      string
+	ToolMode   string
+	Configured bool
+	AskEnabled bool
 }
 
-func (s *Server) askCapabilityState() (bool, string, string) {
-	if s.askProvider != nil {
-		return true, "", ""
-	}
-	_, model, toolMode, err := s.askProviderFromEnv()
+func (s *Server) askProviderFromEnv() (llm.Provider, string, string, error) {
+	sel, err := llm.SelectFromEnv()
 	if err != nil {
-		return false, "", ""
+		return nil, "", "", err
 	}
-	return true, model, toolMode
+	if !sel.AskEnabled {
+		return nil, "", "", llm.ErrProviderNotConfigured
+	}
+	return sel.Impl, sel.Model, sel.ToolMode, nil
+}
+
+// askCapabilityState reports current LLM provider state for /v1/capabilities.
+// When s.askProvider != nil (test injection), provider is reported as "custom".
+func (s *Server) askCapabilityState() askCapability {
+	if s.askProvider != nil {
+		return askCapability{Provider: "custom", Configured: true, AskEnabled: true}
+	}
+	sel, err := llm.SelectFromEnv()
+	if err != nil {
+		return askCapability{Provider: "none"}
+	}
+	return askCapability{
+		Provider:   sel.Provider,
+		Model:      sel.Model,
+		ToolMode:   sel.ToolMode,
+		Configured: sel.Configured,
+		AskEnabled: sel.AskEnabled,
+	}
 }
 
 func attrToInt64(v any) int64 {
@@ -2255,9 +2303,7 @@ func (s *Server) PlanExecute(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	var req struct {
-		Steps []PlanStep `json:"steps"`
-	}
+	var req PlanExecuteRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		if dedupIsExecutor {
 			dedupCompleted = true
@@ -2267,6 +2313,8 @@ func (s *Server) PlanExecute(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON: "+err.Error(), false, APIMeta{RequestID: reqID})
 		return
 	}
+
+	steps, expandErr := ExpandPlanRequest(req)
 
 	registry := s.askRegistry
 	if registry == nil {
@@ -2279,7 +2327,17 @@ func (s *Server) PlanExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if errs := ValidatePlan(req.Steps, registry); len(errs) > 0 {
+	if expandErr != nil {
+		if dedupIsExecutor {
+			dedupCompleted = true
+			s.dedupCache.Complete(r.Method, r.URL.Path, s.dedupPrincipal(r), idempKey, body,
+				http.StatusBadRequest, nil, &APIError{Code: "INVALID_PLAN", Message: expandErr.Error()}, time.Since(start).Milliseconds())
+		}
+		respondError(w, r, http.StatusBadRequest, "INVALID_PLAN", expandErr.Error(), false, APIMeta{RequestID: reqID})
+		return
+	}
+
+	if errs := ValidatePlan(steps, registry); len(errs) > 0 {
 		msg := strings.Join(errs, "; ")
 		if dedupIsExecutor {
 			dedupCompleted = true
@@ -2295,7 +2353,7 @@ func (s *Server) PlanExecute(w http.ResponseWriter, r *http.Request) {
 		planID = s.planStore.Create()
 	}
 
-	result := s.executePlanWithProgress(r.Context(), req.Steps, registry, planID)
+	result := s.executePlanWithProgress(r.Context(), steps, registry, planID)
 
 	if result.PlanID != "" {
 		w.Header().Set("X-Plan-ID", result.PlanID)

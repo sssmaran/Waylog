@@ -28,8 +28,14 @@ var uiHTML []byte
 
 type GatewayHandler struct {
 	checkoutURL string
+	ingestURL   string
+	readKey     string
+	writeKey    string
+	agentKey    string
 	client      *http.Client
+	proofClient *http.Client
 	purchase    http.Handler
+	signals     SignalPoster
 }
 
 type PurchaseRequest struct {
@@ -43,6 +49,7 @@ func NewGatewayHandler(checkoutURL string) *GatewayHandler {
 		client: &http.Client{
 			Transport: wayloghttp.NewTransport(demoHTTPTransport(), "checkout"),
 		},
+		proofClient: &http.Client{Timeout: 10 * demoSignalTimeout},
 	}
 	// Pre-wrap so the live /purchase route and /demo/burst dispatch share a
 	// single instance — and so callers can't forget to wire it up.
@@ -59,6 +66,19 @@ func (h *GatewayHandler) PurchaseHandler() http.Handler {
 // SetPurchaseHandler overrides the handler used by /demo/burst. Test seam.
 func (h *GatewayHandler) SetPurchaseHandler(handler http.Handler) {
 	h.purchase = handler
+}
+
+// SetSignalPoster overrides the signal poster used by /demo/burst. Test seam.
+func (h *GatewayHandler) SetSignalPoster(poster SignalPoster) {
+	h.signals = poster
+}
+
+// SetWaylogAPI configures the demo-only proof loop proxy.
+func (h *GatewayHandler) SetWaylogAPI(ingestURL, readKey, writeKey, agentKey string) {
+	h.ingestURL = strings.TrimRight(strings.TrimSpace(ingestURL), "/")
+	h.readKey = strings.TrimSpace(readKey)
+	h.writeKey = strings.TrimSpace(writeKey)
+	h.agentKey = strings.TrimSpace(agentKey)
 }
 
 func (h *GatewayHandler) ServeDemo(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +156,12 @@ func (h *GatewayHandler) ServeBurst(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var signalResults []SignalResult
+	if h.signals != nil {
+		signalResults = h.signals.PostDemoSignals(r.Context())
+	}
 	summary := runBurst(r.Context(), h.purchase, req)
+	summary.Signals = signalResults
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary)
 }

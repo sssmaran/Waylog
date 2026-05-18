@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
+.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
@@ -19,6 +19,10 @@ help:
 	@echo "  demo     - start dashboard demo locally (detached, no Docker)"
 	@echo "  demo-stop - stop demo processes"
 	@echo "  demo-acceptance - verify a running local demo end-to-end"
+	@echo "  proof-loop - run alert -> incident -> triage -> report -> rollup proof"
+	@echo "  rca-scorecard - run deterministic RCA scorecard over the demo scenario"
+	@echo "  rollup-comparison - run demo proof for root-cause vs naive rollup counts"
+	@echo "  otlp-conformance - run deterministic OTLP HTTP/gRPC fixture checks"
 	@echo "  demo-up  - start v2 demo stack in Docker (detached)"
 	@echo "  demo-down - stop Docker demo stack"
 	@echo "  micro-demo - start 4-service micro-demo in foreground for debugging"
@@ -82,7 +86,7 @@ vet-sdk: ## Vet SDK modules
 	cd pkg && go vet ./...
 	cd pkg/transport/kafka && go vet ./...
 
-ci: fmt vet vet-sdk test-race test-sdk ts-test check-doc-links check-rollup-contract
+ci: fmt vet vet-sdk test-race test-sdk ts-test check-doc-links check-rollup-contract otlp-conformance
 	@echo "CI checks passed"
 
 ts-install: ## Install TS SDK deps (skipped if node_modules is already present)
@@ -122,6 +126,18 @@ demo-stop:
 
 demo-acceptance:
 	./scripts/demo-acceptance.sh
+
+proof-loop:
+	bash ./scripts/proof-loop.sh
+
+rca-scorecard:
+	bash ./scripts/rca-scorecard.sh
+
+rollup-comparison:
+	./scripts/rollup-comparison.sh
+
+otlp-conformance:
+	./scripts/otlp-conformance.sh
 
 demo-up: docker-dev
 

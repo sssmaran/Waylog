@@ -130,18 +130,15 @@ func handleAsk(store tools.Store, args []string) {
 		return
 	}
 
-	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
-	}
-	if apiKey == "" {
-		fmt.Println("GEMINI_API_KEY (or GOOGLE_API_KEY) is required")
+	sel, err := llm.SelectFromEnv()
+	if err != nil {
+		fmt.Println(err)
 		return
 	}
-
-	model := strings.TrimSpace(os.Getenv("GEMINI_MODEL"))
-	baseURL := strings.TrimSpace(os.Getenv("GEMINI_API_BASE"))
-	toolMode := strings.TrimSpace(os.Getenv("GEMINI_TOOL_MODE"))
+	if !sel.AskEnabled {
+		fmt.Println(llm.ErrProviderNotConfigured)
+		return
+	}
 
 	reg := tools.NewRegistry()
 	if err := tools.RegisterGraphTools(reg); err != nil {
@@ -158,18 +155,7 @@ func handleAsk(store tools.Store, args []string) {
 		})
 	}
 
-	client := llm.NewGeminiClient(apiKey)
-	if model != "" {
-		client.Model = model
-	}
-	if baseURL != "" {
-		client.BaseURL = baseURL
-	}
-	if toolMode != "" {
-		client.ToolMode = toolMode
-	}
-
-	answer, _, err := llm.Ask(context.Background(), client, toolDefs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
+	answer, _, err := llm.Ask(context.Background(), sel.Impl, toolDefs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
 		return reg.Call(ctx, store, name, params)
 	}), prompt, llm.AskOptions{MaxSteps: 5})
 	if err != nil {

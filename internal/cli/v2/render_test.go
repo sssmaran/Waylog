@@ -9,6 +9,7 @@ import (
 
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
+	triage "github.com/sssmaran/WaylogCLI/pkg/triage"
 )
 
 func TestRenderStoryPinsObservableLanguage(t *testing.T) {
@@ -84,12 +85,100 @@ func TestRenderEventPrintsSummaryCounts(t *testing.T) {
 	}
 }
 
+func TestRenderIncidentsAndDetail(t *testing.T) {
+	start := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	inc := Incident{
+		IncidentID:       "inc_1234567890abcdef",
+		Env:              "prod",
+		Service:          "checkout",
+		ErrorFamily:      ErrorFamily{Service: "checkout", Step: "payment.charge", ErrorCode: "PMT_502"},
+		Status:           "active",
+		Cause:            "dependency",
+		Confidence:       "medium",
+		Severity:         8,
+		StartedAt:        start,
+		UpdatedAt:        start.Add(time.Minute),
+		LastSeenAt:       start.Add(time.Minute),
+		AffectedRequests: 12,
+		AffectedServices: 3,
+		TopServices:      []string{"checkout", "payment"},
+		SampleTraces:     []string{"trace-1234567890"},
+		Evidence:         []IncidentEvidence{{Kind: "trace", Title: "First failing trace sample", Detail: "payment.charge/PMT_502", TraceID: "trace-1234567890", OccurredAt: start}},
+		NextChecks:       []string{"Check payment health."},
+		Lift:             6,
+		BaselineCount:    2,
+		CurrentCount:     12,
+	}
+
+	var out bytes.Buffer
+	RenderIncidents(&out, IncidentListResponse{Incidents: []Incident{inc}})
+	for _, want := range []string{"INCIDENT", "dependency", "medium", "checkout:payment.charge:PMT_502", "12 req / 3 svc"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("list output missing %q:\n%s", want, out.String())
+		}
+	}
+
+	out.Reset()
+	RenderIncident(&out, IncidentDetailResponse{Incident: inc})
+	for _, want := range []string{"incident_id: inc_1234567890abcdef", "cause: dependency (medium confidence)", "evidence:", "next_checks:", "sample_traces:"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("detail output missing %q:\n%s", want, out.String())
+		}
+	}
+
+	out.Reset()
+	RenderIncidents(&out, IncidentListResponse{})
+	if !strings.Contains(out.String(), "No active incidents.") {
+		t.Fatalf("empty output=%q", out.String())
+	}
+}
+
 func TestRenderCapabilitiesPrintsReadableFlags(t *testing.T) {
 	var out bytes.Buffer
 	resp := CapabilitiesResponse{}
 	resp.OTLP.HTTPTraces = true
+	resp.OTLP.GRPCTraces = true
+	resp.OTLP.GRPCAddr = ":4317"
+	resp.LLM.Provider = "none"
+	resp.Incidents.Enabled = true
+	resp.Incidents.Persistent = true
+	resp.Incidents.Rebuild.Supported = true
+	resp.Incidents.Rebuild.Scope = "hot-window"
 	RenderCapabilities(&out, resp)
-	if !strings.Contains(out.String(), "v2_reads: disabled") || !strings.Contains(out.String(), "otlp_http_traces: enabled") {
+	for _, want := range []string{
+		"v2_reads: disabled",
+		"otlp_http_traces: enabled",
+		"otlp_grpc_traces: enabled addr=:4317",
+		"llm: provider=none configured=false ask_enabled=false",
+		"incidents: enabled=true persistent=true rebuild_supported=true rebuild_scope=hot-window",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestCapabilitiesJSONPreservesM2Fields(t *testing.T) {
+	raw := []byte(`{
+		"v2_reads":{"enabled":true},
+		"otlp":{"http_traces":true,"grpc_traces":true,"grpc_addr":":4317"},
+		"llm":{"provider":"none","model":"","tool_mode":"","configured":false,"ask_enabled":false},
+		"incidents":{"enabled":true,"persistent":true,"rebuild":{"supported":true,"scope":"hot-window"}}
+	}`)
+	var resp CapabilitiesResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := renderJSON(&out, resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"llm"`, `"provider": "none"`, `"incidents"`, `"scope": "hot-window"`, `"grpc_traces": true`} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("json missing %q:\n%s", want, out.String())
+		}
+	}
+	if !resp.Incidents.Rebuild.Supported {
 		t.Fatalf("output=%s", out.String())
 	}
 }
@@ -110,5 +199,32 @@ func TestRenderNextCursor(t *testing.T) {
 	RenderSearch(&out, EventSearchResponse{NextCursor: &next})
 	if !strings.Contains(out.String(), "next_cursor: abc") {
 		t.Fatalf("output=%s", out.String())
+	}
+}
+
+func TestRenderTriageHeaderAndSections(t *testing.T) {
+	rep := &TriageReport{
+		SchemaVersion: "triage.v1",
+		IncidentRef:   triage.IncidentRef{ID: "inc_abc", Window: "15m"},
+		BlastSnapshot: triage.BlastSnapshot{
+			Requests: 12, Users: 8, Services: 4,
+			TopErrorFamilies: []triage.ErrorFamily{
+				{Service: "payment", Step: "payment.charge", ErrorCode: "PMT_502", Count: 11},
+			},
+		},
+		Signals:    []triage.SignalRef{{ID: "sig_1", Type: "deploy"}},
+		NextChecks: []triage.NextCheck{{ID: "check_payment_health", Prompt: "Verify payment-service health"}},
+		Confidence: triage.ConfidenceMedium,
+		ReportHash: "sha256:abc",
+	}
+	var buf bytes.Buffer
+	if rc := RenderTriage(&buf, rep); rc != 0 {
+		t.Fatalf("render returned %d", rc)
+	}
+	out := buf.String()
+	for _, want := range []string{"inc_abc", "PMT_502", "deploy", "Verify payment-service health", "sha256:abc"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q\noutput:\n%s", want, out)
+		}
 	}
 }

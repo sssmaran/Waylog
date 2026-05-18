@@ -68,6 +68,102 @@ func RenderRecent(w io.Writer, resp RecentTracesResponse) {
 	renderNextCursor(w, resp.NextCursor)
 }
 
+func RenderIncidents(w io.Writer, resp IncidentListResponse) {
+	if len(resp.Incidents) == 0 {
+		fmt.Fprintln(w, "No active incidents.")
+		return
+	}
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "INCIDENT\tSTATUS\tCAUSE\tCONF\tSEVERITY\tFAMILY\tAFFECTED\tSTARTED")
+	for _, inc := range resp.Incidents {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%d req / %d svc\t%s\n",
+			truncateID(inc.IncidentID),
+			inc.Status,
+			inc.Cause,
+			inc.Confidence,
+			inc.Severity,
+			apiv2.FormatErrorFamily(inc.ErrorFamily),
+			inc.AffectedRequests,
+			inc.AffectedServices,
+			formatTime(inc.StartedAt),
+		)
+	}
+	_ = tw.Flush()
+}
+
+func RenderIncident(w io.Writer, resp IncidentDetailResponse) {
+	renderIncidentBody(w, resp.Incident)
+}
+
+func RenderIncidentSnapshot(w io.Writer, resp IncidentSnapshotResponse) {
+	if resp.Snapshot != "" {
+		fmt.Fprintln(w, resp.Snapshot)
+	}
+}
+
+func renderIncidentBody(w io.Writer, inc Incident) {
+	fmt.Fprintf(w, "incident_id: %s\n", inc.IncidentID)
+	fmt.Fprintf(w, "status: %s\n", inc.Status)
+	fmt.Fprintf(w, "family: %s\n", apiv2.FormatErrorFamily(inc.ErrorFamily))
+	fmt.Fprintf(w, "cause: %s (%s confidence)\n", inc.Cause, inc.Confidence)
+	fmt.Fprintf(w, "severity: %d\n", inc.Severity)
+	fmt.Fprintf(w, "started_at: %s\n", formatTime(inc.StartedAt))
+	fmt.Fprintf(w, "updated_at: %s\n", formatTime(inc.UpdatedAt))
+	if inc.ResolvedAt != nil {
+		fmt.Fprintf(w, "resolved_at: %s\n", formatTime(*inc.ResolvedAt))
+	}
+	fmt.Fprintf(w, "affected_requests: %d\n", inc.AffectedRequests)
+	if inc.AffectedUsers == nil {
+		fmt.Fprintln(w, "affected_users: null")
+	} else {
+		fmt.Fprintf(w, "affected_users: %d\n", *inc.AffectedUsers)
+	}
+	fmt.Fprintf(w, "affected_services: %d\n", inc.AffectedServices)
+	fmt.Fprintf(w, "top_services: %s\n", strings.Join(inc.TopServices, ","))
+	fmt.Fprintf(w, "lift: %.2f\n", inc.Lift)
+	fmt.Fprintf(w, "baseline_count: %d\n", inc.BaselineCount)
+	fmt.Fprintf(w, "current_count: %d\n", inc.CurrentCount)
+
+	fmt.Fprintln(w, "\nevidence:")
+	if len(inc.Evidence) == 0 {
+		fmt.Fprintln(w, "  none")
+	} else {
+		for _, ev := range inc.Evidence {
+			detail := ev.Detail
+			if detail == "" {
+				detail = ev.Service
+			}
+			fmt.Fprintf(w, "  - %s: %s", ev.Kind, ev.Title)
+			if detail != "" {
+				fmt.Fprintf(w, " (%s)", detail)
+			}
+			if ev.TraceID != "" {
+				fmt.Fprintf(w, " trace=%s", truncateID(ev.TraceID))
+			}
+			fmt.Fprintln(w)
+		}
+	}
+
+	fmt.Fprintln(w, "\nnext_checks:")
+	if len(inc.NextChecks) == 0 {
+		fmt.Fprintln(w, "  none")
+	} else {
+		for _, check := range inc.NextChecks {
+			fmt.Fprintf(w, "  - %s\n", check)
+		}
+	}
+
+	if len(inc.InstrumentationWarnings) > 0 {
+		fmt.Fprintln(w, "\ninstrumentation_warnings:")
+		for _, warning := range inc.InstrumentationWarnings {
+			fmt.Fprintf(w, "  - %s\n", warning)
+		}
+	}
+	if len(inc.SampleTraces) > 0 {
+		fmt.Fprintf(w, "\nsample_traces: %s\n", truncateList(inc.SampleTraces))
+	}
+}
+
 func RenderEvent(w io.Writer, ev *Event) {
 	if ev == nil {
 		fmt.Fprintln(w, "No event found.")
@@ -190,6 +286,27 @@ func RenderSearch(w io.Writer, resp EventSearchResponse) {
 func RenderCapabilities(w io.Writer, resp CapabilitiesResponse) {
 	fmt.Fprintf(w, "v2_reads: %s\n", enabledLabel(resp.V2Reads.Enabled))
 	fmt.Fprintf(w, "otlp_http_traces: %s\n", enabledLabel(resp.OTLP.HTTPTraces))
+	fmt.Fprintf(w, "otlp_grpc_traces: %s", enabledLabel(resp.OTLP.GRPCTraces))
+	if resp.OTLP.GRPCAddr != "" {
+		fmt.Fprintf(w, " addr=%s", resp.OTLP.GRPCAddr)
+	}
+	fmt.Fprintln(w)
+	if resp.LLM.Provider != "" {
+		fmt.Fprintf(w, "llm: provider=%s configured=%t ask_enabled=%t", resp.LLM.Provider, resp.LLM.Configured, resp.LLM.AskEnabled)
+		if resp.LLM.Model != "" {
+			fmt.Fprintf(w, " model=%s", resp.LLM.Model)
+		}
+		if resp.LLM.ToolMode != "" {
+			fmt.Fprintf(w, " tool_mode=%s", resp.LLM.ToolMode)
+		}
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintf(w, "incidents: enabled=%t persistent=%t rebuild_supported=%t",
+		resp.Incidents.Enabled, resp.Incidents.Persistent, resp.Incidents.Rebuild.Supported)
+	if resp.Incidents.Rebuild.Scope != "" {
+		fmt.Fprintf(w, " rebuild_scope=%s", resp.Incidents.Rebuild.Scope)
+	}
+	fmt.Fprintln(w)
 }
 
 func eventRoute(ev *Event) string {
@@ -260,4 +377,42 @@ func formatTime(t time.Time) string {
 		return ""
 	}
 	return t.Format(time.RFC3339)
+}
+
+func RenderTriage(w io.Writer, rep *TriageReport) int {
+	fmt.Fprintf(w, "Triage report  incident=%s  window=%s  confidence=%s\n",
+		rep.IncidentRef.ID, rep.IncidentRef.Window, rep.Confidence)
+	fmt.Fprintf(w, "  hash: %s\n\n", rep.ReportHash)
+
+	fmt.Fprintln(w, "Blast")
+	fmt.Fprintf(w, "  requests=%d  users=%d  services=%d\n",
+		rep.BlastSnapshot.Requests, rep.BlastSnapshot.Users, rep.BlastSnapshot.Services)
+	for _, f := range rep.BlastSnapshot.TopErrorFamilies {
+		fmt.Fprintf(w, "  %s/%s/%s  count=%d\n", f.Service, f.Step, f.ErrorCode, f.Count)
+	}
+	fmt.Fprintln(w)
+
+	if len(rep.SampleTraces) > 0 {
+		fmt.Fprintln(w, "Sample traces")
+		for _, s := range rep.SampleTraces {
+			fmt.Fprintf(w, "  %s  %s\n", s.TraceID, s.Summary)
+		}
+		fmt.Fprintln(w)
+	}
+
+	if len(rep.Signals) > 0 {
+		fmt.Fprintln(w, "Signals")
+		for _, s := range rep.Signals {
+			fmt.Fprintf(w, "  %s  type=%s  evidence=%v\n", s.ID, s.Type, s.EvidenceIDs)
+		}
+		fmt.Fprintln(w)
+	}
+
+	if len(rep.NextChecks) > 0 {
+		fmt.Fprintln(w, "Next checks")
+		for _, c := range rep.NextChecks {
+			fmt.Fprintf(w, "  - %s\n", c.Prompt)
+		}
+	}
+	return 0
 }

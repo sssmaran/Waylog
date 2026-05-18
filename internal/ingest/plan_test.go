@@ -289,3 +289,62 @@ func TestValidatePlan_Valid(t *testing.T) {
 		t.Fatalf("expected valid plan to have no errors, got: %v", errs)
 	}
 }
+
+func TestExpandPlanRequest_TriageTemplate(t *testing.T) {
+	params := json.RawMessage(`{"incident_id":"inc_abc","window":"30m","snapshot":true}`)
+	steps, err := ExpandPlanRequest(PlanExecuteRequest{
+		Template: "triage",
+		Params:   &params,
+	})
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("len(steps) = %d, want 1", len(steps))
+	}
+	step := steps[0]
+	if step.ID != "triage" || step.Tool != "triage_incident" {
+		t.Fatalf("step = %+v, want triage/triage_incident", step)
+	}
+	var got struct {
+		IncidentID string `json:"incident_id"`
+		Window     string `json:"window"`
+		Snapshot   bool   `json:"snapshot"`
+	}
+	if err := json.Unmarshal(step.Params, &got); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	if got.IncidentID != "inc_abc" || got.Window != "30m" || !got.Snapshot {
+		t.Fatalf("params = %+v", got)
+	}
+}
+
+func TestExpandPlanRequest_RejectsInvalidTemplateInput(t *testing.T) {
+	params := json.RawMessage(`{"incident_id":"inc_abc"}`)
+	cases := map[string]PlanExecuteRequest{
+		"both steps and template": {
+			Steps:    []PlanStep{{ID: "x", Tool: "graph_stats"}},
+			Template: "triage",
+			Params:   &params,
+		},
+		"unknown template": {
+			Template: "unknown",
+			Params:   &params,
+		},
+		"missing incident id": {
+			Template: "triage",
+			Params:   ptrRawMessage(json.RawMessage(`{"snapshot":true}`)),
+		},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ExpandPlanRequest(req); err == nil {
+				t.Fatalf("expected error")
+			}
+		})
+	}
+}
+
+func ptrRawMessage(raw json.RawMessage) *json.RawMessage {
+	return &raw
+}

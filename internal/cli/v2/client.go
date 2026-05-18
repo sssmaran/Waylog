@@ -145,6 +145,43 @@ func (c *Client) Blast(ctx context.Context, p BlastParams) (BlastRadiusResponse,
 	return out, err
 }
 
+func (c *Client) Incidents(ctx context.Context) (IncidentListResponse, error) {
+	var out IncidentListResponse
+	err := c.do(ctx, "/v1/incidents/active", nil, &out)
+	return out, err
+}
+
+func (c *Client) Incident(ctx context.Context, incidentID string) (IncidentDetailResponse, error) {
+	var out IncidentDetailResponse
+	err := c.do(ctx, "/v1/incidents/"+url.PathEscape(incidentID), nil, &out)
+	return out, err
+}
+
+func (c *Client) IncidentSnapshotText(ctx context.Context, incidentID string) (string, error) {
+	var out string
+	err := c.doRaw(ctx, "/v1/incidents/"+url.PathEscape(incidentID)+"/snapshot", nil, "text/plain", &out)
+	return out, err
+}
+
+func (c *Client) IncidentSnapshotJSON(ctx context.Context, incidentID string) (IncidentSnapshotResponse, error) {
+	var out IncidentSnapshotResponse
+	err := c.doRaw(ctx, "/v1/incidents/"+url.PathEscape(incidentID)+"/snapshot", nil, "application/json", &out)
+	return out, err
+}
+
+func (c *Client) Triage(ctx context.Context, id string, p TriageParams) (*TriageReport, error) {
+	q := url.Values{}
+	addQuery(q, "window", p.Window)
+	if p.Snapshot {
+		q.Set("snapshot", "true")
+	}
+	var rep TriageReport
+	if err := c.do(ctx, "/v1/triage/"+url.PathEscape(id), q, &rep); err != nil {
+		return nil, err
+	}
+	return &rep, nil
+}
+
 func (c *Client) Search(ctx context.Context, p SearchParams) (EventSearchResponse, error) {
 	q := url.Values{}
 	addQuery(q, "error_code", p.ErrorCode)
@@ -160,6 +197,10 @@ func (c *Client) Search(ctx context.Context, p SearchParams) (EventSearchRespons
 }
 
 func (c *Client) do(ctx context.Context, path string, q url.Values, out any) error {
+	return c.doRaw(ctx, path, q, "application/json", out)
+}
+
+func (c *Client) doRaw(ctx context.Context, path string, q url.Values, accept string, out any) error {
 	u, err := url.Parse(c.base + path)
 	if err != nil {
 		return &TransportError{Err: err}
@@ -174,6 +215,9 @@ func (c *Client) do(ctx context.Context, path string, q url.Values, out any) err
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return &TransportError{Err: err}
@@ -187,6 +231,10 @@ func (c *Client) do(ctx context.Context, path string, q url.Values, out any) err
 		return decodeAPIError(resp.StatusCode, body)
 	}
 	if out == nil || len(strings.TrimSpace(string(body))) == 0 {
+		return nil
+	}
+	if text, ok := out.(*string); ok {
+		*text = string(body)
 		return nil
 	}
 	if err := json.Unmarshal(body, out); err != nil {

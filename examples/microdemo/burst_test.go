@@ -1,6 +1,7 @@
 package microdemo
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -61,8 +62,16 @@ func TestRunBurstDispatchesEveryRequestThroughHandler(t *testing.T) {
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Fatalf("content-type = %q, want application/json", got)
 		}
+		var purchase PurchaseRequest
+		if err := json.NewDecoder(r.Body).Decode(&purchase); err != nil {
+			t.Fatalf("decode purchase: %v", err)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"success":true,"trace_id":"t","scenario":"happy"}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":  purchase.Scenario == ScenarioHappy,
+			"trace_id": "trace-" + purchase.Scenario,
+			"scenario": purchase.Scenario,
+		})
 	})
 
 	summary := runBurst(t.Context(), dispatch, BurstRequest{Requests: 20, Concurrency: 4})
@@ -72,11 +81,25 @@ func TestRunBurstDispatchesEveryRequestThroughHandler(t *testing.T) {
 	if summary.Accepted.Requests != 20 || summary.Accepted.Concurrency != 4 {
 		t.Fatalf("accepted = %#v, want 20/4", summary.Accepted)
 	}
-	if summary.OK != 20 || summary.Errors != 0 || summary.Suppressed != 0 {
-		t.Fatalf("summary counts = ok:%d errors:%d suppressed:%d", summary.OK, summary.Errors, summary.Suppressed)
+	if summary.Errors < incidentSeedPayments {
+		t.Fatalf("errors = %d, want at least seeded payment failures %d", summary.Errors, incidentSeedPayments)
 	}
-	if summary.ByScenario[ScenarioHappy] != 20 {
-		t.Fatalf("happy count = %d, want 20", summary.ByScenario[ScenarioHappy])
+	if summary.ByScenario[ScenarioPayment502] < incidentSeedPayments {
+		t.Fatalf("payment_502 count = %d, want at least %d", summary.ByScenario[ScenarioPayment502], incidentSeedPayments)
+	}
+	if summary.OK+summary.Errors+summary.Suppressed != 20 {
+		t.Fatalf("summary total = %d, want 20", summary.OK+summary.Errors+summary.Suppressed)
+	}
+}
+
+func TestPickBurstScenarioForIndexSeedsPaymentFailures(t *testing.T) {
+	for i := 0; i < incidentSeedPayments; i++ {
+		if got := pickBurstScenarioForIndex(i, 20); got != ScenarioPayment502 {
+			t.Fatalf("seed scenario[%d] = %q, want payment_502", i, got)
+		}
+	}
+	if got := incidentSeedPaymentCount(3); got != 3 {
+		t.Fatalf("seed count = %d, want capped to request count 3", got)
 	}
 }
 
@@ -139,6 +162,28 @@ func TestServeBurstAppliesDefaultsWhenZero(t *testing.T) {
 	}
 }
 
+func TestServeBurstPostsDemoSignals(t *testing.T) {
+	gateway := NewGatewayHandler("http://checkout.example")
+	gateway.SetPurchaseHandler(okBurstDispatch())
+	gateway.SetSignalPoster(staticSignalPoster{results: []SignalResult{{
+		Type: "dependency", Service: "payment", Reason: "payment_gateway_5xx", Accepted: true, Status: http.StatusCreated, SignalID: "sig_demo",
+	}}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/demo/burst", strings.NewReader(`{"requests":1,"concurrency":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	gateway.ServeBurst(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var summary BurstSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	if len(summary.Signals) != 1 || !summary.Signals[0].Accepted || summary.Signals[0].SignalID != "sig_demo" {
+		t.Fatalf("signals = %+v", summary.Signals)
+	}
+}
+
 func serveBurstForTest(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	gateway := NewGatewayHandler("http://checkout.example")
@@ -148,6 +193,14 @@ func serveBurstForTest(t *testing.T, body string) *httptest.ResponseRecorder {
 	req.Header.Set("Content-Type", "application/json")
 	gateway.ServeBurst(rec, req)
 	return rec
+}
+
+type staticSignalPoster struct {
+	results []SignalResult
+}
+
+func (p staticSignalPoster) PostDemoSignals(context.Context) []SignalResult {
+	return p.results
 }
 
 func okBurstDispatch() http.Handler {

@@ -7,7 +7,9 @@ info:
 
     The primary product path is schema-2.0 ingest plus the v2 read APIs used by
     the operator CLI and embedded dashboard: recent traces, error families,
-    trace story, blast radius, event search, and direct trace/event lookup.
+    trace story, blast radius, incidents, event search, and direct trace/event
+    lookup. `/v1/insight` is a compatibility endpoint; new clients should use
+    `/v1/incidents/*`.
 
     Write endpoints require write-scope auth when auth is configured. Read
     endpoints require read-scope auth when read keys are configured.
@@ -18,7 +20,9 @@ tags:
   - name: Ingest
     description: Schema-2.0 event ingest and validation.
   - name: OTLP
-    description: OTLP/HTTP trace ingest converted into schema-2.0 events.
+    description: OTLP trace ingest converted into schema-2.0 events. HTTP is documented here; gRPC uses OTLP TraceService on the configured OTLP_GRPC_ADDR.
+  - name: Signals
+    description: Production-context facts used by incident triage.
   - name: Events
     description: Direct event lookup and search.
   - name: Traces
@@ -136,6 +140,113 @@ paths:
               schema:
                 $ref: '#/components/schemas/IngestEnvelope'
 
+  /v1/signals:
+    post:
+      tags: [Signals]
+      operationId: ingestSignal
+      summary: Ingest one production-context signal
+      description: |
+        Accepts one low-volume production-context signal, such as a deploy,
+        dependency, runtime, healthcheck, config, or alert fact. Signals require
+        SQLite persistence and are used by the v2.1 incident engine.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Signal'
+      responses:
+        '201':
+          description: Signal accepted and persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignalAccepted'
+        '400':
+          description: Invalid signal JSON or fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadError'
+        '401':
+          description: Unauthorized
+        '405':
+          description: Method Not Allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadError'
+        '413':
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadError'
+        '503':
+          description: Signal storage unavailable; set SQLITE_PATH
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadError'
+        '500':
+          description: Internal signal storage error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadError'
+
+  /v1/alerts:
+    post:
+      tags: [Signals]
+      operationId: ingestAlert
+      summary: Ingest an external alert and correlate it with an active incident
+      description: |
+        Accepts Waylog-normalized alerts plus Alertmanager, Grafana, and
+        PagerDuty webhook payloads. Accepted alerts are stored as `type=alert`
+        signals and correlated with active incidents when possible. Alerts do
+        not create incidents — the spike detector owns incident lifecycle.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '201':
+          description: Alert accepted and stored as a signal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signal, match]
+                properties:
+                  signal:
+                    $ref: '#/components/schemas/Signal'
+                  match:
+                    type: object
+                    required: [matched, strategy]
+                    properties:
+                      matched: {type: boolean}
+                      incident_id: {type: string}
+                      strategy:
+                        type: string
+                        enum: [incident_id, trace_id, family, none]
+        '400':
+          description: Invalid JSON, unsupported alert shape, or missing required fields
+        '401':
+          description: Unauthorized
+        '405':
+          description: Method Not Allowed
+        '503':
+          description: Signal store unavailable
+
   /v1/otlp/v1/traces:
     post:
       tags: [OTLP]
@@ -145,7 +256,9 @@ paths:
         Accepts OTLP ExportTraceServiceRequest protobuf bodies. HTTP spans are
         converted into schema-2.0 WideEvents and ingested through the same WAL
         and projector as SDK events. Unsupported spans and validation rejects
-        are reported via OTLP partial_success.
+        are reported via OTLP partial_success. The same trace conversion path
+        is available over OTLP/gRPC TraceService when the gRPC receiver is
+        enabled.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -375,6 +488,209 @@ paths:
         '400':
           $ref: '#/components/responses/ReadBadRequest'
 
+  /v1/incidents/active:
+    get:
+      tags: [Triage]
+      operationId: listActiveIncidents
+      summary: Active v2.1 incidents
+      description: Returns active and recovering incidents derived from v2 error-family spikes, signals, and deployment context.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Active incidents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentListResponse'
+        '401':
+          description: Unauthorized
+        '405':
+          description: Method Not Allowed
+
+  /v1/incidents/{id}:
+    get:
+      tags: [Triage]
+      operationId: getIncident
+      summary: Get one incident
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+      responses:
+        '200':
+          description: Incident detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetailResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          $ref: '#/components/responses/ReadNotFound'
+        '405':
+          description: Method Not Allowed
+
+  /v1/incidents/{id}/snapshot:
+    get:
+      tags: [Triage]
+      operationId: getIncidentSnapshot
+      summary: Render an incident snapshot
+      description: |
+        Defaults to text/plain. Send Accept: application/json to receive the
+        snapshot text plus the incident object.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IncidentID'
+      responses:
+        '200':
+          description: Incident snapshot
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentSnapshotResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          $ref: '#/components/responses/ReadNotFound'
+        '405':
+          description: Method Not Allowed
+
+  /v1/triage/{incident_id}:
+    get:
+      tags: [Triage]
+      operationId: getTriageReport
+      summary: Build a deterministic TriageReport for an open incident
+      description: |
+        Returns a structured TriageReport v1 (incident_ref, blast_snapshot,
+        first_failure, sample_traces, signals, next_checks, confidence,
+        report_hash). Same builder backs `POST /v1/tools/triage_incident`;
+        both surfaces produce identical `report_hash` for the same input.
+        Read-scope auth.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: window
+          in: query
+          required: false
+          schema: {type: string, default: "15m"}
+          description: Go duration string (e.g. 15m, 1h). Default 15m.
+        - name: snapshot
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+          description: |
+            When true, freeze evaluation bounds to the incident's started_at
+            and updated_at instead of using wall-clock now.
+      responses:
+        '200':
+          description: TriageReport v1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageReport'
+        '400':
+          description: Missing or invalid parameters
+        '401':
+          description: Unauthorized
+        '500':
+          description: Triage build failed
+
+  /v1/triage/{incident_id}/report:
+    get:
+      tags: [Triage]
+      operationId: renderTriageReport
+      summary: Render a cited operator report from a TriageReport
+      description: |
+        Builds the same deterministic TriageReport as `/v1/triage/{incident_id}`
+        and renders it as Markdown, Slack Block Kit JSON, or PagerDuty note text.
+        This endpoint does not deliver messages to Slack or PagerDuty.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [markdown, slack, pagerduty]
+            default: markdown
+        - name: window
+          in: query
+          required: false
+          schema: {type: string, default: "15m"}
+        - name: snapshot
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Rendered operator report
+          content:
+            text/markdown:
+              schema: {type: string}
+            text/plain:
+              schema: {type: string}
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Missing or invalid parameters
+        '401':
+          description: Unauthorized
+        '404':
+          $ref: '#/components/responses/ReadNotFound'
+        '500':
+          description: Triage build or render failed
+
+  /v1/insight:
+    get:
+      tags: [Operational]
+      operationId: getCompatibilityInsight
+      summary: Compatibility anomaly insight
+      deprecated: true
+      description: |
+        Compatibility endpoint for older dashboard/tool consumers. When the
+        v2.1 incident engine is running, this projects the top active incident
+        into the legacy insight shape. Otherwise it falls back to the legacy
+        detector. New clients should use `/v1/incidents/active` and
+        `/v1/incidents/{id}`.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Compatibility insight object
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '204':
+          description: No active insight
+        '401':
+          description: Unauthorized
+        '405':
+          description: Method Not Allowed
+
   /v1/capabilities:
     get:
       tags: [Capabilities]
@@ -529,12 +845,78 @@ paths:
         '503':
           description: LLM provider unavailable
 
+  /v1/plans/execute:
+    post:
+      tags: [Operational]
+      operationId: executePlan
+      summary: Execute a deterministic tool plan
+      description: |
+        Executes explicit plan steps or a built-in template shorthand. The
+        `triage` template expands to one `triage_incident` tool step; the
+        resulting TriageReport is returned at `steps[0].result`.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [steps]
+                  properties:
+                    steps:
+                      type: array
+                      minItems: 1
+                      maxItems: 10
+                      items:
+                        type: object
+                        required: [id, tool]
+                        properties:
+                          id: {type: string}
+                          tool: {type: string}
+                          params:
+                            type: object
+                            additionalProperties: true
+                - type: object
+                  required: [template, params]
+                  properties:
+                    template:
+                      type: string
+                      enum: [triage]
+                    params:
+                      type: object
+                      required: [incident_id]
+                      properties:
+                        incident_id: {type: string}
+                        window: {type: string, default: 15m}
+                        snapshot: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Plan execution result
+          headers:
+            X-Plan-ID:
+              schema: {type: string}
+              description: Plan ID for `/v1/stream/plans/{id}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResult'
+        '400':
+          description: Invalid plan or template parameters
+        '503':
+          description: Tool registry unavailable
+
   /v1/tools/{name}:
     post:
       tags: [Operational]
       operationId: executeTool
       summary: Direct tool call
-      description: Executes a registered structured tool by name.
+      description: |
+        Executes a registered structured tool by name. `triage_incident`
+        returns a TriageReport; `render_triage_report` renders that report as
+        Markdown, Slack Block Kit JSON, or PagerDuty note text without delivery.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -646,6 +1028,12 @@ components:
         type: string
     TraceIDPath:
       name: trace_id
+      in: path
+      required: true
+      schema:
+        type: string
+    IncidentID:
+      name: id
       in: path
       required: true
       schema:
@@ -910,6 +1298,64 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ErrorRef'
+
+    Signal:
+      type: object
+      additionalProperties: true
+      required: [type, source, service, env, severity, reason, timestamp]
+      example:
+        type: deploy
+        source: github-actions
+        service: checkout
+        env: prod
+        severity: info
+        reason: RolloutComplete
+        message: checkout 1.18.2 rolled out
+        metadata:
+          deployment_id: deploy_123
+          version: 1.18.2
+        timestamp: "2026-05-02T18:09:40Z"
+      properties:
+        signal_id:
+          type: string
+          readOnly: true
+          description: Server-generated signal id with sig_ prefix.
+        type:
+          type: string
+          enum: [deploy, runtime, healthcheck, dependency, config, alert]
+        source:
+          type: string
+        service:
+          type: string
+        env:
+          type: string
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        reason:
+          type: string
+        message:
+          type: string
+        resource:
+          type: object
+          additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+        timestamp:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    SignalAccepted:
+      type: object
+      required: [signal]
+      properties:
+        signal:
+          $ref: '#/components/schemas/Signal'
 
     Anchor:
       type: object
@@ -1312,11 +1758,321 @@ components:
           items:
             type: string
 
+    IncidentEvidence:
+      type: object
+      required: [kind, title, occurred_at]
+      properties:
+        kind:
+          type: string
+          enum: [signal, deployment, trace, metric]
+        title:
+          type: string
+        detail:
+          type: string
+        service:
+          type: string
+        signal_id:
+          type: string
+        deployment_id:
+          type: string
+        trace_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        fields:
+          type: object
+          additionalProperties: true
+
+    Incident:
+      type: object
+      required:
+        - incident_id
+        - env
+        - service
+        - error_family
+        - status
+        - cause
+        - confidence
+        - severity
+        - started_at
+        - updated_at
+        - last_seen_at
+        - affected_requests
+        - affected_services
+        - top_services
+        - sample_traces
+        - evidence
+        - next_checks
+        - lift
+        - baseline_count
+        - current_count
+      example:
+        incident_id: inc_7d0b0b3d5a52d891
+        env: prod
+        service: checkout
+        error_family:
+          service: checkout
+          step: payment.charge
+          error_code: PMT_502
+        status: active
+        cause: dependency
+        confidence: medium
+        severity: 8
+        started_at: '2026-05-04T16:00:00Z'
+        updated_at: '2026-05-04T16:02:00Z'
+        last_seen_at: '2026-05-04T16:02:00Z'
+        affected_requests: 12
+        affected_users: 8
+        affected_services: 3
+        top_services: [api-gateway, checkout, payment]
+        sample_traces: [7f3a2b9c000000000000000000000001]
+        evidence:
+          - kind: trace
+            title: First failing trace sample
+            detail: payment.charge/PMT_502
+            service: checkout
+            trace_id: 7f3a2b9c000000000000000000000001
+            occurred_at: '2026-05-04T16:00:00Z'
+        next_checks:
+          - Check the downstream service health and recent deploys.
+        lift: 6
+        baseline_count: 2
+        current_count: 12
+      properties:
+        incident_id:
+          type: string
+        env:
+          type: string
+        service:
+          type: string
+        error_family:
+          $ref: '#/components/schemas/ErrorFamily'
+        status:
+          type: string
+          enum: [active, recovering, resolved]
+        cause:
+          type: string
+          enum: [deploy, app, dependency, unknown]
+        confidence:
+          type: string
+          enum: [high, medium, low]
+        severity:
+          type: integer
+          minimum: 1
+          maximum: 10
+        started_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        recovering_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        affected_requests:
+          type: integer
+        affected_users:
+          type: integer
+          nullable: true
+        affected_services:
+          type: integer
+        top_services:
+          type: array
+          items:
+            type: string
+        sample_traces:
+          type: array
+          items:
+            type: string
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/IncidentEvidence'
+        next_checks:
+          type: array
+          items:
+            type: string
+        instrumentation_warnings:
+          type: array
+          items:
+            type: string
+        lift:
+          type: number
+          format: double
+        baseline_count:
+          type: integer
+        current_count:
+          type: integer
+
+    IncidentListResponse:
+      type: object
+      required: [incidents]
+      properties:
+        incidents:
+          type: array
+          items:
+            $ref: '#/components/schemas/Incident'
+
+    IncidentDetailResponse:
+      type: object
+      required: [incident]
+      properties:
+        incident:
+          $ref: '#/components/schemas/Incident'
+
+    IncidentSnapshotResponse:
+      type: object
+      required: [snapshot, incident]
+      properties:
+        snapshot:
+          type: string
+        incident:
+          $ref: '#/components/schemas/Incident'
+
+    TriageReport:
+      type: object
+      required: [schema_version, incident_ref, blast_snapshot, confidence, generated_at, report_hash]
+      description: |
+        Deterministic triage artifact for an open incident. Versioned via
+        schema_version. report_hash is sha256 over the canonical JSON
+        excluding generated_at, plan_run_id, and report_hash itself.
+      properties:
+        schema_version:
+          type: string
+          enum: ["triage.v1"]
+        incident_ref:
+          type: object
+          required: [id]
+          properties:
+            id: {type: string}
+            window: {type: string, description: "Go duration string e.g. 15m0s"}
+        blast_snapshot:
+          type: object
+          properties:
+            requests: {type: integer}
+            users: {type: integer}
+            services: {type: integer}
+            top_error_families:
+              type: array
+              items:
+                type: object
+                properties:
+                  service: {type: string}
+                  step: {type: string}
+                  error_code: {type: string}
+                  count: {type: integer}
+        first_failure:
+          type: object
+          additionalProperties: true
+          description: Full /v1/traces/story payload for the first observed failing step.
+        sample_traces:
+          type: array
+          items:
+            type: object
+            properties:
+              trace_id: {type: string}
+              summary: {type: string}
+        signals:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              type: {type: string}
+              evidence_ids: {type: array, items: {type: string}}
+        alerts:
+          type: array
+          description: Alert signals linked to this incident and cited by operator reports.
+          items:
+            type: object
+            properties:
+              signal_id: {type: string}
+              alert_id: {type: string}
+              source: {type: string, enum: [waylog, alertmanager, grafana, pagerduty]}
+              severity: {type: string}
+              reason: {type: string}
+              provider_url: {type: string}
+              evidence_ids:
+                type: array
+                items: {type: string}
+        next_checks:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              prompt: {type: string}
+        confidence:
+          type: string
+          enum: [low, medium, high]
+        generated_at: {type: string}
+        plan_run_id:
+          type: string
+          description: Reserved for future plan-produced reports; omitted by the M1.5 triage template.
+        report_hash:
+          type: string
+          description: "sha256:<hex>"
+
+    PlanResult:
+      type: object
+      required: [plan_id, steps, completed, total, status]
+      properties:
+        plan_id: {type: string}
+        steps:
+          type: array
+          items:
+            type: object
+            required: [id, index, tool, duration_ms]
+            properties:
+              id: {type: string}
+              index: {type: integer}
+              tool: {type: string}
+              result:
+                description: Tool output. For the triage template this is a TriageReport.
+                oneOf:
+                  - $ref: '#/components/schemas/TriageReport'
+                  - type: object
+                    additionalProperties: true
+              error:
+                type: object
+                nullable: true
+                properties:
+                  code: {type: string}
+                  message: {type: string}
+                  retryable: {type: boolean}
+              duration_ms: {type: integer}
+        completed: {type: integer}
+        total: {type: integer}
+        status:
+          type: string
+          enum: [complete, partial, failed]
+        halted_at:
+          type: integer
+          nullable: true
+        error:
+          type: object
+          nullable: true
+          properties:
+            code: {type: string}
+            message: {type: string}
+            retryable: {type: boolean}
+
     CapabilitiesResponse:
       type: object
       example:
         otlp:
           http_traces: true
+          grpc_traces: true
+          grpc_addr: ":4317"
         v2_reads:
           enabled: true
         graph: false
@@ -1324,6 +2080,26 @@ components:
         ask:
           type: object
           additionalProperties: true
+        llm:
+          type: object
+          description: Provider-neutral Ask configuration and runtime state.
+          properties:
+            provider:
+              type: string
+              description: Resolved Ask provider. `custom` is used for injected providers.
+              enum: [none, gemini, anthropic, openai, custom]
+            model:
+              type: string
+              description: Resolved model for the selected provider, or empty when Ask is disabled.
+            tool_mode:
+              type: string
+              description: Resolved tool-calling mode for the selected provider, or empty when Ask is disabled.
+            configured:
+              type: boolean
+              description: True when a provider was explicitly selected or inferred from credentials.
+            ask_enabled:
+              type: boolean
+              description: True when Ask has a provider implementation available.
         dashboard:
           type: object
           additionalProperties: true
@@ -1337,11 +2113,30 @@ components:
           properties:
             http_traces:
               type: boolean
+            grpc_traces:
+              type: boolean
+            grpc_addr:
+              type: string
         v2_reads:
           type: object
           properties:
             enabled:
               type: boolean
+        incidents:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            persistent:
+              type: boolean
+            rebuild:
+              type: object
+              properties:
+                supported:
+                  type: boolean
+                scope:
+                  type: string
+                  enum: ["", hot-window]
         architecture:
           type: object
           additionalProperties: true
