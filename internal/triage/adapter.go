@@ -64,16 +64,18 @@ func (a incidentLookupAdapter) GetIncident(ctx context.Context, id string) (Inci
 		return IncidentSummary{}, err
 	}
 	return IncidentSummary{
-		ID:         inc.IncidentID,
-		Window:     defaultWindowLabel,
-		Env:        inc.Env,
-		StartedAt:  inc.StartedAt,
-		UpdatedAt:  inc.UpdatedAt,
-		Service:    inc.ErrorFamily.Service,
-		Step:       inc.ErrorFamily.Step,
-		ErrorCode:  inc.ErrorFamily.ErrorCode,
-		Confidence: mapConfidence(inc.Confidence),
-		NextChecks: append([]string(nil), inc.NextChecks...),
+		ID:          inc.IncidentID,
+		Window:      defaultWindowLabel,
+		Env:         inc.Env,
+		StartedAt:   inc.StartedAt,
+		UpdatedAt:   inc.UpdatedAt,
+		Service:     inc.ErrorFamily.Service,
+		Step:        inc.ErrorFamily.Step,
+		ErrorCode:   inc.ErrorFamily.ErrorCode,
+		Confidence:  mapConfidence(inc.Confidence),
+		NextChecks:  append([]string(nil), inc.NextChecks...),
+		Propagation: inc.Propagation,
+		Blast:       inc.Blast,
 	}, nil
 }
 
@@ -100,20 +102,31 @@ func NewBlastQueryAdapter(r BlastReader) BlastQuery {
 }
 
 func (a blastQueryAdapter) BlastSnapshot(ctx context.Context, inc IncidentSummary, opts BuildOptions) (BlastSnapshotResult, error) {
-	end := opts.Now
-	if end.IsZero() {
-		end = inc.UpdatedAt
+	if inc.Blast != nil && inc.Blast.Latest != nil {
+		bl := inc.Blast.Latest
+		users := 0
+		if bl.AffectedUsers != nil {
+			users = *bl.AffectedUsers
+		}
+		families, err := a.topErrorFamilies(inc, opts)
+		if err != nil {
+			return BlastSnapshotResult{}, err
+		}
+		return BlastSnapshotResult{
+			Requests:         bl.AffectedRequests,
+			Users:            users,
+			Services:         bl.AffectedServices,
+			TopErrorFamilies: families,
+		}, nil
 	}
-	window := opts.Window
-	if window <= 0 {
-		window = defaultWindow
-	}
-	filter := incidents.SearchFilter{
-		Service:   inc.Service,
-		ErrorCode: inc.ErrorCode,
-		Since:     end.Add(-window),
-		Until:     end,
-	}
+	return a.blastSnapshotFromReader(ctx, inc, opts)
+}
+
+// blastSnapshotFromReader is the pre-v1.0 computation path. Called when the
+// incident has no Blast.Latest snapshot (legacy stored incidents, or a tick
+// where capture failed and Latest is missing entirely).
+func (a blastQueryAdapter) blastSnapshotFromReader(_ context.Context, inc IncidentSummary, opts BuildOptions) (BlastSnapshotResult, error) {
+	filter := blastFilter(inc, opts)
 	br := a.r.BlastRadius(filter, apiv2.BlastKey{
 		Service:   inc.Service,
 		Step:      inc.Step,
@@ -123,6 +136,23 @@ func (a blastQueryAdapter) BlastSnapshot(ctx context.Context, inc IncidentSummar
 	if br.AffectedUsers != nil {
 		users = *br.AffectedUsers
 	}
+	families, err := a.topErrorFamiliesWithFilter(filter)
+	if err != nil {
+		return BlastSnapshotResult{}, err
+	}
+	return BlastSnapshotResult{
+		Requests:         br.AffectedRequests,
+		Users:            users,
+		Services:         br.AffectedServices,
+		TopErrorFamilies: families,
+	}, nil
+}
+
+func (a blastQueryAdapter) topErrorFamilies(inc IncidentSummary, opts BuildOptions) ([]pkgtriage.ErrorFamily, error) {
+	return a.topErrorFamiliesWithFilter(blastFilter(inc, opts))
+}
+
+func (a blastQueryAdapter) topErrorFamiliesWithFilter(filter incidents.SearchFilter) ([]pkgtriage.ErrorFamily, error) {
 	rows := a.r.Errors(filter, 5).Rows
 	families := make([]pkgtriage.ErrorFamily, 0, len(rows))
 	for _, row := range rows {
@@ -133,12 +163,24 @@ func (a blastQueryAdapter) BlastSnapshot(ctx context.Context, inc IncidentSummar
 			Count:     row.Count,
 		})
 	}
-	return BlastSnapshotResult{
-		Requests:         br.AffectedRequests,
-		Users:            users,
-		Services:         br.AffectedServices,
-		TopErrorFamilies: families,
-	}, nil
+	return families, nil
+}
+
+func blastFilter(inc IncidentSummary, opts BuildOptions) incidents.SearchFilter {
+	end := opts.Now
+	if end.IsZero() {
+		end = inc.UpdatedAt
+	}
+	window := opts.Window
+	if window <= 0 {
+		window = defaultWindow
+	}
+	return incidents.SearchFilter{
+		Service:   inc.Service,
+		ErrorCode: inc.ErrorCode,
+		Since:     end.Add(-window),
+		Until:     end,
+	}
 }
 
 type storyBuilderAdapter struct {
@@ -155,7 +197,56 @@ func NewStoryBuilderAdapter(r IncidentReader, build StoryBuildFunc) StoryBuilder
 	return storyBuilderAdapter{r: r, build: build}
 }
 
-func (a storyBuilderAdapter) FirstFailureStory(ctx context.Context, inc IncidentSummary, _ BuildOptions) (FirstFailureResult, error) {
+func (a storyBuilderAdapter) FirstFailureStory(ctx context.Context, inc IncidentSummary, opts BuildOptions) (FirstFailureResult, error) {
+	if inc.Propagation != nil && inc.Propagation.Latest != nil {
+		return a.firstFailureFromSnapshot(inc)
+	}
+	return a.firstFailureFromReader(ctx, inc)
+}
+
+// firstFailureFromSnapshot projects from Incident.Propagation.Latest + Blast.Latest
+// (spec: Report.SampleTraces ← Incident.Blast.Latest.SampledTraces; FirstFailure is
+// a compact JSON object with origin_service / origin_step / first_failing_step /
+// error_code / sample_trace_id).
+func (a storyBuilderAdapter) firstFailureFromSnapshot(inc IncidentSummary) (FirstFailureResult, error) {
+	p := inc.Propagation.Latest
+	firstFailing, errCode := firstErrorStep(p)
+	payload := struct {
+		OriginService    string `json:"origin_service"`
+		OriginStep       string `json:"origin_step"`
+		FirstFailingStep string `json:"first_failing_step,omitempty"`
+		ErrorCode        string `json:"error_code,omitempty"`
+		SampleTraceID    string `json:"sample_trace_id,omitempty"`
+	}{
+		OriginService:    p.OriginService,
+		OriginStep:       p.OriginStep,
+		FirstFailingStep: firstFailing,
+		ErrorCode:        errCode,
+		SampleTraceID:    p.SampleTraceID,
+	}
+	raw, err := json.Marshal(&payload)
+	if err != nil {
+		return FirstFailureResult{}, fmt.Errorf("triage: project first failure: %w", err)
+	}
+	var samples []pkgtriage.TraceSample
+	if inc.Blast != nil && inc.Blast.Latest != nil {
+		for _, traceID := range inc.Blast.Latest.SampledTraces {
+			summary := ""
+			if traceID == p.SampleTraceID {
+				summary = storySummaryFromPath(p)
+			}
+			samples = append(samples, pkgtriage.TraceSample{TraceID: traceID, Summary: summary})
+		}
+	}
+	if len(samples) == 0 && p.SampleTraceID != "" {
+		samples = []pkgtriage.TraceSample{{TraceID: p.SampleTraceID, Summary: storySummaryFromPath(p)}}
+	}
+	return FirstFailureResult{Payload: raw, SampleTraces: samples}, nil
+}
+
+// firstFailureFromReader is the pre-v1.0 computation path. Called when the
+// incident has no Propagation.Latest snapshot.
+func (a storyBuilderAdapter) firstFailureFromReader(ctx context.Context, inc IncidentSummary) (FirstFailureResult, error) {
 	upstream, err := a.r.Get(ctx, inc.ID)
 	if err != nil {
 		if errors.Is(err, incidents.ErrNotFound) {
@@ -180,6 +271,27 @@ func (a storyBuilderAdapter) FirstFailureStory(ctx context.Context, inc Incident
 		Payload:      payload,
 		SampleTraces: []pkgtriage.TraceSample{{TraceID: resp.TraceID, Summary: summary}},
 	}, nil
+}
+
+// firstErrorStep walks p.Path and returns the first step with status="error"
+// (step name + error code). Returns "","" if none.
+func firstErrorStep(p *incidents.PropagationEvidence) (step, code string) {
+	if p == nil {
+		return "", ""
+	}
+	for _, s := range p.Path {
+		if s.Status == "error" {
+			return s.Step, s.ErrorCode
+		}
+	}
+	return "", ""
+}
+
+func storySummaryFromPath(p *incidents.PropagationEvidence) string {
+	if p == nil || len(p.Path) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s/%s → %s", p.OriginService, p.OriginStep, p.Path[len(p.Path)-1].Step)
 }
 
 func storySummary(s apiv2.StoryResponse, inc IncidentSummary) string {

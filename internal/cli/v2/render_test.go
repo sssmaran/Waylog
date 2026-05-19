@@ -228,3 +228,66 @@ func TestRenderTriageHeaderAndSections(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderIncident_WithPropagationAndBlast(t *testing.T) {
+	ts := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	users := 47
+	openUsers := 5
+	resp := IncidentDetailResponse{
+		Incident: Incident{
+			IncidentID: "inc_render",
+			Service:    "payment-service",
+			Status:     "active",
+			Propagation: &apiv2.PropagationSnapshot{
+				Latest: &apiv2.PropagationEvidence{
+					OriginService: "payment-service",
+					OriginStep:    "charge",
+					Path: []apiv2.PropagationStep{
+						{Service: "payment-service", Step: "validate", Status: "ok"},
+						{Service: "payment-service", Step: "charge", Status: "error", ErrorCode: "DB_TIMEOUT"},
+					},
+					SampleTraceID: "7a3fb2",
+					CapturedAt:    ts,
+					CaptureStatus: "ok",
+				},
+			},
+			Blast: &apiv2.BlastSnapshot{
+				Opening: &apiv2.BlastEvidence{AffectedRequests: 3, AffectedServices: 1, AffectedUsers: &openUsers, CapturedAt: ts, CaptureStatus: "ok"},
+				Latest:  &apiv2.BlastEvidence{AffectedRequests: 184, AffectedServices: 3, AffectedUsers: &users, TopServices: []string{"checkout", "api-gateway"}, CapturedAt: ts, CaptureStatus: "ok"},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	RenderIncident(&buf, resp)
+	out := buf.String()
+	for _, want := range []string{
+		"Where did it start?",
+		"Origin: payment-service / charge",
+		"First failing step: charge  DB_TIMEOUT",
+		"validate → charge",
+		"How bad is it?",
+		"At open: 3 req",
+		"Now:     184 req",
+		"Top services: checkout, api-gateway",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered output missing %q\n\nFull output:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderIncident_PropagationMissing_ShowsRetryLine(t *testing.T) {
+	resp := IncidentDetailResponse{
+		Incident: Incident{
+			IncidentID: "inc_missing",
+			Propagation: &apiv2.PropagationSnapshot{
+				Latest: &apiv2.PropagationEvidence{CapturedAt: time.Now(), CaptureStatus: "missing"},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	RenderIncident(&buf, resp)
+	if !strings.Contains(buf.String(), "Propagation evidence unavailable") {
+		t.Errorf("missing-state render missing the retry line:\n%s", buf.String())
+	}
+}

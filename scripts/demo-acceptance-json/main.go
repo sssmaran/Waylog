@@ -101,7 +101,7 @@ type blastResponse struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: demo-acceptance-json <has-payment-error|payment-error-count|payment-affected-traces|first-payment-trace|first-event-id|burst-signals-accepted|has-dependency-incident|incident-cause-is-dependency|first-incident-id|triage-report-hash|plan-triage-report-hash|triage-first-trace|triage-has-alert|triage-has-alert-id|triage-has-trace|triage-has-dependency-signal|triage-has-next-check|triage-root-cause-accurate|blast-affected-services> [arg]")
+		fmt.Fprintln(os.Stderr, "usage: demo-acceptance-json <has-payment-error|payment-error-count|payment-affected-traces|first-payment-trace|first-event-id|burst-signals-accepted|has-dependency-incident|incident-cause-is-dependency|first-incident-id|active-incident-ids|triage-report-hash|plan-triage-report-hash|triage-first-trace|triage-has-alert|triage-has-alert-id|triage-has-trace|triage-has-dependency-signal|triage-has-next-check|triage-root-cause-accurate|blast-affected-services> [arg]")
 		os.Exit(2)
 	}
 
@@ -142,6 +142,10 @@ func main() {
 		}
 	case "first-incident-id":
 		fmt.Println(firstIncidentID(body))
+	case "active-incident-ids":
+		for _, id := range activeIncidentIDs(body) {
+			fmt.Println(id)
+		}
 	case "triage-report-hash":
 		fmt.Println(triageReportHash(body))
 	case "plan-triage-report-hash":
@@ -295,6 +299,20 @@ func firstIncidentID(body []byte) string {
 		}
 	}
 	return ""
+}
+
+func activeIncidentIDs(body []byte) []string {
+	var resp incidentsResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(resp.Incidents))
+	for _, inc := range resp.Incidents {
+		if inc.Status == "active" && inc.IncidentID != "" {
+			ids = append(ids, inc.IncidentID)
+		}
+	}
+	return ids
 }
 
 func incidentCauseIsDependency(body []byte, incidentID string) bool {

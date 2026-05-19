@@ -256,11 +256,15 @@ func TestRebuildOrchestratorUsesRebuildApply(t *testing.T) {
 }
 
 type fakeReader struct {
-	current ErrorsResult
-	base    ErrorsResult
-	blast   apiv2.BlastRadiusResponse
-	events  []*eventv2.Event
-	calls   int
+	current     ErrorsResult
+	base        ErrorsResult
+	blast       apiv2.BlastRadiusResponse
+	events      []*eventv2.Event
+	calls       int
+	story       apiv2.StoryResponse
+	storyOK     bool
+	traceEvts   []*eventv2.Event
+	traceEvtsOK bool
 }
 
 func (r *fakeReader) Errors(_ SearchFilter, _ int) ErrorsResult {
@@ -281,6 +285,14 @@ func (r *fakeReader) SearchEvents(_ SearchFilter, _ int) []*eventv2.Event {
 	return r.events
 }
 
+func (r *fakeReader) TraceStoryByTraceID(_ string) (apiv2.StoryResponse, bool) {
+	return r.story, r.storyOK
+}
+
+func (r *fakeReader) TraceEvents(_ string) ([]*eventv2.Event, bool) {
+	return r.traceEvts, r.traceEvtsOK
+}
+
 type fakeSignalStore struct {
 	rows    []signals.Signal
 	filters []signals.Filter
@@ -289,4 +301,89 @@ type fakeSignalStore struct {
 func (s *fakeSignalStore) Query(_ context.Context, f signals.Filter) ([]signals.Signal, error) {
 	s.filters = append(s.filters, f)
 	return s.rows, nil
+}
+
+func TestEngine_PropagationOpeningSurvivesAcrossTicks(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	fam := testFamily()
+
+	reader := &fakeReader{
+		current: ErrorsResult{Rows: []apiv2.ErrorRow{{
+			ErrorFamily:    fam,
+			Count:          6,
+			AffectedTraces: 6,
+			SampleTraces:   []string{"trace_a"},
+		}}},
+		blast: apiv2.BlastRadiusResponse{
+			AffectedRequests: 3,
+			AffectedServices: 2,
+			SampleTraces:     []string{"trace_a"},
+			TopServices:      []string{"checkout"},
+		},
+		events: []*eventv2.Event{
+			testIncidentEvent("anchor", "trace_a", now.Add(-time.Minute),
+				"checkout", fam.Step, fam.ErrorCode, fam.Service),
+		},
+		story: apiv2.StoryResponse{
+			Service: fam.Service,
+			Anchor:  &apiv2.StoryAnchor{Step: fam.Step},
+			Path:    []apiv2.StoryStep{{Name: fam.Step, Status: "error", ErrorCode: fam.ErrorCode}},
+		},
+		storyOK: true,
+		traceEvts: []*eventv2.Event{{
+			TsStart: now.Add(-90 * time.Second),
+			Anchor:  &eventv2.Anchor{Step: fam.Step, ErrorCode: fam.ErrorCode},
+		}},
+		traceEvtsOK: true,
+	}
+	store := NewMemoryStore()
+	engine := NewEngine(reader, nil, nil, store, Config{MinCount: 5, ResolveAfter: time.Minute, SampleLimit: 2}, nil, nil)
+	engine.now = func() time.Time { return now }
+	ctx := context.Background()
+	if err := engine.Bootstrap(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	actives, err := engine.Active(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actives) != 1 {
+		t.Fatalf("expected 1 active incident, got %d", len(actives))
+	}
+	incID := actives[0].IncidentID
+	if actives[0].Propagation == nil || actives[0].Propagation.Opening == nil {
+		t.Fatalf("Propagation.Opening should be set after tick 1: %+v", actives[0].Propagation)
+	}
+	if actives[0].Blast == nil || actives[0].Blast.Opening == nil {
+		t.Fatalf("Blast.Opening should be set after tick 1: %+v", actives[0].Blast)
+	}
+
+	// Tick 2: blast still OK, but no sample traces -> propagation missing.
+	// Opening should carry forward through the engine merge + store persistence.
+	reader.blast.SampleTraces = nil
+	reader.storyOK = false
+	reader.traceEvtsOK = false
+	now = now.Add(30 * time.Second)
+	engine.now = func() time.Time { return now }
+	if err := engine.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get(ctx, incID)
+	if err != nil {
+		t.Fatalf("store get: %v", err)
+	}
+	if got.Propagation == nil || got.Propagation.Opening == nil {
+		t.Fatalf("Propagation.Opening lost after tick 2: %+v", got.Propagation)
+	}
+	if got.Propagation.Latest == nil || got.Propagation.Latest.CaptureStatus != CaptureMissing {
+		t.Errorf("Propagation.Latest should be missing: %+v", got.Propagation.Latest)
+	}
+	if got.Blast == nil || got.Blast.Opening == nil {
+		t.Errorf("Blast.Opening should still be set: %+v", got.Blast)
+	}
 }

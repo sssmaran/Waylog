@@ -311,6 +311,58 @@ func (e *Engine) TopActive(ctx context.Context) (*Incident, error) {
 	return &rows[0], nil
 }
 
+// safeBlastRadius wraps reader.BlastRadius with a panic recover so a reader
+// fault never propagates into the tick. ok=false means the reader call
+// faulted; callers should treat the returned response as zero-value and
+// record CaptureStatus=missing for downstream evidence.
+func safeBlastRadius(r Reader, f SearchFilter, k apiv2.BlastKey) (out apiv2.BlastRadiusResponse, ok bool) {
+	if r == nil {
+		return apiv2.BlastRadiusResponse{}, false
+	}
+	ok = true
+	defer func() {
+		if rec := recover(); rec != nil {
+			out, ok = apiv2.BlastRadiusResponse{}, false
+		}
+	}()
+	out = r.BlastRadius(f, k)
+	return out, ok
+}
+
+func safeTraceStory(r Reader, traceID string) (resp apiv2.StoryResponse, ok bool) {
+	if r == nil {
+		return apiv2.StoryResponse{}, false
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			resp, ok = apiv2.StoryResponse{}, false
+		}
+	}()
+	return r.TraceStoryByTraceID(traceID)
+}
+
+func safeTraceEvents(r Reader, traceID string) (events []*eventv2.Event, ok bool) {
+	if r == nil {
+		return nil, false
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			events, ok = nil, false
+		}
+	}()
+	return r.TraceEvents(traceID)
+}
+
+func filterEventsByTrace(events []*eventv2.Event, traceID string) []*eventv2.Event {
+	out := make([]*eventv2.Event, 0, 1)
+	for _, ev := range events {
+		if ev != nil && ev.TraceID == traceID {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Incident, reader Reader, row apiv2.ErrorRow, baselineCount int, lift float64, since, now time.Time) (Incident, bool, error) {
 	events := sampleEventsFromReader(reader, row.ErrorFamily, since, now, 200)
 	startedAt := earliestEventTime(events, now)
@@ -327,7 +379,7 @@ func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Inci
 			hadExisting = true
 		}
 	}
-	blast := reader.BlastRadius(
+	blast, blastOK := safeBlastRadius(reader,
 		SearchFilter{Since: since, Until: now},
 		apiv2.BlastKey{Service: row.ErrorFamily.Service, Step: row.ErrorFamily.Step, ErrorCode: row.ErrorFamily.ErrorCode},
 	)
@@ -361,6 +413,36 @@ func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Inci
 	if hadExisting {
 		inc.StartedAt = existing.StartedAt
 		inc.RecoveringAt = nil
+	}
+	if reader != nil && inc.Status != StatusResolved {
+		blastStatus := CaptureOK
+		if !blastOK {
+			blastStatus = CaptureMissing
+		}
+		inc.Blast = updateBlastSnapshot(existing.Blast, newBlastEvidence(blast, now, blastStatus))
+
+		var story *apiv2.StoryResponse
+		var firstSeenAt *time.Time
+		var sampleTraceID string
+		if blastOK && len(blast.SampleTraces) > 0 {
+			sampleTraceID = blast.SampleTraces[0]
+			if s, ok := safeTraceStory(reader, sampleTraceID); ok {
+				story = &s
+			}
+			// Prefer events already loaded for this family scan; fall back to a
+			// dedicated TraceEvents read only if the sample trace had no
+			// anchor-matching event in that scan.
+			traceEvts := filterEventsByTrace(events, sampleTraceID)
+			if len(traceEvts) == 0 {
+				if evts, ok := safeTraceEvents(reader, sampleTraceID); ok {
+					traceEvts = evts
+				}
+			}
+			if ts, ok2 := pickAnchorTsStart(traceEvts, inc.ErrorFamily); ok2 {
+				firstSeenAt = &ts
+			}
+		}
+		inc.Propagation = updatePropagationSnapshot(existing.Propagation, newPropagationEvidence(story, sampleTraceID, firstSeenAt, now))
 	}
 	class := Classify(ClassificationInput{Incident: inc, Events: events, Signals: sigs, Deployments: deploys, Now: now})
 	inc.Cause = class.Cause

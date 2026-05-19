@@ -1,9 +1,8 @@
 -- 001_initial.sql: events + deployments tables for SQLite cold storage.
-
-PRAGMA journal_mode = WAL;
-PRAGMA busy_timeout = 5000;
-PRAGMA foreign_keys = ON;
-PRAGMA synchronous = NORMAL;
+-- Connection-level PRAGMAs (journal_mode, busy_timeout, foreign_keys,
+-- synchronous) are configured by Open() via the writer DSN or, for
+-- :memory:, via explicit Exec calls — not here, because PRAGMAs that
+-- change safety/journal modes cannot run inside a transaction.
 
 CREATE TABLE IF NOT EXISTS events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

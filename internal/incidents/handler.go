@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 )
@@ -111,6 +112,79 @@ func toAPIIncident(inc Incident) apiv2.Incident {
 		Lift:                    inc.Lift,
 		BaselineCount:           inc.BaselineCount,
 		CurrentCount:            inc.CurrentCount,
+		Propagation:             toAPIPropagation(inc.Propagation),
+		Blast:                   toAPIBlast(inc.Blast),
+	}
+}
+
+func toAPIPropagation(s *PropagationSnapshot) *apiv2.PropagationSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &apiv2.PropagationSnapshot{
+		Opening: toAPIPropagationEvidence(s.Opening),
+		Latest:  toAPIPropagationEvidence(s.Latest),
+	}
+}
+
+func toAPIPropagationEvidence(p *PropagationEvidence) *apiv2.PropagationEvidence {
+	if p == nil {
+		return nil
+	}
+	path := make([]apiv2.PropagationStep, 0, len(p.Path))
+	for _, s := range p.Path {
+		path = append(path, apiv2.PropagationStep{
+			Service:    s.Service,
+			Step:       s.Step,
+			StartMS:    s.StartMS,
+			DurationMS: s.DurationMS,
+			Status:     s.Status,
+			ErrorCode:  s.ErrorCode,
+		})
+	}
+	var firstSeen *time.Time
+	if p.FirstSeenAt != nil {
+		t := *p.FirstSeenAt
+		firstSeen = &t
+	}
+	return &apiv2.PropagationEvidence{
+		OriginService: p.OriginService,
+		OriginStep:    p.OriginStep,
+		Path:          path,
+		SampleTraceID: p.SampleTraceID,
+		FirstSeenAt:   firstSeen,
+		CapturedAt:    p.CapturedAt,
+		CaptureStatus: string(p.CaptureStatus),
+	}
+}
+
+func toAPIBlast(s *BlastSnapshot) *apiv2.BlastSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &apiv2.BlastSnapshot{
+		Opening: toAPIBlastEvidence(s.Opening),
+		Latest:  toAPIBlastEvidence(s.Latest),
+	}
+}
+
+func toAPIBlastEvidence(b *BlastEvidence) *apiv2.BlastEvidence {
+	if b == nil {
+		return nil
+	}
+	var users *int
+	if b.AffectedUsers != nil {
+		u := *b.AffectedUsers
+		users = &u
+	}
+	return &apiv2.BlastEvidence{
+		AffectedRequests: b.AffectedRequests,
+		AffectedUsers:    users,
+		AffectedServices: b.AffectedServices,
+		TopServices:      append([]string(nil), b.TopServices...),
+		SampledTraces:    append([]string(nil), b.SampledTraces...),
+		CapturedAt:       b.CapturedAt,
+		CaptureStatus:    string(b.CaptureStatus),
 	}
 }
 

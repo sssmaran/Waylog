@@ -115,5 +115,60 @@ func cloneIncident(in Incident) Incident {
 		v := *in.ResolvedAt
 		out.ResolvedAt = &v
 	}
+	out.Propagation = clonePropagationSnapshot(in.Propagation)
+	out.Blast = cloneBlastSnapshot(in.Blast)
 	return out
+}
+
+func clonePropagationEvidence(p *PropagationEvidence) *PropagationEvidence {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	if p.Path != nil {
+		out.Path = append([]PropagationStep(nil), p.Path...)
+	}
+	if p.FirstSeenAt != nil {
+		t := *p.FirstSeenAt
+		out.FirstSeenAt = &t
+	}
+	return &out
+}
+
+func clonePropagationSnapshot(s *PropagationSnapshot) *PropagationSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &PropagationSnapshot{
+		Opening: clonePropagationEvidence(s.Opening),
+		Latest:  clonePropagationEvidence(s.Latest),
+	}
+}
+
+func cloneBlastEvidence(b *BlastEvidence) *BlastEvidence {
+	if b == nil {
+		return nil
+	}
+	out := *b
+	if b.AffectedUsers != nil {
+		u := *b.AffectedUsers
+		out.AffectedUsers = &u
+	}
+	if b.TopServices != nil {
+		out.TopServices = append([]string(nil), b.TopServices...)
+	}
+	if b.SampledTraces != nil {
+		out.SampledTraces = append([]string(nil), b.SampledTraces...)
+	}
+	return &out
+}
+
+func cloneBlastSnapshot(s *BlastSnapshot) *BlastSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &BlastSnapshot{
+		Opening: cloneBlastEvidence(s.Opening),
+		Latest:  cloneBlastEvidence(s.Latest),
+	}
 }

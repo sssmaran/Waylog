@@ -59,6 +59,13 @@ func TestStaticDashboardHTML(t *testing.T) {
 		"renderSparkline",
 		"This dashboard requires WAYLOG_V2_READS=true",
 		"first observable failing step",
+		"Where did it start?",
+		"How bad is it?",
+		"At open",
+		"Top services",
+		"captured ",
+		"renderPropagationBlock",
+		"renderBlastBlock",
 	}
 	for _, needle := range required {
 		if !strings.Contains(html, needle) {

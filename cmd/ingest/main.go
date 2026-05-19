@@ -447,6 +447,20 @@ func main() {
 		mux.Handle("/v1/events/", readCORS(v2ReadHandler.EventByID))
 		mux.Handle("/v1/traces/", readCORS(v2ReadHandler.TraceByID))
 		slog.Info("v2 read endpoints enabled")
+		// Replace legacy graph-backed explain_request / blast_radius with the
+		// v2-reader-backed handlers now that v2Reader exists. Other graph tools
+		// remain registered (Step 2 of the deletion plan removes them).
+		{
+			v2ToolReader := incidentReaderAdapter{reader: v2Reader}
+			if err := tools.RegisterExplainRequestTool(reg, v2ToolReader); err != nil {
+				slog.Error("register explain_request v2", "err", err)
+				os.Exit(1)
+			}
+			if err := tools.RegisterBlastRadiusTool(reg, v2ToolReader); err != nil {
+				slog.Error("register blast_radius v2", "err", err)
+				os.Exit(1)
+			}
+		}
 		if incidentsEnabled {
 			if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
 				incidentStore := coldstore.NewIncidentStore(sqlite)
@@ -1082,6 +1096,18 @@ func (a incidentReaderAdapter) BlastRadius(f incidents.SearchFilter, key apiv2.B
 func (a incidentReaderAdapter) SearchEvents(f incidents.SearchFilter, limit int) []*eventv2.Event {
 	res := a.reader.SearchEvents(toV2SearchFilter(f), nil, limit)
 	return res.Events
+}
+
+func (a incidentReaderAdapter) TraceStoryByTraceID(traceID string) (apiv2.StoryResponse, bool) {
+	return a.reader.TraceStoryByTraceID(traceID)
+}
+
+func (a incidentReaderAdapter) TraceEvents(traceID string) ([]*eventv2.Event, bool) {
+	result, ok := a.reader.GetTrace(traceID)
+	if !ok {
+		return nil, false
+	}
+	return result.Events, true
 }
 
 func toV2SearchFilter(f incidents.SearchFilter) ingestv2.SearchFilter {

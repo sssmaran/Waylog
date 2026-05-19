@@ -44,6 +44,10 @@ json_first_incident_id() {
   "$JSON_BIN" first-incident-id
 }
 
+json_active_incident_ids() {
+  "$JSON_BIN" active-incident-ids
+}
+
 json_triage_report_hash() {
   "$JSON_BIN" triage-report-hash
 }
@@ -144,6 +148,30 @@ incident_id="$(json_first_incident_id <<<"$incidents_json")"
 
 "${CLI[@]}" --json incident "$incident_id" >/dev/null || fail "waylog incident failed for incident $incident_id"
 echo "PASS: waylog incident"
+
+# --- v1.0 incident evidence: propagation.latest + blast.latest ---
+# Parity gate: every active incident must have both snapshots populated.
+# Wait up to ~70s (≈ two engine ticks at 30s default) for capture to fire
+# on each one before failing.
+active_ids="$(json_active_incident_ids <<<"$incidents_json")"
+[[ -n "$active_ids" ]] || fail "no active incident_ids returned from /v1/incidents/active"
+while IFS= read -r active_id; do
+  [[ -n "$active_id" ]] || continue
+  inc_detail=""
+  latest_present="false"
+  for _ in $(seq 1 14); do
+    inc_detail="$(curl -fsS -H "Authorization: Bearer ${WAYLOG_READ_KEY}" "${INGEST_URL}/v1/incidents/${active_id}")" || fail "GET /v1/incidents/${active_id} failed"
+    latest_present="$(echo "$inc_detail" | jq -r '.incident.blast.latest != null and .incident.propagation.latest != null')"
+    if [[ "$latest_present" == "true" ]]; then
+      break
+    fi
+    sleep 5
+  done
+  [[ "$latest_present" == "true" ]] || fail "incident ${active_id} missing propagation.latest or blast.latest after waiting: $(echo "$inc_detail" | jq -c '{propagation:.incident.propagation,blast:.incident.blast}')"
+  echo "  ${active_id} propagation: $(echo "$inc_detail" | jq -r '.incident.propagation.latest | "origin=\(.origin_service)/\(.origin_step) status=\(.capture_status)" // "MISSING"')"
+  echo "  ${active_id} blast:       $(echo "$inc_detail" | jq -r '.incident.blast.latest | "req=\(.affected_requests) svc=\(.affected_services) users=\(.affected_users // 0) status=\(.capture_status)" // "MISSING"')"
+done <<<"$active_ids"
+echo "PASS: incident evidence (propagation.latest + blast.latest captured on every active incident)"
 
 snapshot="$("${CLI[@]}" incident "$incident_id" --snapshot)" || fail "waylog incident snapshot failed for incident $incident_id"
 [[ "$snapshot" == *"payment.charge"* ]] || fail "incident snapshot did not mention payment.charge"

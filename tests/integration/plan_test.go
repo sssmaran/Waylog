@@ -231,4 +231,3 @@ func TestPlan_SSEStream_NotFound(t *testing.T) {
 		t.Errorf("expected 404, got %d", rec.Code)
 	}
 }
-

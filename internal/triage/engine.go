@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/incidents"
 	pkgtriage "github.com/sssmaran/WaylogCLI/pkg/triage"
 )
 
@@ -15,16 +16,18 @@ var ErrUnknownIncident = errors.New("triage: unknown incident")
 // IncidentSummary is the minimal incident shape this package needs.
 // Adapter types in the wiring layer convert from internal/incidents.Incident.
 type IncidentSummary struct {
-	ID         string
-	Window     string
-	Env        string
-	StartedAt  time.Time
-	UpdatedAt  time.Time
-	Service    string
-	Step       string
-	ErrorCode  string
-	Confidence pkgtriage.Confidence
-	NextChecks []string
+	ID          string
+	Window      string
+	Env         string
+	StartedAt   time.Time
+	UpdatedAt   time.Time
+	Service     string
+	Step        string
+	ErrorCode   string
+	Confidence  pkgtriage.Confidence
+	NextChecks  []string
+	Propagation *incidents.PropagationSnapshot
+	Blast       *incidents.BlastSnapshot
 }
 
 type BlastSnapshotResult struct {

@@ -22,6 +22,28 @@ func TestDependencyIncidentHelpers(t *testing.T) {
 	}
 }
 
+func TestActiveIncidentIDs(t *testing.T) {
+	body := []byte(`{"incidents":[
+		{"incident_id":"inc_a","status":"active"},
+		{"incident_id":"inc_b","status":"resolved"},
+		{"incident_id":"inc_c","status":"active"},
+		{"incident_id":"","status":"active"}
+	]}`)
+	got := activeIncidentIDs(body)
+	want := []string{"inc_a", "inc_c"}
+	if len(got) != len(want) {
+		t.Fatalf("activeIncidentIDs len = %d (%v), want %d (%v)", len(got), got, len(want), want)
+	}
+	for i, id := range want {
+		if got[i] != id {
+			t.Fatalf("activeIncidentIDs[%d] = %q, want %q", i, got[i], id)
+		}
+	}
+	if got := activeIncidentIDs([]byte(`{not-json`)); got != nil {
+		t.Fatalf("malformed input should return nil, got %v", got)
+	}
+}
+
 func TestTriageReportHash(t *testing.T) {
 	body := []byte(`{"schema_version":"triage.v1","incident_ref":{"id":"inc_x"},"confidence":"medium","generated_at":"t","report_hash":"sha256:deadbeef"}`)
 	if got := triageReportHash(body); got != "sha256:deadbeef" {
