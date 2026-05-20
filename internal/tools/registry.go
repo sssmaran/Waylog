@@ -122,30 +122,6 @@ func refName(ref string) string {
 	return ""
 }
 
-// Replace inserts t under t.Name, overwriting any existing registration with
-// the same name. Use this when intentionally swapping a v1 handler for a v2
-// one (see explain_request / blast_radius v2 wiring in cmd/ingest/main.go).
-// Returns an error only on invalid Tool definitions (empty Name, missing
-// Handler, malformed schema). Does not error on overwrite — that is the
-// entire point of this method.
-func (r *Registry) Replace(t Tool) error {
-	if t.Name == "" {
-		return fmt.Errorf("tool name required")
-	}
-	if t.Handler == nil {
-		return fmt.Errorf("tool handler required: %s", t.Name)
-	}
-	if len(t.OutputSchema) > 0 {
-		inlined, err := inlineRefs(t.OutputSchema)
-		if err != nil {
-			return fmt.Errorf("inline refs for %s: %w", t.Name, err)
-		}
-		t.OutputSchema = inlined
-	}
-	r.tools[t.Name] = t
-	return nil
-}
-
 func (r *Registry) Tool(name string) (Tool, bool) {
 	t, ok := r.tools[name]
 	return t, ok

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # check-rollup-contract.sh — enforce the canonical rollup contract:
-# default user-facing surfaces (top errors, overview KPIs, compare_windows,
-# spike detection, failure_patterns) must consume analysis.RollupWindow,
-# not the propagation-counted store.SummarizeWindow / analysis.DiffSummaries
-# / analysis.DetectFailurePatternsFromSummary.
+# default user-facing surfaces (top errors, overview KPIs, spike detection)
+# must consume analysis.RollupWindow, not the propagation-counted
+# store.SummarizeWindow / analysis.DiffSummaries /
+# analysis.DetectFailurePatternsFromSummary.
 #
 # The allow-list below pins every legitimate reference. Any NEW mention of
 # these propagation-counted APIs outside the allow-list fails CI — that's

@@ -132,7 +132,6 @@ func main() {
 	dashboardRefreshSec := config.GetenvInt("DASHBOARD_REFRESH_SEC", 10)
 	prometheusURL := config.Getenv("PROMETHEUS_URL", "")
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
-	graphUI := config.GetenvBool("GRAPH_UI", false)
 	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
 	otlpGRPCAddr := config.Getenv("OTLP_GRPC_ADDR", ":4317")
 	if authCfg.Profile == auth.ProfileProd && otlpEnabled && len(authCfg.WriteKeys) == 0 {
@@ -176,10 +175,6 @@ func main() {
 	planStore := ingest.NewPlanStore()
 
 	reg := tools.NewRegistry()
-	if err := tools.RegisterGraphTools(reg); err != nil {
-		slog.Error("mcp tools init failed", "err", err)
-		os.Exit(1)
-	}
 
 	// Prometheus metrics
 	promReg := prometheus.NewRegistry()
@@ -269,7 +264,6 @@ func main() {
 		DashboardRefreshSec:      dashboardRefreshSec,
 		PrometheusURL:            prometheusURL,
 		GrafanaURL:               grafanaURL,
-		GraphUI:                  graphUI,
 		DedupCache:               dedupCache,
 		AgentKey:                 agentKey,
 		TrustProxy:               trustProxy,
@@ -317,7 +311,7 @@ func main() {
 		// The graph snapshot covers nodes/edges, so the graph only needs
 		// entries newer than snapshotSavedAt. The trace store is NOT
 		// snapshotted, so it must be rebuilt from the full hot window
-		// to restore drill-down data (trace_summary, story, topology).
+		// to restore drill-down trace data.
 		m.ReplayInProgress.Set(1)
 		traceReplayAfter := time.Now().Add(-graphHotWindow)
 		replayAfter := snapshotSavedAt
@@ -447,9 +441,9 @@ func main() {
 		mux.Handle("/v1/events/", readCORS(v2ReadHandler.EventByID))
 		mux.Handle("/v1/traces/", readCORS(v2ReadHandler.TraceByID))
 		slog.Info("v2 read endpoints enabled")
-		// Replace legacy graph-backed explain_request / blast_radius with the
-		// v2-reader-backed handlers now that v2Reader exists. Other graph tools
-		// remain registered (Step 2 of the deletion plan removes them).
+		// Register the reader-backed explain_request + blast_radius. The
+		// triage_incident + render_triage_report pair registers later once
+		// triage.Engine exists.
 		{
 			v2ToolReader := incidentReaderAdapter{reader: v2Reader}
 			if err := tools.RegisterExplainRequestTool(reg, v2ToolReader); err != nil {
@@ -628,7 +622,6 @@ func main() {
 	mux.Handle("/v1/overview/timeseries", readCORS(ingestServer.OverviewTimeseries))
 	mux.Handle("/v1/routes", readCORS(ingestServer.Routes))
 	mux.Handle("/v1/capabilities", readCORS(ingestServer.Capabilities))
-	mux.Handle("/v1/topology", readCORS(ingestServer.Topology))
 	mux.Handle("/v1/stream/dashboard", readCORS(ingestServer.SSEStream))
 	mux.Handle("/v1/insight", readCORS(ingestServer.Insight))
 	alertHandler := alerts.NewHandler(signalStore, incidentEngine, v2Reader, alertMatchWindow)
@@ -661,11 +654,6 @@ func main() {
 	mux.Handle("/v1/ask", agentCORS("POST, OPTIONS", ingestServer.Ask))
 	mux.Handle("/v1/plans/execute", agentCORS("POST, OPTIONS", ingestServer.PlanExecute))
 	mux.Handle("/v1/stream/plans/", agentCORS("GET, OPTIONS", ingestServer.PlanStream))
-
-	// Graph topology (feature-gated).
-	if graphUI {
-		mux.Handle("/v1/graph/topology", readCORS(ingestServer.GraphTopology))
-	}
 
 	// Dashboard.
 	mux.Handle("/ui/", dashGate(http.StripPrefix("/ui/", dashboard.Handler())))

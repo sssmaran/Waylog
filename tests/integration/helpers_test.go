@@ -45,9 +45,6 @@ func newIntegrationServer(t *testing.T) (*integrationServer, *coldstore.SQLiteSt
 	t.Cleanup(func() { bw.Stop() })
 
 	reg := tools.NewRegistry()
-	if err := tools.RegisterGraphTools(reg); err != nil {
-		t.Fatal(err)
-	}
 
 	dedup := ingest.NewDedupCache()
 

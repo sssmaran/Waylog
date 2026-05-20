@@ -1584,83 +1584,71 @@ func TestGraphTopology_WindowClamped(t *testing.T) {
 	}
 }
 
-func TestCapabilities_GraphFlagAndArchitecture(t *testing.T) {
+func TestCapabilities_Architecture(t *testing.T) {
 	t.Setenv("GRAPH_HOT_WINDOW", "90m")
 	t.Setenv("GRAPH_RETENTION", "24h")
 
-	tests := []struct {
-		name    string
-		graphUI bool
-		want    bool
-	}{
-		{"disabled", false, false},
-		{"enabled", true, true},
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
+	w := httptest.NewRecorder()
+	srv.Capabilities(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := NewServer(ServerConfig{GraphUI: tt.graphUI})
 
-			req := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
-			w := httptest.NewRecorder()
-			srv.Capabilities(w, req)
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if _, present := resp["graph"]; present {
+		t.Fatalf("capabilities.graph field should be removed, got %#v", resp["graph"])
+	}
 
-			if w.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d", w.Code)
-			}
-
-			var resp map[string]any
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("invalid json: %v", err)
-			}
-			if got := resp["graph"]; got != tt.want {
-				t.Fatalf("graph = %v, want %v", got, tt.want)
-			}
-
-			arch, ok := resp["architecture"].(map[string]any)
-			if !ok {
-				t.Fatalf("missing architecture capability block: %#v", resp["architecture"])
-			}
-			if flattened, ok := arch["flattened"].(bool); !ok || !flattened {
-				t.Fatalf("architecture.flattened = %v, want true", arch["flattened"])
-			}
-			traceStore, ok := arch["trace_store"].(map[string]any)
-			if !ok {
-				t.Fatalf("missing architecture.trace_store block: %#v", arch["trace_store"])
-			}
-			if enabled, ok := traceStore["enabled"].(bool); !ok || !enabled {
-				t.Fatalf("architecture.trace_store.enabled = %v, want true", traceStore["enabled"])
-			}
-			graph, ok := arch["graph"].(map[string]any)
-			if !ok {
-				t.Fatalf("missing architecture.graph block: %#v", arch["graph"])
-			}
-			nodes, ok := graph["nodes"].([]any)
-			if !ok {
-				t.Fatalf("architecture.graph.nodes has unexpected type %T", graph["nodes"])
-			}
-			if len(nodes) != 3 {
-				t.Fatalf("architecture.graph.nodes len = %d, want 3", len(nodes))
-			}
-			if nodes[0] != "request" || nodes[1] != "service" || nodes[2] != "error" {
-				t.Fatalf("architecture.graph.nodes = %#v, want [request service error]", nodes)
-			}
-			hotWindow, ok := arch["hot_window"].(map[string]any)
-			if !ok {
-				t.Fatalf("missing architecture.hot_window block: %#v", arch["hot_window"])
-			}
-			if enabled, ok := hotWindow["enabled"].(bool); !ok || !enabled {
-				t.Fatalf("architecture.hot_window.enabled = %v, want true", hotWindow["enabled"])
-			}
-			if source, ok := hotWindow["source"].(string); !ok || source != "GRAPH_HOT_WINDOW" {
-				t.Fatalf("architecture.hot_window.source = %v, want GRAPH_HOT_WINDOW", hotWindow["source"])
-			}
-			if duration, ok := hotWindow["duration"].(string); !ok || duration != "1h30m0s" {
-				t.Fatalf("architecture.hot_window.duration = %v, want 1h30m0s", hotWindow["duration"])
-			}
-			if secs, ok := hotWindow["duration_secs"].(float64); !ok || int64(secs) != 5400 {
-				t.Fatalf("architecture.hot_window.duration_secs = %v, want 5400", hotWindow["duration_secs"])
-			}
-		})
+	arch, ok := resp["architecture"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing architecture capability block: %#v", resp["architecture"])
+	}
+	if flattened, ok := arch["flattened"].(bool); !ok || !flattened {
+		t.Fatalf("architecture.flattened = %v, want true", arch["flattened"])
+	}
+	traceStore, ok := arch["trace_store"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing architecture.trace_store block: %#v", arch["trace_store"])
+	}
+	if enabled, ok := traceStore["enabled"].(bool); !ok || !enabled {
+		t.Fatalf("architecture.trace_store.enabled = %v, want true", traceStore["enabled"])
+	}
+	graph, ok := arch["graph"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing architecture.graph block: %#v", arch["graph"])
+	}
+	nodes, ok := graph["nodes"].([]any)
+	if !ok {
+		t.Fatalf("architecture.graph.nodes has unexpected type %T", graph["nodes"])
+	}
+	if len(nodes) != 3 {
+		t.Fatalf("architecture.graph.nodes len = %d, want 3", len(nodes))
+	}
+	if nodes[0] != "request" || nodes[1] != "service" || nodes[2] != "error" {
+		t.Fatalf("architecture.graph.nodes = %#v, want [request service error]", nodes)
+	}
+	hotWindow, ok := arch["hot_window"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing architecture.hot_window block: %#v", arch["hot_window"])
+	}
+	if enabled, ok := hotWindow["enabled"].(bool); !ok || !enabled {
+		t.Fatalf("architecture.hot_window.enabled = %v, want true", hotWindow["enabled"])
+	}
+	if source, ok := hotWindow["source"].(string); !ok || source != "GRAPH_HOT_WINDOW" {
+		t.Fatalf("architecture.hot_window.source = %v, want GRAPH_HOT_WINDOW", hotWindow["source"])
+	}
+	if duration, ok := hotWindow["duration"].(string); !ok || duration != "1h30m0s" {
+		t.Fatalf("architecture.hot_window.duration = %v, want 1h30m0s", hotWindow["duration"])
+	}
+	if secs, ok := hotWindow["duration_secs"].(float64); !ok || int64(secs) != 5400 {
+		t.Fatalf("architecture.hot_window.duration_secs = %v, want 5400", hotWindow["duration_secs"])
 	}
 }
 
@@ -1727,9 +1715,8 @@ func TestAsk_InvalidJSON_EnvelopeError(t *testing.T) {
 
 func TestToolCall_InvalidJSON_EnvelopeError(t *testing.T) {
 	reg := tools.NewRegistry()
-	tools.RegisterGraphTools(reg)
 	srv := &Server{store: graphstore.NewStore(), maxBodyBytes: 1 << 20, askRegistry: reg}
-	r := httptest.NewRequest("POST", "/v1/tools/graph_stats?envelope=v2", strings.NewReader("{bad"))
+	r := httptest.NewRequest("POST", "/v1/tools/explain_request?envelope=v2", strings.NewReader("{bad"))
 	r = r.WithContext(ContextWithRequestID(r.Context(), "req_test"))
 	w := httptest.NewRecorder()
 	srv.ToolCall(w, r)
@@ -1929,7 +1916,15 @@ func TestAsk_MissingProviderMessageIsProviderAgnostic(t *testing.T) {
 func TestToolCall_DedupSafetyNet_Exists(t *testing.T) {
 	dc := NewDedupCache()
 	reg := tools.NewRegistry()
-	tools.RegisterGraphTools(reg)
+	if err := reg.Register(tools.Tool{
+		Name:        "explain_request",
+		Description: "stub for dedup test",
+		Handler: func(_ context.Context, _ tools.Store, _ json.RawMessage) (any, error) {
+			return nil, fmt.Errorf("trace not found")
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	srv := &Server{
 		store:        graphstore.NewStore(),
 		maxBodyBytes: 1 << 20,

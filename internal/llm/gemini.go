@@ -471,34 +471,22 @@ func filterToolsForPrompt(tools []ToolDefinition, prompt string) []ToolDefinitio
 		}
 	}
 
+	// Order is most-specific-first: "report" beats "triage" (so
+	// "render the triage report" → render_triage_report), and
+	// "triage|incident" beats "trace|explain" (so "explain incident X"
+	// → triage_incident, not explain_request).
 	switch {
-	case strings.Contains(p, "trace"):
-		add("trace_summary")
-		add("trace_graph")
-		add("explain_request")
-	case strings.Contains(p, "service path") || strings.Contains(p, "path"):
-		add("trace_summary")
-		add("failure_chain")
-	case strings.Contains(p, "root cause") || strings.Contains(p, "why did") || strings.Contains(p, "why is"):
-		add("explain_request")
-		add("failure_chain")
-	case strings.Contains(p, "explain") || strings.Contains(p, "info"):
-		add("explain_request")
-	case strings.Contains(p, "impact") || strings.Contains(p, "affected") || strings.Contains(p, "blast") || strings.Contains(p, "radius"):
+	case strings.Contains(p, "report"):
+		add("render_triage_report")
+	case strings.Contains(p, "triage") || strings.Contains(p, "incident"):
+		add("triage_incident")
+	case strings.Contains(p, "impact") || strings.Contains(p, "affected") ||
+		strings.Contains(p, "blast") || strings.Contains(p, "radius"):
 		add("blast_radius")
-	case strings.Contains(p, "pattern"):
-		add("failure_patterns")
-	case strings.Contains(p, "diff") || strings.Contains(p, "compare"):
-		add("compare_windows")
-	case strings.Contains(p, "query"):
-		add("graph_query")
-	case strings.Contains(p, "insight") || strings.Contains(p, "top") || strings.Contains(p, "stats") ||
-		strings.Contains(p, "overview") || strings.Contains(p, "summary") || strings.Contains(p, "health") ||
-		strings.Contains(p, "what happened"):
-		add("graph_insights")
-	case strings.Contains(p, "failure") || strings.Contains(p, "error"):
-		add("graph_failures")
-		add("graph_insights")
+	case strings.Contains(p, "trace") || strings.Contains(p, "explain") ||
+		strings.Contains(p, "info") || strings.Contains(p, "root cause") ||
+		strings.Contains(p, "why did") || strings.Contains(p, "why is"):
+		add("explain_request")
 	}
 
 	return out
@@ -523,13 +511,8 @@ func fillToolArgsFromPrompt(tool string, raw json.RawMessage, prompt string) (js
 	}
 
 	switch tool {
-	case "explain_request", "failure_chain":
-		setIfMissing("request_id", extractRequestID(prompt))
-	case "trace_graph":
+	case "explain_request":
 		setIfMissing("trace_id", extractTraceID(prompt))
-	case "trace_summary":
-		setIfMissing("trace_id", extractTraceID(prompt))
-		setIfMissing("request_id", extractRequestID(prompt))
 	}
 
 	if len(args) == 0 {
@@ -540,13 +523,6 @@ func fillToolArgsFromPrompt(tool string, raw json.RawMessage, prompt string) (js
 		return raw, false
 	}
 	return out, true
-}
-
-func extractRequestID(prompt string) string {
-	if id := extractHexIDAfterKeyword(prompt, "request"); id != "" {
-		return id
-	}
-	return extractFirstHexID(prompt)
 }
 
 func extractTraceID(prompt string) string {

@@ -10,14 +10,16 @@ import (
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 )
 
+const (
+	toolExplainReqName = "explain_request"
+	toolBlastName      = "blast_radius"
+)
+
 // RegisterExplainRequestTool registers the explain_request tool backed by
-// incidents.Reader. Same tool name as the legacy graph-store-backed handler;
-// callers MUST invoke this AFTER RegisterGraphTools so it overrides the legacy
-// registration. The output shape changes from the legacy graph span-chain
-// payload to apiv2.StoryResponse — this is a deliberate v1.0 contract change
-// documented in docs/superpowers/specs/2026-05-18-graph-to-incident-evidence-design.md.
+// incidents.Reader. Output shape is apiv2.StoryResponse — see
+// docs/superpowers/specs/2026-05-18-graph-to-incident-evidence-design.md.
 func RegisterExplainRequestTool(reg *Registry, reader incidents.Reader) error {
-	return reg.Replace(Tool{
+	return reg.Register(Tool{
 		Name:        toolExplainReqName,
 		Description: "Return the trace story (per-step path, anchor, downstream) for a given trace_id.",
 		Version:     "explain.v2",
@@ -43,11 +45,9 @@ func RegisterExplainRequestTool(reg *Registry, reader incidents.Reader) error {
 }
 
 // RegisterBlastRadiusTool registers the blast_radius tool backed by
-// incidents.Reader. Same override semantics as RegisterExplainRequestTool —
-// must run AFTER RegisterGraphTools. Output shape changes to
-// apiv2.BlastRadiusResponse.
+// incidents.Reader. Output shape is apiv2.BlastRadiusResponse.
 func RegisterBlastRadiusTool(reg *Registry, reader incidents.Reader) error {
-	return reg.Replace(Tool{
+	return reg.Register(Tool{
 		Name:        toolBlastName,
 		Description: "Aggregate impact (affected requests, users, services, top services, sample traces) for an error family in a window.",
 		Version:     "blast.v2",

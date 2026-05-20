@@ -101,31 +101,3 @@ func TestCall_Success(t *testing.T) {
 		t.Errorf("unexpected result: %v", result)
 	}
 }
-
-func TestRegistry_Replace_Overwrites(t *testing.T) {
-	reg := NewRegistry()
-	h := func(_ context.Context, _ Store, _ json.RawMessage) (any, error) { return nil, nil }
-	if err := reg.Register(Tool{Name: "x", Handler: h, Description: "v1"}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	if err := reg.Replace(Tool{Name: "x", Handler: h, Description: "v2"}); err != nil {
-		t.Fatalf("Replace: %v", err)
-	}
-	got, ok := reg.Tool("x")
-	if !ok {
-		t.Fatal("tool x missing after Replace")
-	}
-	if got.Description != "v2" {
-		t.Errorf("Description = %q; want v2", got.Description)
-	}
-}
-
-func TestRegistry_Replace_RejectsInvalidTool(t *testing.T) {
-	reg := NewRegistry()
-	if err := reg.Replace(Tool{Name: ""}); err == nil {
-		t.Error("expected error on empty name")
-	}
-	if err := reg.Replace(Tool{Name: "x"}); err == nil {
-		t.Error("expected error on nil handler")
-	}
-}

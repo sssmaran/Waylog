@@ -119,7 +119,6 @@ type Server struct {
 	dashboardRefreshSec int
 	prometheusURL       string
 	grafanaURL          string
-	graphUI             bool
 	dedupCache          *DedupCache
 	agentKey            string
 	trustProxy          bool
@@ -198,7 +197,6 @@ type ServerConfig struct {
 	DashboardRefreshSec      int
 	PrometheusURL            string
 	GrafanaURL               string
-	GraphUI                  bool
 	DedupCache               *DedupCache
 	AgentKey                 string
 	TrustProxy               bool
@@ -243,7 +241,6 @@ func NewServer(cfg ServerConfig) *Server {
 		dashboardRefreshSec:       cfg.DashboardRefreshSec,
 		prometheusURL:             cfg.PrometheusURL,
 		grafanaURL:                cfg.GrafanaURL,
-		graphUI:                   cfg.GraphUI,
 		dedupCache:                cfg.DedupCache,
 		agentKey:                  cfg.AgentKey,
 		trustProxy:                cfg.TrustProxy,
@@ -609,7 +606,6 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 			"prometheus": s.prometheusURL,
 			"grafana":    s.grafanaURL,
 		},
-		"graph": s.graphUI,
 		"otlp": map[string]any{
 			"http_traces": s.otlpEnabled,
 			"grpc_traces": s.otlpGRPCEnabled,
@@ -697,11 +693,8 @@ func (s *Server) Tools(w http.ResponseWriter, r *http.Request) {
 
 	registry := s.askRegistry
 	if registry == nil {
-		registry = tools.NewRegistry()
-		if err := tools.RegisterGraphTools(registry); err != nil {
-			respondError(w, r, http.StatusInternalServerError, "INTERNAL", "tool registry unavailable", true, APIMeta{RequestID: RequestIDFromContext(r.Context())})
-			return
-		}
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL", "tool registry unavailable", true, APIMeta{RequestID: RequestIDFromContext(r.Context())})
+		return
 	}
 
 	type toolEntry struct {
@@ -905,20 +898,16 @@ func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 
 	registry := s.askRegistry
 	if registry == nil {
-		registry = tools.NewRegistry()
-		if err := tools.RegisterGraphTools(registry); err != nil {
-			slog.Error("ask tool registry init failed", "err", err)
-			askHTTPStatus = http.StatusInternalServerError
-			askErrCode = "INTERNAL"
-			if dedupIsExecutor {
-				dedupCompleted = true
-				principal := s.dedupPrincipal(r)
-				s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body,
-					http.StatusInternalServerError, nil, &APIError{Code: "INTERNAL", Message: "tool registry unavailable", Retryable: true}, 0)
-			}
-			respondError(w, r, http.StatusInternalServerError, "INTERNAL", "tool registry unavailable", true, APIMeta{RequestID: reqID})
-			return
+		askHTTPStatus = http.StatusInternalServerError
+		askErrCode = "INTERNAL"
+		if dedupIsExecutor {
+			dedupCompleted = true
+			principal := s.dedupPrincipal(r)
+			s.dedupCache.Complete(r.Method, r.URL.Path, principal, idempKey, body,
+				http.StatusInternalServerError, nil, &APIError{Code: "INTERNAL", Message: "tool registry unavailable", Retryable: true}, 0)
 		}
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL", "tool registry unavailable", true, APIMeta{RequestID: reqID})
+		return
 	}
 
 	defs := make([]llm.ToolDefinition, 0, len(registry.List()))
