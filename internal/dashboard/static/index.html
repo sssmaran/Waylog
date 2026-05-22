@@ -1146,15 +1146,6 @@
         document.getElementById("app").innerHTML = shell(`<div class="error-box">${esc(message)}</div>`);
         bindShell();
       }
-      function renderDisabled() {
-        document.getElementById("app").innerHTML = `<main class="disabled">
-          <section class="card">
-            <div class="eyebrow" style="justify-content:center"><span class="dot" style="background:var(--warn);box-shadow:0 0 0 3px var(--warn-soft)"></span><span class="num">[setup]</span> required</div>
-            <h1>This dashboard requires WAYLOG_V2_READS=true.</h1>
-            <p class="muted">Restart the ingest server with v2 read APIs enabled, then refresh this page.</p>
-          </section>
-        </main>`;
-      }
       function bindShell() {
         const select = document.getElementById("window-select");
         if (select) select.addEventListener("change", async event => {
@@ -1193,14 +1184,10 @@
       window.addEventListener("hashchange", renderCurrentScreen);
       try {
         await loadCapabilities();
-        if (!state.capabilities?.v2_reads?.enabled) {
-          renderDisabled();
-        } else {
-          await loadDashboardData();
-          if (!location.hash) location.hash = "#/errors";
-          await renderCurrentScreen();
-          startPolling();
-        }
+        await loadDashboardData();
+        if (!location.hash) location.hash = "#/errors";
+        await renderCurrentScreen();
+        startPolling();
       } catch (err) {
         document.getElementById("app").innerHTML = `<div class="error-box">${esc(err.message || "Unable to load dashboard.")}</div>`;
       }

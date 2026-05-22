@@ -2,25 +2,11 @@ package cliv2
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
-
-func TestRunCLIRequiresV2Reads(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(CapabilitiesResponse{})
-	}))
-	defer srv.Close()
-
-	var stdout, stderr bytes.Buffer
-	code := RunCLI([]string{"--addr", srv.URL, "errors"}, nil, &stdout, &stderr)
-	if code != 3 || !strings.Contains(stderr.String(), "WAYLOG_V2_READS=true") {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-}
 
 func TestRunCLIErrorsHappyPath(t *testing.T) {
 	var gotPath, gotQuery string
@@ -103,35 +89,6 @@ func TestRunCLIIncidentsListsActive(t *testing.T) {
 	}
 }
 
-func TestRunCLIIncidentsEmptyAndRequiresV2Reads(t *testing.T) {
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		_, _ = w.Write([]byte(`{"v2_reads":{"enabled":false}}`))
-	}))
-	defer srv.Close()
-
-	var stdout, stderr bytes.Buffer
-	code := RunCLI([]string{"--addr", srv.URL, "incidents"}, nil, &stdout, &stderr)
-	if code != 3 || calls != 1 || !strings.Contains(stderr.String(), "WAYLOG_V2_READS=true") {
-		t.Fatalf("code=%d calls=%d stdout=%q stderr=%q", code, calls, stdout.String(), stderr.String())
-	}
-
-	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/capabilities" {
-			_, _ = w.Write([]byte(`{"v2_reads":{"enabled":true}}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"incidents":[]}`))
-	})
-	stdout.Reset()
-	stderr.Reset()
-	code = RunCLI([]string{"--addr", srv.URL, "incidents"}, nil, &stdout, &stderr)
-	if code != 0 || !strings.Contains(stdout.String(), "No active incidents.") {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-}
-
 func TestRunCLIIncidentDetailAndSnapshot(t *testing.T) {
 	calls := []string{}
 	accepts := []string{}
@@ -175,52 +132,6 @@ func TestRunCLIIncidentDetailAndSnapshot(t *testing.T) {
 	code = RunCLI([]string{"--addr", srv.URL, "--json", "incident", "inc/1", "--snapshot"}, nil, &stdout, &stderr)
 	if code != 0 || !strings.Contains(stdout.String(), `"snapshot"`) || accepts[len(accepts)-1] != "application/json" {
 		t.Fatalf("json snapshot code=%d accepts=%v stdout=%q stderr=%q", code, accepts, stdout.String(), stderr.String())
-	}
-}
-
-func TestRunCLIEventEscapesIDAndRequiresV2Reads(t *testing.T) {
-	calls := []string{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.URL.String())
-		if r.URL.Path == "/v1/capabilities" {
-			_, _ = w.Write([]byte(`{"v2_reads":{"enabled":true}}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"event":{"event_id":"event/1","trace_id":"trace","service":"checkout","status":"ok","duration_ms":3}}`))
-	}))
-	defer srv.Close()
-
-	var stdout, stderr bytes.Buffer
-	code := RunCLI([]string{"--addr", srv.URL, "event", "event/1"}, nil, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	if len(calls) != 2 || calls[1] != "/v1/events/event%2F1" {
-		t.Fatalf("calls=%v", calls)
-	}
-	if !strings.Contains(stdout.String(), "event_id: event/1") {
-		t.Fatalf("stdout=%q", stdout.String())
-	}
-}
-
-func TestRunCLICapabilitiesDoesNotRequireV2Reads(t *testing.T) {
-	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		_, _ = w.Write([]byte(`{"v2_reads":{"enabled":false},"otlp":{"http_traces":true}}`))
-	}))
-	defer srv.Close()
-
-	var stdout, stderr bytes.Buffer
-	code := RunCLI([]string{"--addr", srv.URL, "capabilities"}, nil, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	if gotPath != "/v1/capabilities" {
-		t.Fatalf("path=%q", gotPath)
-	}
-	if !strings.Contains(stdout.String(), "v2_reads: disabled") || !strings.Contains(stdout.String(), "otlp_http_traces: enabled") {
-		t.Fatalf("stdout=%q", stdout.String())
 	}
 }
 

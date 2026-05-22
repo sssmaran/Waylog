@@ -64,12 +64,9 @@ type toolsCallResult struct {
 	Content []toolContent `json:"content"`
 }
 
-func Serve(ctx context.Context, in io.Reader, out io.Writer, reg *tools.Registry, store tools.Store, info ServerInfo) error {
+func Serve(ctx context.Context, in io.Reader, out io.Writer, reg *tools.Registry, info ServerInfo) error {
 	if reg == nil {
 		return fmt.Errorf("registry required")
-	}
-	if store == nil {
-		return fmt.Errorf("store required")
 	}
 
 	enc := json.NewEncoder(out)
@@ -103,7 +100,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, reg *tools.Registry
 		}
 
 		if isNotification(req.ID) {
-			handleNotification(ctx, req, reg, store, info)
+			handleNotification(ctx, req, reg, info)
 			continue
 		}
 
@@ -145,7 +142,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, reg *tools.Registry
 			if len(params.Arguments) == 0 {
 				params.Arguments = json.RawMessage("{}")
 			}
-			result, err := reg.Call(ctx, store, params.Name, params.Arguments)
+			result, err := reg.Call(ctx, params.Name, params.Arguments)
 			if err != nil {
 				writeError(enc, req.ID, -32000, "tool error", err.Error())
 				continue
@@ -164,10 +161,9 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, reg *tools.Registry
 	}
 }
 
-func handleNotification(ctx context.Context, req rpcRequest, reg *tools.Registry, store tools.Store, info ServerInfo) {
+func handleNotification(ctx context.Context, req rpcRequest, reg *tools.Registry, info ServerInfo) {
 	_ = ctx
 	_ = reg
-	_ = store
 	_ = info
 }
 

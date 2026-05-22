@@ -43,7 +43,7 @@ func setupTestRegistry(t *testing.T) *tools.Registry {
 				"schema_version": {"type": "string"}
 			}
 		}`),
-		Handler: func(_ context.Context, _ tools.Store, _ json.RawMessage) (any, error) {
+		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			return map[string]any{"total_failures": 5, "schema_version": "1.0"}, nil
 		},
 	})
@@ -73,7 +73,7 @@ func setupTestRegistry(t *testing.T) *tools.Registry {
 				}
 			}
 		}`),
-		Handler: func(_ context.Context, _ tools.Store, _ json.RawMessage) (any, error) {
+		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			return map[string]any{"failures": []any{}}, nil
 		},
 	})
@@ -95,7 +95,7 @@ func setupTestRegistry(t *testing.T) *tools.Registry {
 				"verdict": {"type": "string"}
 			}
 		}`),
-		Handler: func(_ context.Context, _ tools.Store, _ json.RawMessage) (any, error) {
+		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			return map[string]any{"verdict": "ok"}, nil
 		},
 	})

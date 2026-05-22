@@ -31,11 +31,9 @@ else
   export WAYLOG_READ_KEY="${WAYLOG_READ_KEY:-demo}"
 fi
 export WAYLOG_PROFILE="${WAYLOG_PROFILE:-demo}"
-export WAYLOG_V2_READS="${WAYLOG_V2_READS:-true}"
 export WAYLOG_INCIDENT_TICK_INTERVAL="${WAYLOG_INCIDENT_TICK_INTERVAL:-5s}"
 export EVENT_LOG_DIR="${EVENT_LOG_DIR:-${STATE_DIR}/eventlog}"
 export EVENT_LOG_V2_DIR="${EVENT_LOG_V2_DIR:-${STATE_DIR}/eventlog-v2}"
-export SNAPSHOT_PATH="${SNAPSHOT_PATH:-${STATE_DIR}/graph_snapshot.json}"
 export SQLITE_PATH="${SQLITE_PATH:-${STATE_DIR}/waylog.db}"
 
 start() {

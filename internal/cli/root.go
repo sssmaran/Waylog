@@ -7,25 +7,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-
-	"github.com/sssmaran/WaylogCLI/internal/tools"
 )
 
-// defaultStore is set via SetDefaultStore for backward compatibility.
-var defaultStore tools.Store
-
-// SetDefaultStore sets the default store for CLI commands that don't provide one.
-func SetDefaultStore(s tools.Store) {
-	defaultStore = s
-}
-
-// Run runs the CLI with the default store.
+// Run runs the CLI.
 func Run(args []string) {
-	RunWithStore(defaultStore, args)
-}
-
-// RunWithStore runs the CLI with the provided store.
-func RunWithStore(store tools.Store, args []string) {
 	if len(args) == 0 {
 		usage()
 		return
@@ -41,7 +26,7 @@ func RunWithStore(store tools.Store, args []string) {
 			handleTools()
 			return
 		}
-		handleAsk(store, args[1:])
+		handleAsk(args[1:])
 	default:
 		usage()
 	}
@@ -108,7 +93,7 @@ func handleTools() {
 	}
 }
 
-func handleAsk(_ tools.Store, args []string) {
+func handleAsk(args []string) {
 	if len(args) > 0 && strings.TrimSpace(strings.Join(args, " ")) == "" {
 		fmt.Println("usage: waylog \"<question>\"")
 		return

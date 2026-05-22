@@ -12,7 +12,6 @@ export INGEST_URL="${INGEST_URL:-http://localhost:8080}"
 export WAYLOG_WRITE_KEY="${WAYLOG_WRITE_KEY:-demo}"
 export WAYLOG_READ_KEY="${WAYLOG_READ_KEY:-demo}"
 export DASHBOARD_AUTH="${DASHBOARD_AUTH:-key:demo}"
-export WAYLOG_V2_READS="${WAYLOG_V2_READS:-true}"
 export EVENT_LOG_V2_DIR="${EVENT_LOG_V2_DIR:-./data/eventlog-v2-demo}"
 
 pids=()

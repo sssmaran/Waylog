@@ -15,9 +15,9 @@ import (
 )
 
 // Upstream collaborator interfaces. Defined narrowly so adapters are testable
-// without instantiating real engines/stores. Production wiring (Task 11)
-// satisfies these with *incidents.Engine (Get / BlastRadius+Errors), the
-// signal store, and a closure over (*core.Graph, *tracestore.Store).
+// without instantiating real engines/stores. Production wiring satisfies
+// these with *incidents.Engine (Get / BlastRadius+Errors), the signal store,
+// and a closure over the v2 reader's TraceStoryByTraceID.
 
 // IncidentReader returns a single incident by ID. *incidents.Engine satisfies
 // this via its Get method.
@@ -190,7 +190,7 @@ type storyBuilderAdapter struct {
 
 // NewStoryBuilderAdapter wraps an upstream incident reader (to discover the
 // first-failure trace ID) and a story-build function (production: closure
-// over tracestory.BuildWithTraceStore). The trace selected is the first
+// over the v2 reader's TraceStoryByTraceID). The trace selected is the first
 // SampleTraces entry on the underlying incident; if none exists, returns an
 // empty result rather than erroring (M1).
 func NewStoryBuilderAdapter(r IncidentReader, build StoryBuildFunc) StoryBuilder {

@@ -288,7 +288,6 @@ func RenderSearch(w io.Writer, resp EventSearchResponse) {
 }
 
 func RenderCapabilities(w io.Writer, resp CapabilitiesResponse) {
-	fmt.Fprintf(w, "v2_reads: %s\n", enabledLabel(resp.V2Reads.Enabled))
 	fmt.Fprintf(w, "otlp_http_traces: %s\n", enabledLabel(resp.OTLP.HTTPTraces))
 	fmt.Fprintf(w, "otlp_grpc_traces: %s", enabledLabel(resp.OTLP.GRPCTraces))
 	if resp.OTLP.GRPCAddr != "" {

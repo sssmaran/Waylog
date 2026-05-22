@@ -146,7 +146,6 @@ func TestRenderCapabilitiesPrintsReadableFlags(t *testing.T) {
 	resp.Incidents.Rebuild.Scope = "hot-window"
 	RenderCapabilities(&out, resp)
 	for _, want := range []string{
-		"v2_reads: disabled",
 		"otlp_http_traces: enabled",
 		"otlp_grpc_traces: enabled addr=:4317",
 		"llm: provider=none configured=false ask_enabled=false",
@@ -160,7 +159,6 @@ func TestRenderCapabilitiesPrintsReadableFlags(t *testing.T) {
 
 func TestCapabilitiesJSONPreservesM2Fields(t *testing.T) {
 	raw := []byte(`{
-		"v2_reads":{"enabled":true},
 		"otlp":{"http_traces":true,"grpc_traces":true,"grpc_addr":":4317"},
 		"llm":{"provider":"none","model":"","tool_mode":"","configured":false,"ask_enabled":false},
 		"incidents":{"enabled":true,"persistent":true,"rebuild":{"supported":true,"scope":"hot-window"}}

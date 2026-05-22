@@ -24,7 +24,7 @@ func RegisterExplainRequestTool(reg *Registry, reader incidents.Reader) error {
 		Description: "Return the trace story (per-step path, anchor, downstream) for a given trace_id.",
 		Version:     "explain.v2",
 		InputSchema: json.RawMessage(explainRequestV2InputSchema),
-		Handler: func(_ context.Context, _ Store, params json.RawMessage) (any, error) {
+		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
 			var p struct {
 				TraceID string `json:"trace_id"`
 			}
@@ -52,7 +52,7 @@ func RegisterBlastRadiusTool(reg *Registry, reader incidents.Reader) error {
 		Description: "Aggregate impact (affected requests, users, services, top services, sample traces) for an error family in a window.",
 		Version:     "blast.v2",
 		InputSchema: json.RawMessage(blastRadiusV2InputSchema),
-		Handler: func(_ context.Context, _ Store, params json.RawMessage) (any, error) {
+		Handler: func(_ context.Context, params json.RawMessage) (any, error) {
 			var p struct {
 				Service   string `json:"service"`
 				Step      string `json:"step"`

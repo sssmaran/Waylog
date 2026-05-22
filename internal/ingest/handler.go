@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,16 +24,10 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/config"
 	"github.com/sssmaran/WaylogCLI/internal/detect"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
-	"github.com/sssmaran/WaylogCLI/internal/graph/analysis"
-	"github.com/sssmaran/WaylogCLI/internal/graph/build"
-	"github.com/sssmaran/WaylogCLI/internal/graph/core"
-	"github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/llm"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/sampler"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
-	"github.com/sssmaran/WaylogCLI/internal/tracestore"
-	"github.com/sssmaran/WaylogCLI/internal/tracestory"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
@@ -92,13 +85,10 @@ func (c *unsampledCounters) Sum(window time.Duration) (total, errs uint64) {
 //
 // Readiness semantics: /readyz gates on ingest availability, not replay
 // completeness. When replay fails the server becomes ready in degraded mode —
-// new events ingest correctly but historical reads (trace story, overview,
-// recent traces) may return partial results until the graph is rebuilt from
-// incoming traffic.
+// new events ingest correctly but historical reads (trace story, errors,
+// blast radius) may return partial results until the v2 reader is rebuilt
+// from incoming traffic.
 type Server struct {
-	store       *store.Store
-	traceStore  *tracestore.Store
-	builder     *build.Builder
 	sampler     *sampler.Sampler
 	metrics     *metrics.Metrics
 	EventLog    *eventlog.Writer
@@ -137,53 +127,20 @@ type Server struct {
 	otlpEnabled               bool
 	otlpGRPCEnabled           bool
 	otlpGRPCAddr              string
-	v2ReadsEnabled            bool
 	incidentsEnabled          bool
 	incidentsPersistent       bool
 	incidentsRebuildSupported bool
 	profile                   string
 
-	// SSE
-	sseHub               *SSEHub
-	sseHeartbeatInterval time.Duration // configurable for testing, defaults to 15s
-
-	// Causal engine status
-	causalMu        sync.Mutex
-	causalEnabled   bool
-	causalLastRun   time.Time
-	causalLastError string
-
 	// Anomaly detector
 	detector interface{ Current() *detect.Insight }
 }
 
-// SetSSEHub sets the SSE hub for real-time dashboard updates.
-func (s *Server) SetSSEHub(hub *SSEHub) { s.sseHub = hub }
-
 // SetDetector sets the anomaly detector for the /v1/insight endpoint.
 func (s *Server) SetDetector(d interface{ Current() *detect.Insight }) { s.detector = d }
 
-// SetCausalEnabled marks the causal engine as active.
-// Called once at startup before HTTP traffic, no lock needed.
-func (s *Server) SetCausalEnabled() { s.causalEnabled = true }
-
-// SetCausalRunResult records the result of a causal inference tick.
-// Called from the causal goroutine; reads happen from HTTP handlers (/healthz).
-func (s *Server) SetCausalRunResult(err error) {
-	s.causalMu.Lock()
-	s.causalLastRun = time.Now()
-	if err != nil {
-		s.causalLastError = err.Error()
-	} else {
-		s.causalLastError = ""
-	}
-	s.causalMu.Unlock()
-}
-
 // ServerConfig holds configuration for creating a new Server.
 type ServerConfig struct {
-	Store                    *store.Store
-	TraceStore               *tracestore.Store
 	Sampler                  *sampler.Sampler
 	Metrics                  *metrics.Metrics
 	MaxBodyBytes             int64
@@ -207,7 +164,6 @@ type ServerConfig struct {
 	OTLPEnabled              bool
 	OTLPGRPCEnabled          bool
 	OTLPGRPCAddr             string
-	V2ReadsEnabled           bool
 	IncidentsEnabled         bool
 	IncidentsPersistent      bool
 	IncidentRebuildSupported bool
@@ -225,9 +181,6 @@ func NewServer(cfg ServerConfig) *Server {
 		startTime = time.Now()
 	}
 	s := &Server{
-		store:                     cfg.Store,
-		traceStore:                cfg.TraceStore,
-		builder:                   build.NewBuilder(),
 		sampler:                   cfg.Sampler,
 		metrics:                   cfg.Metrics,
 		maxBodyBytes:              maxBody,
@@ -251,7 +204,6 @@ func NewServer(cfg ServerConfig) *Server {
 		otlpEnabled:               cfg.OTLPEnabled,
 		otlpGRPCEnabled:           cfg.OTLPGRPCEnabled,
 		otlpGRPCAddr:              cfg.OTLPGRPCAddr,
-		v2ReadsEnabled:            cfg.V2ReadsEnabled,
 		incidentsEnabled:          cfg.IncidentsEnabled,
 		incidentsPersistent:       cfg.IncidentsPersistent,
 		incidentsRebuildSupported: cfg.IncidentRebuildSupported,
@@ -260,9 +212,6 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	if s.sampler == nil {
 		s.sampler = sampler.New(sampler.LoadConfigFromEnv())
-	}
-	if s.traceStore == nil {
-		s.traceStore = tracestore.NewStore()
 	}
 	if s.graphHotWindow <= 0 {
 		s.graphHotWindow, _ = runtimeGraphHotWindow()
@@ -290,7 +239,7 @@ func NewServer(cfg ServerConfig) *Server {
 // Use /readyz for traffic gating, /livez for liveness.
 func (s *Server) Health(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
-	if s.store == nil || s.replayStatus == "failed" {
+	if s.replayStatus == "failed" {
 		status = "degraded"
 	}
 
@@ -298,17 +247,6 @@ func (s *Server) Health(w http.ResponseWriter, r *http.Request) {
 		"status": status,
 		"uptime": time.Since(s.startTime).Round(time.Second).String(),
 		"ready":  s.ready.Load(),
-	}
-
-	if s.store != nil {
-		snap := s.store.Snapshot()
-		resp["store"] = map[string]any{
-			"configured": true,
-			"nodes":      len(snap.Nodes),
-			"edges":      len(snap.Edges),
-		}
-	} else {
-		resp["store"] = map[string]any{"configured": false}
 	}
 
 	resp["event_log"] = map[string]any{"enabled": s.EventLogDir != ""}
@@ -324,17 +262,6 @@ func (s *Server) Health(w http.ResponseWriter, r *http.Request) {
 		replay["last_success"] = s.lastReplaySuccess.Format(time.RFC3339)
 	}
 	resp["replay"] = replay
-
-	s.causalMu.Lock()
-	causal := map[string]any{"enabled": s.causalEnabled}
-	if !s.causalLastRun.IsZero() {
-		causal["last_run"] = s.causalLastRun.Format(time.RFC3339)
-	}
-	if s.causalLastError != "" {
-		causal["last_error"] = s.causalLastError
-	}
-	s.causalMu.Unlock()
-	resp["causal"] = causal
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -378,9 +305,6 @@ func (s *Server) SetReplayResult(err error) {
 }
 
 // Store returns the server's graph store.
-func (s *Server) Store() *store.Store {
-	return s.store
-}
 
 // AcceptedCount returns the number of accepted events.
 func (s *Server) AcceptedCount() uint64 {
@@ -388,16 +312,10 @@ func (s *Server) AcceptedCount() uint64 {
 }
 
 // Builder returns the server's graph builder.
-func (s *Server) Builder() *build.Builder {
-	return s.builder
-}
 
 // Sampler returns the server's sampler so external schema-1.x pipeline wiring
 // can share the same sampling policy.
 func (s *Server) Sampler() *sampler.Sampler { return s.sampler }
-
-// SSEHub returns the server's SSE hub for reuse as a Pipeline Notifier.
-func (s *Server) SSEHub() *SSEHub { return s.sseHub }
 
 // Counters returns the shared unsampled windowed counters for schema-1.x
 // pipeline wiring.
@@ -415,161 +333,6 @@ func (s *Server) SetOTLPEnabled(enabled bool) { s.otlpEnabled = enabled }
 func (s *Server) SetOTLPGRPC(enabled bool, addr string) {
 	s.otlpGRPCEnabled = enabled
 	s.otlpGRPCAddr = addr
-}
-
-// EventSearch handles GET /v1/events/search.
-// Both cold-store and JSONL paths return the same []coldstore.SearchResult shape.
-func (s *Server) EventSearch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.coldStore == nil && s.EventLogDir == "" {
-		http.Error(w, "event search not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	q := r.URL.Query()
-	traceID := q.Get("trace_id")
-	userID := q.Get("user_id")
-	service := q.Get("service")
-	errorCode := q.Get("error_code")
-
-	if traceID == "" && userID == "" && service == "" && errorCode == "" {
-		http.Error(w, "at least one filter required (trace_id, user_id, service, error_code)", http.StatusBadRequest)
-		return
-	}
-
-	limit := parseBoundedPositiveInt(q, "limit", 50, 200)
-
-	cursorStr := q.Get("cursor")
-	var cursorID int64
-	if cursorStr != "" {
-		var err error
-		cursorID, err = decodeRowIDCursor(cursorStr)
-		if err != nil {
-			http.Error(w, "invalid cursor", http.StatusBadRequest)
-			return
-		}
-	}
-
-	var startTime, endTime time.Time
-	if v := q.Get("start"); v != "" {
-		t, err := parseFlexibleTime(v)
-		if err != nil {
-			http.Error(w, "invalid start: must be RFC3339", http.StatusBadRequest)
-			return
-		}
-		startTime = t
-	}
-	if v := q.Get("end"); v != "" {
-		t, err := parseFlexibleTime(v)
-		if err != nil {
-			http.Error(w, "invalid end: must be RFC3339", http.StatusBadRequest)
-			return
-		}
-		endTime = t
-	}
-
-	// Prefer cold store (SQLite) over JSONL scan
-	if s.coldStore != nil {
-		page, err := s.coldStore.SearchEvents(coldstore.SearchFilter{
-			TraceID:   traceID,
-			UserID:    userID,
-			Service:   service,
-			ErrorCode: errorCode,
-			Start:     startTime,
-			End:       endTime,
-			Limit:     limit,
-			Cursor:    cursorID,
-		})
-		if err != nil {
-			slog.Error("cold store search failed", "err", err)
-			if s.EventLogDir == "" {
-				http.Error(w, "search failed", http.StatusInternalServerError)
-				return
-			}
-			// Fall through to JSONL fallback
-		} else {
-			if page.Results == nil {
-				page.Results = []coldstore.SearchResult{}
-			}
-			resp := map[string]any{
-				"events":      page.Results,
-				"count":       len(page.Results),
-				"total_count": page.TotalCount,
-				"data_source": "sqlite",
-			}
-			if page.NextCursor > 0 {
-				resp["next_cursor"] = encodeRowIDCursor(page.NextCursor)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
-			return
-		}
-	}
-
-	if s.EventLogDir == "" {
-		http.Error(w, "event search not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	// JSONL fallback does not support cursor pagination.
-	if cursorID > 0 {
-		http.Error(w, "cursor pagination not supported for event log fallback", http.StatusBadRequest)
-		return
-	}
-
-	f := eventlog.SearchFilter{
-		TraceID:   traceID,
-		UserID:    userID,
-		Service:   service,
-		ErrorCode: errorCode,
-		Limit:     limit,
-		Start:     startTime,
-		End:       endTime,
-	}
-	events, err := eventlog.Search(s.EventLogDir, f)
-	if err != nil {
-		slog.Error("event search failed", "err", err)
-		http.Error(w, "search failed", http.StatusInternalServerError)
-		return
-	}
-
-	// Convert WideEvent to SearchResult for consistent API shape.
-	results := make([]coldstore.SearchResult, len(events))
-	for i, ev := range events {
-		var errCode, errMsg string
-		if ev.Error != nil {
-			errCode = ev.Error.Code
-			errMsg = ev.Error.Message
-		}
-		results[i] = coldstore.SearchResult{
-			TraceID:      ev.Request.TraceID,
-			SpanID:       ev.Request.SpanID,
-			EventName:    ev.EventName,
-			Service:      ev.System.Service,
-			Env:          ev.System.Env,
-			Version:      ev.System.Version,
-			DeploymentID: ev.System.DeploymentID,
-			UserID:       ev.User.ID,
-			StatusCode:   ev.Outcome.StatusCode,
-			Success:      ev.Outcome.Success,
-			ErrorCode:    errCode,
-			ErrorMessage: errMsg,
-			LatencyMs:    ev.Metrics.LatencyMs,
-			Timestamp:    ev.Timestamp,
-		}
-	}
-
-	resp := map[string]any{
-		"events":      results,
-		"count":       len(results),
-		"total_count": len(results),
-		"data_source": "event_log_fallback",
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }
 
 // Capabilities handles GET /v1/capabilities.
@@ -611,9 +374,6 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 			"grpc_traces": s.otlpGRPCEnabled,
 			"grpc_addr":   s.otlpGRPCAddr,
 		},
-		"v2_reads": map[string]any{
-			"enabled": s.v2ReadsEnabled,
-		},
 		"profile": s.profile,
 		"incidents": map[string]any{
 			"enabled":    s.incidentsEnabled,
@@ -630,13 +390,6 @@ func (s *Server) Capabilities(w http.ResponseWriter, r *http.Request) {
 		},
 		"architecture": map[string]any{
 			"flattened": true,
-			"graph": map[string]any{
-				"nodes": []string{"request", "service", "error"},
-				"edges": []string{"handled_by", "failed_with", "calls"},
-			},
-			"trace_store": map[string]any{
-				"enabled": s.traceStore != nil,
-			},
 			"hot_window": map[string]any{
 				"enabled":       hotWindow > 0,
 				"duration":      hotWindow.String(),
@@ -669,9 +422,6 @@ func (s *Server) Insight(w http.ResponseWriter, r *http.Request) {
 func runtimeGraphHotWindow() (time.Duration, string) {
 	if hot := config.GetenvDuration("GRAPH_HOT_WINDOW", 0); hot > 0 {
 		return hot, "GRAPH_HOT_WINDOW"
-	}
-	if hot := config.GetenvDuration("GRAPH_RETENTION", 24*time.Hour); hot > 0 {
-		return hot, "GRAPH_RETENTION"
 	}
 	return 24 * time.Hour, "default"
 }
@@ -761,19 +511,10 @@ type askToolStep struct {
 	Error      string `json:"error,omitempty"`
 }
 
-type overviewErrorEntry struct {
-	Code  string `json:"code"`
-	Count int    `json:"count"`
-}
-
-// Ask handles POST /v1/ask and returns an LLM answer backed by graph tools.
+// Ask handles POST /v1/ask and returns an LLM answer backed by the agent tools.
 func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", false, APIMeta{RequestID: RequestIDFromContext(r.Context())})
-		return
-	}
-	if s.store == nil {
-		respondError(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "store not configured", true, APIMeta{RequestID: RequestIDFromContext(r.Context())})
 		return
 	}
 
@@ -945,9 +686,8 @@ func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
-	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store, ts: s.traceStore}
 	answer, toolRecords, askErr := llm.Ask(ctx, provider, defs, llm.ToolExecutorFunc(func(ctx context.Context, name string, params json.RawMessage) (any, error) {
-		return registry.Call(ctx, fs, name, params)
+		return registry.Call(ctx, name, params)
 	}), req.Prompt, llm.AskOptions{MaxSteps: maxSteps, ErrorStrategy: req.ErrorStrategy})
 
 	// Convert ToolCallRecords to askToolSteps
@@ -1019,578 +759,6 @@ func (s *Server) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
-}
-
-// TraceStory handles GET /v1/traces/story?trace_id=<id>.
-func (s *Server) TraceStory(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	traceID := r.URL.Query().Get("trace_id")
-	if traceID == "" {
-		http.Error(w, "trace_id required", http.StatusBadRequest)
-		return
-	}
-	format := r.URL.Query().Get("format")
-
-	snap, ok := s.snapshotOrServiceUnavailable(w)
-	if !ok {
-		return
-	}
-	story, ctx, err := tracestory.BuildWithFormat(snap, s.traceStore, traceID, format)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"story":   story,
-		"context": ctx,
-	})
-}
-
-// traceEntry is a summary of a single request for the recent traces list.
-type traceEntry struct {
-	TraceID        string    `json:"trace_id"`
-	Service        string    `json:"service,omitempty"`
-	FailureService string    `json:"failure_service,omitempty"`
-	Success        bool      `json:"success"`
-	StatusCode     int       `json:"status_code"`
-	LatencyMs      int64     `json:"latency_ms"`
-	EventName      string    `json:"event_name,omitempty"`
-	Timestamp      time.Time `json:"timestamp"`
-}
-
-// RecentTraces handles GET /v1/traces/recent?limit=<n>&cursor=<cursor>.
-func (s *Server) RecentTraces(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	q := r.URL.Query()
-	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
-	failuresOnly := parseOptionalBool(q, "failures_only")
-
-	cursorStr := q.Get("cursor")
-	var cursorTS time.Time
-	var cursorTraceID string
-	if cursorStr != "" {
-		var err error
-		cursorTS, cursorTraceID, err = decodeTimeCursor(cursorStr)
-		if err != nil {
-			http.Error(w, "invalid cursor", http.StatusBadRequest)
-			return
-		}
-	}
-
-	snap, ok := s.snapshotOrServiceUnavailable(w)
-	if !ok {
-		return
-	}
-	entries, totalCount, nextTS, nextTraceID := recentTracesFromGraphPaginated(snap, limit, failuresOnly, cursorTS, cursorTraceID)
-
-	resp := map[string]any{
-		"traces":      entries,
-		"total_count": totalCount,
-	}
-	if !nextTS.IsZero() {
-		resp["next_cursor"] = encodeTimeCursor(nextTS, nextTraceID)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-func recentTracesFromGraph(g *core.Graph, limit int, failuresOnly bool) []traceEntry {
-	entries, _, _, _ := recentTracesFromGraphPaginated(g, limit, failuresOnly, time.Time{}, "")
-	return entries
-}
-
-func recentTracesFromGraphPaginated(g *core.Graph, limit int, failuresOnly bool, cursorTS time.Time, cursorTraceID string) ([]traceEntry, int, time.Time, string) {
-	var all []traceEntry
-	for reqID, n := range g.Nodes {
-		if n.Type != core.NodeRequest {
-			continue
-		}
-		traceID, _ := n.Attr["trace_id"].(string)
-		if traceID == "" {
-			continue
-		}
-		failed := requestNodeFailed(n)
-		if failuresOnly && !failed {
-			continue
-		}
-		e := traceEntry{
-			TraceID:   traceID,
-			Timestamp: n.LastSeen,
-			Success:   !failed,
-		}
-		if v, ok := n.Attr["status_code"]; ok {
-			e.StatusCode = attrToInt(v)
-		}
-		if v, ok := n.Attr["latency_ms"]; ok {
-			e.LatencyMs = attrToInt64(v)
-		}
-		if v, ok := n.Attr["event_name"].(string); ok {
-			e.EventName = v
-		}
-		e.Service = requestOwnerService(n.Attr, e.EventName)
-		if failed {
-			e.FailureService = requestFailureService(g, reqID, n)
-		}
-		all = append(all, e)
-	}
-
-	// Sort by (Timestamp DESC, TraceID DESC) for stable ordering.
-	sort.Slice(all, func(i, j int) bool {
-		if !all[i].Timestamp.Equal(all[j].Timestamp) {
-			return all[i].Timestamp.After(all[j].Timestamp)
-		}
-		return all[i].TraceID > all[j].TraceID
-	})
-
-	totalCount := len(all)
-
-	// Apply cursor: skip entries at or "before" cursor in DESC order.
-	if !cursorTS.IsZero() {
-		idx := 0
-		for idx < len(all) {
-			e := all[idx]
-			if e.Timestamp.Before(cursorTS) || (e.Timestamp.Equal(cursorTS) && e.TraceID < cursorTraceID) {
-				break
-			}
-			idx++
-		}
-		all = all[idx:]
-	}
-
-	var nextTS time.Time
-	var nextTraceID string
-	if len(all) > limit {
-		all = all[:limit]
-		last := all[limit-1]
-		nextTS = last.Timestamp
-		nextTraceID = last.TraceID
-	}
-	return all, totalCount, nextTS, nextTraceID
-}
-
-// overviewPayload computes the overview data for a given window and trace limit.
-// Shared by the Overview REST handler and SSE computeOverviewJSON.
-func (s *Server) overviewPayload(dur time.Duration, limit int) map[string]any {
-	now := time.Now()
-	start := now.Add(-dur)
-	snap := s.store.Snapshot()
-
-	recent := recentTracesFromGraph(snap, limit, false)
-	rollup := analysis.RollupWindow(snap, s.store, s.traceStore, start, now)
-
-	errorRate := 0.0
-	if unsampledTotal, unsampledErrors := s.counters.Sum(dur); unsampledTotal > 0 {
-		errorRate = float64(unsampledErrors) / float64(unsampledTotal) * 100
-	} else if rollup.TotalRequests > 0 {
-		errorRate = float64(rollup.TotalFailures) / float64(rollup.TotalRequests) * 100
-	}
-
-	topErrors := make([]overviewErrorEntry, 0, len(rollup.PrimaryErrorCount))
-	for code, count := range rollup.PrimaryErrorCount {
-		topErrors = append(topErrors, overviewErrorEntry{Code: code, Count: count})
-	}
-	sort.Slice(topErrors, func(i, j int) bool {
-		if topErrors[i].Count == topErrors[j].Count {
-			return topErrors[i].Code < topErrors[j].Code
-		}
-		return topErrors[i].Count > topErrors[j].Count
-	})
-
-	latestFailedTraceID := latestFailedTrace(snap, start)
-
-	return map[string]any{
-		"window":                 dur.String(),
-		"total_requests":         rollup.TotalRequests,
-		"total_failures":         rollup.TotalFailures,
-		"error_rate":             errorRate,
-		"p50":                    rollup.LatencyP50,
-		"p95":                    rollup.LatencyP95,
-		"p99":                    rollup.LatencyP99,
-		"sampled":                s.sampleRatePct < 100,
-		"top_errors":             topErrors,
-		"recent_traces":          recent,
-		"latest_failed_trace_id": latestFailedTraceID,
-	}
-}
-
-// latestFailedTrace finds the most recent failed trace ID in the snapshot
-// that is newer than start.
-func latestFailedTrace(snap *core.Graph, start time.Time) string {
-	var latestID string
-	var latestTime time.Time
-	for _, n := range snap.Nodes {
-		if n.Type != core.NodeRequest || n.LastSeen.Before(start) {
-			continue
-		}
-		if success, _ := n.Attr["success"].(bool); success {
-			continue
-		}
-		if n.LastSeen.After(latestTime) {
-			latestTime = n.LastSeen
-			if tid, ok := n.Attr["trace_id"].(string); ok {
-				latestID = tid
-			}
-		}
-	}
-	return latestID
-}
-
-// Overview handles GET /v1/overview?window=<duration>&limit=<n>.
-func (s *Server) Overview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if s.store == nil {
-		http.Error(w, "store not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	q := r.URL.Query()
-	dur := parseLooseDuration(q, "window", 5*time.Minute)
-	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
-
-	payload := s.overviewPayload(dur, limit)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(payload)
-}
-
-// timeseriesPayload computes bucketed timeseries data for a given window and step.
-// Shared by the OverviewTimeseries REST handler and SSE computeTimeseriesJSON.
-func (s *Server) timeseriesPayload(window, step time.Duration) map[string]any {
-	points := int(window / step)
-
-	snap := s.store.Snapshot()
-	now := time.Now()
-	start := now.Add(-window)
-
-	type bucket struct {
-		Start     time.Time
-		End       time.Time
-		Total     int
-		Failures  int
-		Status2xx int
-		Status4xx int
-		Status5xx int
-		latencies []int64
-	}
-
-	buckets := make([]bucket, points)
-	for i := range buckets {
-		buckets[i].Start = start.Add(time.Duration(i) * step)
-		buckets[i].End = buckets[i].Start.Add(step)
-	}
-
-	for _, n := range snap.Nodes {
-		if n.Type != core.NodeRequest {
-			continue
-		}
-		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
-			continue
-		}
-		idx := int(n.LastSeen.Sub(start) / step)
-		if idx >= points {
-			idx = points - 1
-		}
-		b := &buckets[idx]
-		b.Total++
-		addStatusClassCount(attrToInt(n.Attr["status_code"]), &b.Status2xx, &b.Status4xx, &b.Status5xx)
-		if requestNodeFailed(n) {
-			b.Failures++
-		}
-		if lat := attrToInt64(n.Attr["latency_ms"]); lat > 0 {
-			b.latencies = append(b.latencies, lat)
-		}
-	}
-
-	type bucketOut struct {
-		Start     time.Time `json:"start"`
-		End       time.Time `json:"end"`
-		Total     int       `json:"total"`
-		Failures  int       `json:"failures"`
-		ErrorRate float64   `json:"error_rate"`
-		Status2xx int       `json:"status_2xx"`
-		Status4xx int       `json:"status_4xx"`
-		Status5xx int       `json:"status_5xx"`
-		P50       int64     `json:"p50"`
-		P95       int64     `json:"p95"`
-		P99       int64     `json:"p99"`
-	}
-
-	out := make([]bucketOut, points)
-	for i := range buckets {
-		b := &buckets[i]
-		out[i] = bucketOut{
-			Start: b.Start, End: b.End,
-			Total: b.Total, Failures: b.Failures,
-			Status2xx: b.Status2xx, Status4xx: b.Status4xx, Status5xx: b.Status5xx,
-		}
-		if b.Total > 0 {
-			out[i].ErrorRate = math.Round(float64(b.Failures)/float64(b.Total)*10000) / 100
-		}
-		if len(b.latencies) > 0 {
-			sort.Slice(b.latencies, func(a, c int) bool { return b.latencies[a] < b.latencies[c] })
-			out[i].P50 = percentile(b.latencies, 50)
-			out[i].P95 = percentile(b.latencies, 95)
-			out[i].P99 = percentile(b.latencies, 99)
-		}
-	}
-
-	return map[string]any{
-		"sampled": s.sampleRatePct < 100,
-		"buckets": out,
-	}
-}
-
-// OverviewTimeseries handles GET /v1/overview/timeseries?window=1h&step=5m.
-func (s *Server) OverviewTimeseries(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	q := r.URL.Query()
-
-	window := 1 * time.Hour
-	if v := q.Get("window"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
-			http.Error(w, "invalid window", http.StatusBadRequest)
-			return
-		}
-		if d > s.effectiveGraphHotWindow() {
-			http.Error(w, "window exceeds hot window", http.StatusBadRequest)
-			return
-		}
-		window = d
-	}
-
-	step := 5 * time.Minute
-	if v := q.Get("step"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
-			http.Error(w, "invalid step", http.StatusBadRequest)
-			return
-		}
-		if d < 15*time.Second {
-			http.Error(w, "step min 15s", http.StatusBadRequest)
-			return
-		}
-		if d > 15*time.Minute {
-			http.Error(w, "step max 15m", http.StatusBadRequest)
-			return
-		}
-		step = d
-	}
-
-	points := int(window / step)
-	if points > 1440 {
-		http.Error(w, "too many points (window/step max 1440)", http.StatusBadRequest)
-		return
-	}
-
-	if s.store == nil {
-		http.Error(w, "store not available", http.StatusServiceUnavailable)
-		return
-	}
-
-	payload := s.timeseriesPayload(window, step)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(payload)
-}
-
-func percentile(sorted []int64, pct int) int64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	idx := int(math.Ceil(float64(pct)/100*float64(len(sorted)))) - 1
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(sorted) {
-		idx = len(sorted) - 1
-	}
-	return sorted[idx]
-}
-
-// routesPayload computes per-route stats for a given window and limit.
-// Shared by the Routes REST handler and SSE computeRoutesJSON.
-func (s *Server) routesPayload(window time.Duration, limit int, failuresOnly bool) map[string]any {
-	snap := s.store.Snapshot()
-	now := time.Now()
-	start := now.Add(-window)
-
-	type routeStats struct {
-		Service       string
-		Method        string
-		RouteTemplate string
-		Total         int
-		Failures      int
-		Status2xx     int
-		Status4xx     int
-		Status5xx     int
-		latencies     []int64
-	}
-
-	groups := map[string]*routeStats{}
-
-	for _, n := range snap.Nodes {
-		if n.Type != core.NodeRequest {
-			continue
-		}
-		if n.LastSeen.Before(start) || n.LastSeen.After(now) {
-			continue
-		}
-		failed := requestNodeFailed(n)
-		if failuresOnly && !failed {
-			continue
-		}
-
-		eventName, _ := n.Attr["event_name"].(string)
-		if eventName == "" {
-			continue
-		}
-
-		svc := requestOwnerService(n.Attr, eventName)
-
-		method, _ := n.Attr["http_method"].(string)
-		if method == "" {
-			method = "UNKNOWN"
-		}
-		routeTemplate, _ := n.Attr["route_template"].(string)
-		if routeTemplate == "" {
-			routeTemplate = eventName
-		}
-
-		key := svc + "\x00" + method + "\x00" + routeTemplate
-		rs := groups[key]
-		if rs == nil {
-			rs = &routeStats{Service: svc, Method: method, RouteTemplate: routeTemplate}
-			groups[key] = rs
-		}
-
-		rs.Total++
-		addStatusClassCount(attrToInt(n.Attr["status_code"]), &rs.Status2xx, &rs.Status4xx, &rs.Status5xx)
-		if failed {
-			rs.Failures++
-		}
-		if lat := attrToInt64(n.Attr["latency_ms"]); lat > 0 {
-			rs.latencies = append(rs.latencies, lat)
-		}
-	}
-
-	type routeEntry struct {
-		Service       string  `json:"service"`
-		Method        string  `json:"method"`
-		RouteTemplate string  `json:"route_template"`
-		Route         string  `json:"route"`
-		Invocations   int     `json:"invocations"`
-		Errors        int     `json:"errors"`
-		ErrorRate     float64 `json:"error_rate"`
-		Status2xx     int     `json:"status_2xx"`
-		Status4xx     int     `json:"status_4xx"`
-		Status5xx     int     `json:"status_5xx"`
-		P75LatencyMs  int64   `json:"p75_latency_ms"`
-	}
-
-	routes := make([]routeEntry, 0, len(groups))
-	for _, rs := range groups {
-		re := routeEntry{
-			Service:       rs.Service,
-			Method:        rs.Method,
-			RouteTemplate: rs.RouteTemplate,
-			Route:         rs.RouteTemplate,
-			Invocations:   rs.Total,
-			Errors:        rs.Failures,
-			Status2xx:     rs.Status2xx,
-			Status4xx:     rs.Status4xx,
-			Status5xx:     rs.Status5xx,
-		}
-		re.ErrorRate = percentage(rs.Failures, rs.Total)
-		if len(rs.latencies) > 0 {
-			sort.Slice(rs.latencies, func(a, b int) bool { return rs.latencies[a] < rs.latencies[b] })
-			re.P75LatencyMs = percentile(rs.latencies, 75)
-		}
-		routes = append(routes, re)
-	}
-
-	sort.Slice(routes, func(i, j int) bool {
-		if routes[i].Invocations != routes[j].Invocations {
-			return routes[i].Invocations > routes[j].Invocations
-		}
-		if routes[i].Route != routes[j].Route {
-			return routes[i].Route < routes[j].Route
-		}
-		return routes[i].Method < routes[j].Method
-	})
-
-	if len(routes) > limit {
-		routes = routes[:limit]
-	}
-
-	return map[string]any{
-		"sampled": s.sampleRatePct < 100,
-		"routes":  routes,
-	}
-}
-
-// Routes handles GET /v1/routes?window=5m&limit=20.
-func (s *Server) Routes(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if _, ok := s.snapshotOrServiceUnavailable(w); !ok {
-		return
-	}
-
-	q := r.URL.Query()
-	window := parseLooseDuration(q, "window", 5*time.Minute)
-	limit := parseBoundedPositiveInt(q, "limit", 20, 100)
-	failuresOnly := parseOptionalBool(q, "failures_only")
-
-	payload := s.routesPayload(window, limit, failuresOnly)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(payload)
-}
-
-// GraphTopology handles GET /v1/graph/topology?window=1h.
-// Returns Cytoscape-formatted service topology: service nodes with aggregate
-// stats and edges derived from span caller→service pairs.
-func (s *Server) GraphTopology(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	q := r.URL.Query()
-	window := parseLooseDuration(q, "window", 1*time.Hour)
-	if maxWindow := s.effectiveGraphHotWindow(); window > maxWindow {
-		window = maxWindow
-	}
-
-	if _, ok := s.snapshotOrServiceUnavailable(w); !ok {
-		return
-	}
-
-	now := time.Now()
-	result := analysis.BuildTopology(s.store, s.traceStore, now.Add(-window), now)
-	cyto := analysis.ToCytoscapeFormat(result)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(cyto)
 }
 
 // CORSWrap wraps a handler with CORS headers.
@@ -1729,64 +897,6 @@ func anyToStringSlice(v any) []string {
 	}
 }
 
-func requestFailureService(g *core.Graph, reqID string, req core.Node) string {
-	if !requestNodeFailed(req) {
-		return ""
-	}
-	bestService := ""
-	bestTime := time.Time{}
-	for _, e := range g.OutEdges[reqID] {
-		if e.Type != core.EdgeRequestHasSpan {
-			continue
-		}
-		span, ok := g.Nodes[e.To]
-		if !ok || span.Type != core.NodeSpan {
-			continue
-		}
-		if !requestNodeFailed(span) {
-			continue
-		}
-		svc, _ := span.Attr["service"].(string)
-		if svc == "" {
-			continue
-		}
-		ts := span.LastSeen
-		if bestService == "" || (!ts.IsZero() && (bestTime.IsZero() || ts.Before(bestTime))) {
-			bestService = svc
-			bestTime = ts
-		}
-	}
-	if bestService != "" {
-		return bestService
-	}
-	if svc, _ := req.Attr["root_service"].(string); svc != "" {
-		return svc
-	}
-	if svc, _ := req.Attr["service"].(string); svc != "" {
-		return svc
-	}
-	if eventName, _ := req.Attr["event_name"].(string); eventName != "" {
-		return serviceFromEventName(eventName)
-	}
-	return ""
-}
-
-func requestNodeFailed(n core.Node) bool {
-	if n.Attr == nil {
-		return false
-	}
-	if success, ok := n.Attr["success"].(bool); ok && !success {
-		return true
-	}
-	if statusCode := attrToInt(n.Attr["status_code"]); statusCode >= 500 {
-		return true
-	}
-	if code, ok := n.Attr["error_code"].(string); ok && code != "" {
-		return true
-	}
-	return len(anyToStringSlice(n.Attr["error_codes"])) > 0
-}
-
 func percentage(numerator, denominator int) float64 {
 	if denominator <= 0 {
 		return 0
@@ -1881,35 +991,6 @@ func errorCode(ev *event.WideEvent) string {
 	return ""
 }
 
-func (s *Server) snapshotOrServiceUnavailable(w http.ResponseWriter) (*core.Graph, bool) {
-	if s.store == nil {
-		http.Error(w, "store not configured", http.StatusServiceUnavailable)
-		return nil, false
-	}
-	return s.store.Snapshot(), true
-}
-
-// frozenStore captures a snapshot once and reuses it across tool calls within a single request.
-type frozenStore struct {
-	snap *core.Graph
-	real *store.Store
-	ts   *tracestore.Store
-}
-
-func (f *frozenStore) Snapshot() *core.Graph { return f.snap }
-func (f *frozenStore) SummarizeWindow(start, end time.Time) store.WindowSummary {
-	return f.real.SummarizeWindow(start, end)
-}
-func (f *frozenStore) ForEachRequestFact(start, end time.Time, fn func(store.RequestFacts)) {
-	f.real.ForEachRequestFact(start, end, fn)
-}
-func (f *frozenStore) ErrorIndex(errorCode string) ([]string, bool) {
-	return f.real.ErrorIndex(errorCode)
-}
-func (f *frozenStore) TraceStore() *tracestore.Store {
-	return f.ts
-}
-
 func toolErrorToHTTPStatus(te *tools.ToolError) int {
 	switch te.Code {
 	case tools.CodeInvalidParams:
@@ -1976,10 +1057,6 @@ func normalizeErrorCode(err error) string {
 func (s *Server) ToolCall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", false, APIMeta{RequestID: RequestIDFromContext(r.Context())})
-		return
-	}
-	if s.store == nil {
-		respondError(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "store not configured", true, APIMeta{RequestID: RequestIDFromContext(r.Context())})
 		return
 	}
 
@@ -2090,8 +1167,7 @@ func (s *Server) ToolCall(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	fs := &frozenStore{snap: s.store.Snapshot(), real: s.store, ts: s.traceStore}
-	result, err := registry.Call(r.Context(), fs, toolName, params)
+	result, err := registry.Call(r.Context(), toolName, params)
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -2174,75 +1250,6 @@ func clientIP(r *http.Request, trustProxy bool) string {
 		return r.RemoteAddr
 	}
 	return host
-}
-
-// Topology handles GET /v1/topology — service-to-service edges with failure counts.
-func (s *Server) Topology(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	reqStart := time.Now()
-	meta := APIMeta{RequestID: RequestIDFromContext(r.Context()), APIVersion: apiVersion}
-
-	q := r.URL.Query()
-	dur := parseLooseDuration(q, "window", time.Hour)
-	if maxWindow := s.effectiveGraphHotWindow(); dur > maxWindow {
-		dur = maxWindow
-	}
-	if _, ok := s.snapshotOrServiceUnavailable(w); !ok {
-		return
-	}
-
-	now := time.Now()
-	result := analysis.BuildTopology(s.store, s.traceStore, now.Add(-dur), now)
-
-	meta.DurationMs = time.Since(reqStart).Milliseconds()
-	meta.DataStatus = "complete"
-	if len(result.Nodes) == 0 {
-		meta.DataStatus = "empty"
-	}
-	writeJSON(w, http.StatusOK, result, meta, nil)
-}
-
-// BlastRadius handles GET /v1/blast_radius?error_code=X — impact analysis for an error code.
-func (s *Server) BlastRadius(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	reqStart := time.Now()
-	meta := APIMeta{RequestID: RequestIDFromContext(r.Context()), APIVersion: apiVersion}
-
-	errorCode := r.URL.Query().Get("error_code")
-	if errorCode == "" {
-		respondError(w, r, http.StatusBadRequest, "INVALID_PARAMS", "error_code is required", false, meta)
-		return
-	}
-	q := r.URL.Query()
-	dur := parseLooseDuration(q, "window", time.Hour)
-	if maxWindow := s.effectiveGraphHotWindow(); dur > maxWindow {
-		dur = maxWindow
-	}
-	snap, ok := s.snapshotOrServiceUnavailable(w)
-	if !ok {
-		return
-	}
-	now := time.Now()
-	result := analysis.ComputeBlastRadius(snap, errorCode, now.Add(-dur), now)
-
-	meta.DurationMs = time.Since(reqStart).Milliseconds()
-	meta.DataStatus = "complete"
-	if result.AffectedRequests == 0 {
-		meta.DataStatus = "empty"
-	}
-	writeJSON(w, http.StatusOK, result, meta, nil)
 }
 
 // PlanExecute handles POST /v1/plans/execute — deterministic plan execution.
@@ -2399,7 +1406,7 @@ func (s *Server) executePlanWithProgress(ctx context.Context, steps []PlanStep, 
 			return result
 		}
 
-		toolResult, err := registry.Call(ctx, s.store, step.Tool, params)
+		toolResult, err := registry.Call(ctx, step.Tool, params)
 		stepResult.DurationMs = time.Since(stepStart).Milliseconds()
 
 		if err != nil {
@@ -2495,7 +1502,10 @@ func (s *Server) PlanStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSSEHeaders(w)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	flusher.Flush()
 
 	heartbeat := time.NewTicker(15 * time.Second)

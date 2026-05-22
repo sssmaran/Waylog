@@ -20,8 +20,7 @@ func makeTestServerWithColdStore(t *testing.T) (*Server, *coldstore.SQLiteStore)
 	}
 	cs := managed.(*coldstore.SQLiteStore)
 	t.Cleanup(func() { cs.Close() })
-	srv := makeTestServer()
-	srv.coldStore = cs
+	srv := &Server{coldStore: cs}
 	return srv, cs
 }
 

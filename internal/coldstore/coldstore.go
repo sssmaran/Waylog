@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 
 	_ "modernc.org/sqlite"
@@ -27,7 +26,6 @@ var migrationsFS embed.FS
 type Store interface {
 	EventSearcher
 	DeploymentStore
-	CausalStore
 }
 
 // ManagedStore adds lifecycle methods to Store.
@@ -53,12 +51,6 @@ type DeploymentStore interface {
 	DeploymentByID(ctx context.Context, id string) (*Deployment, error)
 	DeploymentsInWindow(ctx context.Context, start, end time.Time, serviceFilter string) ([]Deployment, error)
 	ServiceErrorRateInWindow(ctx context.Context, svc string, from, to time.Time) (ServiceErrorRate, error)
-}
-
-// CausalStore persists and queries causal inference claims.
-type CausalStore interface {
-	SaveClaims(ctx context.Context, claims []causal.Claim) error
-	ActiveClaims(ctx context.Context, q causal.ClaimQuery) ([]causal.Claim, error)
 }
 
 // SQLiteStore wraps a SQLite database for cold storage of events and deployments.
@@ -202,5 +194,4 @@ var (
 	_ EventWriter     = (*SQLiteStore)(nil)
 	_ EventSearcher   = (*SQLiteStore)(nil)
 	_ DeploymentStore = (*SQLiteStore)(nil)
-	_ CausalStore     = (*SQLiteStore)(nil)
 )

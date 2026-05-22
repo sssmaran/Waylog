@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog waylog-live checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
+.PHONY: help build build-examples ingest ingest-mcp waylog checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
@@ -27,7 +27,6 @@ help:
 	@echo "  demo-down - stop Docker demo stack"
 	@echo "  micro-demo - start 4-service micro-demo in foreground for debugging"
 	@echo "  micro-demo-stop - stop micro-demo processes"
-	@echo "  waylog-live - run TUI dashboard (connects to ingest server)"
 	@echo "  docker-build - build all Docker images"
 	@echo "  docker-up   - start full stack via docker compose"
 	@echo "  docker-down - stop stack (preserve volumes)"
@@ -40,7 +39,6 @@ build:
 	go build ./cmd/checkout
 	go build ./cmd/waylog
 	go build ./cmd/bridge
-	go build ./cmd/waylog-live
 
 build-examples:
 	go build ./examples/cmd/api-gateway
@@ -56,9 +54,6 @@ ingest-mcp:
 
 waylog:
 	go run ./cmd/waylog
-
-waylog-live:
-	go run ./cmd/waylog-live
 
 checkout:
 	go run ./cmd/checkout
@@ -110,7 +105,7 @@ bench-gate: ## Enforce v2 SDK §4.4.1 perf budgets (optional; not in `ci` yet)
 	@bash scripts/bench-gate.sh
 
 clean:
-	rm -f ingest checkout waylog bridge api-gateway checkout-demo db-demo payment-demo waylog-live
+	rm -f ingest checkout waylog bridge api-gateway checkout-demo db-demo payment-demo
 
 kafka-up:
 	docker compose -f docker-compose.kafka.yml up -d

@@ -58,7 +58,7 @@ func newOTLPV2Stack(t *testing.T) otlpV2Stack {
 	return otlpV2Stack{
 		otlp: otelhttp.NewHandler(v2, nil, 1<<20),
 		read: ingestv2.NewReadHandler(ingestv2.NewReader(index), nil, 24*time.Hour),
-		caps: ingest.NewServer(ingest.ServerConfig{OTLPEnabled: true, V2ReadsEnabled: true}),
+		caps: ingest.NewServer(ingest.ServerConfig{OTLPEnabled: true}),
 	}
 }
 
@@ -120,7 +120,7 @@ func TestOTLP_EndToEnd(t *testing.T) {
 	assertErrorsContainPaymentFamily(t, stack.read)
 	assertStoryShowsPaymentFailure(t, stack.read, wantTraceID)
 	assertBlastShowsPaymentImpact(t, stack.read)
-	assertCapabilitiesAdvertiseOTLPAndV2Reads(t, stack.caps)
+	assertCapabilitiesAdvertiseOTLP(t, stack.caps)
 }
 
 func httpSpan(traceID, spanID, parentSpanID []byte, name string, start, end uint64, status int64, attrs ...*commonpb.KeyValue) *tracepb.Span {
@@ -212,7 +212,7 @@ func assertBlastShowsPaymentImpact(t *testing.T, h *ingestv2.ReadHandler) {
 	}
 }
 
-func assertCapabilitiesAdvertiseOTLPAndV2Reads(t *testing.T, srv *ingest.Server) {
+func assertCapabilitiesAdvertiseOTLP(t *testing.T, srv *ingest.Server) {
 	t.Helper()
 	cw := httpGET(t, srv.Capabilities, "/v1/capabilities")
 	if cw.Code != http.StatusOK {
@@ -222,16 +222,10 @@ func assertCapabilitiesAdvertiseOTLPAndV2Reads(t *testing.T, srv *ingest.Server)
 		OTLP struct {
 			HTTPTraces bool `json:"http_traces"`
 		} `json:"otlp"`
-		V2Reads struct {
-			Enabled bool `json:"enabled"`
-		} `json:"v2_reads"`
 	}
 	decodeJSON(t, cw, &caps)
 	if !caps.OTLP.HTTPTraces {
 		t.Fatal("expected otlp.http_traces=true")
-	}
-	if !caps.V2Reads.Enabled {
-		t.Fatal("expected v2_reads.enabled=true")
 	}
 }
 

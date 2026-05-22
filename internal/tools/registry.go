@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-type ToolHandler func(ctx context.Context, store Store, params json.RawMessage) (any, error)
+type ToolHandler func(ctx context.Context, params json.RawMessage) (any, error)
 
 type Tool struct {
 	Name         string
@@ -138,7 +138,7 @@ func (r *Registry) List() []Tool {
 	return out
 }
 
-func (r *Registry) Call(ctx context.Context, store Store, name string, params json.RawMessage) (result any, err error) {
+func (r *Registry) Call(ctx context.Context, name string, params json.RawMessage) (result any, err error) {
 	t, ok := r.tools[name]
 	if !ok {
 		return nil, &ToolError{Code: CodeNotFound, Message: fmt.Sprintf("unknown tool: %s", name), Retryable: false}
@@ -151,7 +151,7 @@ func (r *Registry) Call(ctx context.Context, store Store, name string, params js
 		}
 	}()
 
-	result, err = t.Handler(ctx, store, params)
+	result, err = t.Handler(ctx, params)
 	if err != nil {
 		if _, ok := AsToolError(err); ok {
 			return nil, err

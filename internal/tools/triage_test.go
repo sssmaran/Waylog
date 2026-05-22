@@ -29,7 +29,7 @@ func TestTriageToolHandlerReturnsReport(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	params := json.RawMessage(`{"incident_id":"inc_abc","window":"15m","snapshot":false}`)
-	out, err := reg.Call(context.Background(), nil /* graph store unused by triage */, "triage_incident", params)
+	out, err := reg.Call(context.Background(), "triage_incident", params)
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}

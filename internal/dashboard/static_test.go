@@ -57,7 +57,6 @@ func TestStaticDashboardHTML(t *testing.T) {
 		"Instrumentation warnings",
 		"sample_traces",
 		"renderSparkline",
-		"This dashboard requires WAYLOG_V2_READS=true",
 		"first observable failing step",
 		"Where did it start?",
 		"How bad is it?",

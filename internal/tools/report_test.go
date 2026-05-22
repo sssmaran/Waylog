@@ -15,7 +15,7 @@ func TestRenderTriageReportToolReturnsRenderedReport(t *testing.T) {
 	if err := tools.RegisterTriageReportTool(reg, eng); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	out, err := reg.Call(context.Background(), nil, "render_triage_report", json.RawMessage(`{"incident_id":"inc_abc","format":"markdown"}`))
+	out, err := reg.Call(context.Background(), "render_triage_report", json.RawMessage(`{"incident_id":"inc_abc","format":"markdown"}`))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}

@@ -42,7 +42,7 @@ func RegisterTriageReportTool(reg *Registry, engine *triage.Engine) error {
 			`{"incident_id":"inc_01HX...","format":"markdown","snapshot":true}`,
 			`{"incident_id":"inc_01HX...","format":"slack"}`,
 		},
-		Handler: func(ctx context.Context, _ Store, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
 			var p struct {
 				IncidentID string `json:"incident_id"`
 				Format     string `json:"format"`

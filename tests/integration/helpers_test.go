@@ -11,18 +11,14 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
-	"github.com/sssmaran/WaylogCLI/internal/graph/core"
-	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	"github.com/sssmaran/WaylogCLI/internal/testutil"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
-	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
 type integrationServer struct {
 	*ingest.Server
-	traceStore *tracestore.Store
 	coldStore  *coldstore.SQLiteStore
 	coldWriter *coldstore.BatchWriter
 }
@@ -48,10 +44,7 @@ func newIntegrationServer(t *testing.T) (*integrationServer, *coldstore.SQLiteSt
 
 	dedup := ingest.NewDedupCache()
 
-	ts := tracestore.NewStore()
 	srv := ingest.NewServer(ingest.ServerConfig{
-		Store:         graphstore.NewStore(),
-		TraceStore:    ts,
 		AskRegistry:   reg,
 		DedupCache:    dedup,
 		ColdWriter:    bw,
@@ -60,16 +53,11 @@ func newIntegrationServer(t *testing.T) (*integrationServer, *coldstore.SQLiteSt
 		PlanStore:     ingest.NewPlanStore(),
 	})
 
-	return &integrationServer{Server: srv, traceStore: ts, coldStore: cs, coldWriter: bw}, cs, bw
+	return &integrationServer{Server: srv, coldStore: cs, coldWriter: bw}, cs, bw
 }
 
 func ingestEvent(t *testing.T, srv *integrationServer, ev event.WideEvent) int {
 	t.Helper()
-	result := srv.Builder().BuildResult(ev)
-	srv.Store().Merge(result.Graph)
-	if result.Span != nil {
-		srv.traceStore.Upsert(ev.Request.TraceID, core.ID("request", ev.Request.TraceID), result.Span)
-	}
 	srv.Counters().Inc(!ev.Outcome.Success)
 	srv.AcceptedPtr().Add(1)
 	if srv.coldWriter != nil {

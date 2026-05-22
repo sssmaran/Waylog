@@ -198,7 +198,7 @@ waylog search   PMT_502 --window 1h
 
 ### Dashboard
 
-Embedded Geist UI at <http://localhost:8080/ui/>. Uses the dashboard session cookie for read-scope auth and runs against the default `WAYLOG_V2_READS=true` reader.
+Embedded Geist UI at <http://localhost:8080/ui/>. Uses the dashboard session cookie for read-scope auth and runs against the v2 reader.
 
 - `#/errors` — top error families over `/v1/errors`
 - `#/incident/<id>` — incident evidence and next checks over `/v1/incidents/{id}`
@@ -210,28 +210,20 @@ No Chart.js, Cytoscape, topology-first UI, Ask panel, deploy diff, or large dash
 
 ### Agent surface
 
-Twelve deterministic tools, exposed identically through CLI, REST `/v1/tools/{name}`, MCP stdio, and plan execution. Same idempotency keys, same structured envelopes, same bytes.
+Four deterministic tools, exposed identically through CLI, REST `/v1/tools/{name}`, MCP stdio, and plan execution. Same idempotency keys, same structured envelopes, same bytes.
 
 | Tool                   | Answers                                                                                      |
 | ---------------------- | -------------------------------------------------------------------------------------------- |
 | `triage_incident`      | Structured TriageReport for an open incident (blast + first failure + signals + next checks) |
 | `render_triage_report` | Markdown, Slack Block Kit JSON, or PagerDuty note from a TriageReport                        |
-| `explain_request`      | Why did this specific trace fail?                                                            |
-| `trace_summary`        | Span tree and timing for a trace                                                             |
-| `graph_failures`       | Which requests are currently failing?                                                        |
-| `failure_patterns`     | What error codes dominate this window?                                                       |
-| `blast_radius`         | How many requests, users, and services does this error touch?                                |
-| `failure_chain`        | How did this failure propagate through services?                                             |
-| `graph_query`          | DSL query over the graph (`expr` + `window`)                                                 |
-| `compare_windows`      | Diff error rates between two windows                                                         |
-| `graph_insights`       | Windowed rollup of top errors and patterns                                                   |
-| `graph_stats`          | Overall shape of the graph right now                                                         |
+| `explain_request`      | Trace story (per-step path, anchor, downstream) for a given `trace_id`                       |
+| `blast_radius`         | How many requests, users, and services does this error family touch in the window?           |
 
 ```bash
 # Direct tool call
 curl -X POST http://localhost:8080/v1/tools/blast_radius \
   -H "Authorization: Bearer $WAYLOG_AGENT_KEY" \
-  -d '{"error_code":"PMT_502","window":"10m","include_services":true}'
+  -d '{"service":"payment-service","step":"charge","error_code":"PMT_502","window":"10m"}'
 
 # Built-in triage plan template — same hash as the CLI/read/tool surfaces
 curl -X POST http://localhost:8080/v1/plans/execute \
@@ -274,21 +266,22 @@ curl -X POST http://localhost:8080/v1/alerts \
               │                              │
    event log (append-only WAL,       SQLite cold store
        source of truth)              (events · deployments ·
-              │                       signals · incidents ·
-              ▼                       causal claims)
-   derived read models
-   (errors · explain · blast ·
-    recent · incidents · triage)
+              │                       signals · incidents)
+              ▼
+   v2 reader (in-memory hot
+   index over schema-2.0 WAL)
               │
-              ├──▶ /ui dashboard           (Geist, no vendored chart/topology)
-              ├──▶ /v1/tools/*             (deterministic agent surface)
-              ├──▶ /v1/plans/execute       (server-side plan execution + SSE)
-              └──▶ waylog CLI · TUI · MCP
+              ├──▶ /v1/errors · /v1/blast_radius · /v1/traces/* · /v1/events/*
+              ├──▶ incidents engine → /v1/incidents/* · /v1/triage/*
+              ├──▶ /ui dashboard          (Geist, no vendored chart/topology)
+              ├──▶ /v1/tools/*            (four v1.0 agent tools)
+              ├──▶ /v1/plans/execute      (server-side plan execution + SSE)
+              └──▶ waylog CLI · MCP
 ```
 
 - **Single binary** plus embedded SQLite. No Docker, no Kafka, no bridge.
-- **WAL is source of truth.** Crash → replay on next boot rebuilds the derived read models.
-- **Hot graph + dedicated trace store.** Pruned per snapshot tick to bound memory.
+- **WAL is source of truth.** Crash → replay on next boot rebuilds the v2 reader's hot index.
+- **v2 reader is the only hot path.** Pruned every tick to enforce `GRAPH_HOT_WINDOW` (default 24h).
 - **`report_hash` excludes `generated_at`, `plan_run_id`, and itself.** Same upstream state → same bytes across every surface.
 - **OTLP path reuses the same WAL and projector** as the SDK path. No separate ingestion plane.
 
@@ -368,7 +361,6 @@ Full env-var reference: [`docs/env.md`](docs/env.md). Reproducible demo gate: `m
 - **OTLP/gRPC trace receiver** on `OTLP_GRPC_ADDR` (default `:4317`).
 - **Provider-neutral Ask** configuration: `gemini`, `anthropic`, `openai`, or `none`. All deterministic surfaces work with no LLM configured.
 - **`WAYLOG_PROFILE=demo|dev|prod`** gates auth defaults; `prod` hard-fails on unsafe configs.
-- **`WAYLOG_V2_READS` defaults to `true`.** Set `false` only for legacy v1-only stacks.
 - **`/v1/insight`** retained as a compat shim returning the top active incident. New clients should use `/v1/incidents/*`.
 
 ---
@@ -382,16 +374,15 @@ Public alpha for single-node production-style incident triage. APIs may break be
 - Go SDK v2 (`net/http`, chi, gin, echo) and TypeScript SDK v2 (`@waylog/sdk`, ESM, Node 18+, standalone core, Express, Hono, Next.js, NestJS)
 - OTLP HTTP at `/v1/otlp/v1/traces` and OTLP/gRPC at `OTLP_GRPC_ADDR` (traces only)
 - Durable ingest with WAL + replay
-- Hot graph with flattened 3-node model + dedicated trace store
-- Schema-2.0 recent-index read APIs (default)
-- SQLite cold store (events, deployments, signals, incidents, causal claims)
+- Schema-2.0 v2 reader powering all hot read APIs (`/v1/errors`, `/v1/blast_radius`, `/v1/traces/*`, `/v1/events/*`)
+- SQLite cold store (events, deployments, signals, incidents)
 - Signal-correlated incident engine with stable IDs, deterministic classification, and startup hot-window rebuild from the schema-2.0 WAL
 - Alert intake from four webhook formats, stored as signals and correlated with active incidents
 - Deterministic triage report with stable hash across CLI / read endpoint / direct tool / plan template within a single engine tick
 - Provider-neutral Ask configuration; deterministic CLI, tools, plans, triage, and MCP work with no LLM configured
-- Twelve deterministic analysis tools, rollup-correct root-cause attribution
+- Four deterministic v1.0 agent tools (`explain_request`, `blast_radius`, `triage_incident`, `render_triage_report`)
 - Agent-native REST with idempotency and structured envelopes
-- MCP stdio, live TUI (`waylog-live --dev` streams via SSE), embedded Geist dashboard
+- MCP stdio, embedded Geist dashboard
 - Scoped auth (write / read / agent) with startup validation and `WAYLOG_PROFILE=prod` hard-fail
 
 **Planned**
@@ -439,7 +430,7 @@ Public alpha for single-node production-style incident triage. APIs may break be
 ## Project layout
 
 ```
-cmd/         executable binaries (ingest, waylog, waylog-live, ...)
+cmd/         executable binaries (ingest, waylog, ...)
 pkg/         public SDK importable by external services
 internal/    private implementation (auth, incidents, triage, ingest, ...)
 examples/    demo services + collector config + microdemo
