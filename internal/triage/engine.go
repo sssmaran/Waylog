@@ -28,6 +28,7 @@ type IncidentSummary struct {
 	NextChecks  []string
 	Propagation *incidents.PropagationSnapshot
 	Blast       *incidents.BlastSnapshot
+	Alerts      *incidents.AlertSnapshot
 }
 
 type BlastSnapshotResult struct {
@@ -115,8 +116,8 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 	if err != nil {
 		return nil, fmt.Errorf("triage: signals: %w", err)
 	}
-	var alerts []pkgtriage.AlertRef
-	if e.deps.Alerts != nil {
+	alerts, fromSnapshot := alertsFromSnapshot(inc.Alerts)
+	if !fromSnapshot && e.deps.Alerts != nil {
 		alerts, err = e.deps.Alerts.AlertsFor(ctx, inc, opts)
 		if err != nil {
 			return nil, fmt.Errorf("triage: alerts: %w", err)
@@ -152,4 +153,27 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 		return nil, fmt.Errorf("triage: produced invalid report: %w", err)
 	}
 	return r, nil
+}
+
+func alertsFromSnapshot(s *incidents.AlertSnapshot) ([]pkgtriage.AlertRef, bool) {
+	if s == nil || s.Latest == nil {
+		return nil, false
+	}
+	out := make([]pkgtriage.AlertRef, 0, len(s.Latest.Matches))
+	for _, m := range s.Latest.Matches {
+		evidenceIDs := append([]string(nil), m.EvidenceIDs...)
+		if len(evidenceIDs) == 0 && m.SignalID != "" {
+			evidenceIDs = []string{m.SignalID}
+		}
+		out = append(out, pkgtriage.AlertRef{
+			SignalID:    m.SignalID,
+			AlertID:     m.AlertID,
+			Source:      m.Source,
+			Severity:    m.Severity,
+			Reason:      m.Reason,
+			ProviderURL: m.ProviderURL,
+			EvidenceIDs: evidenceIDs,
+		})
+	}
+	return out, true
 }

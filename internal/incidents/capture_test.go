@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/signals"
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
@@ -152,5 +153,116 @@ func TestNewPropagationEvidence_StoryOK_FirstSeenNil_Partial(t *testing.T) {
 	}
 	if len(p.Path) != 1 || p.Path[0].Step != "charge" {
 		t.Errorf("Path lost: %+v", p.Path)
+	}
+}
+
+func TestCaptureAlertEvidence_FamilyMatchOK(t *testing.T) {
+	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	inc := Incident{
+		IncidentID:  "inc_1",
+		Env:         "demo",
+		ErrorFamily: apiv2.ErrorFamily{Service: "checkout", Step: "payment.charge", ErrorCode: "PMT_502"},
+		StartedAt:   now.Add(-time.Minute),
+	}
+	rows := []signals.Signal{{
+		SignalID:  "sig_1",
+		Type:      signals.TypeAlert,
+		Source:    "alertmanager",
+		Service:   "checkout",
+		Env:       "demo",
+		Severity:  signals.SeverityCritical,
+		Reason:    "PMT_502 spike",
+		Timestamp: now.Add(-30 * time.Second),
+		Metadata: map[string]any{
+			"alert_id":     "CheckoutPaymentFailure",
+			"error_code":   "PMT_502",
+			"step":         "payment.charge",
+			"provider_url": "https://alerts.example/inc",
+		},
+	}}
+
+	got := captureAlertEvidenceFromSignals(rows, inc, now, 15*time.Minute)
+	if got.CaptureStatus != CaptureOK {
+		t.Fatalf("CaptureStatus = %s, want ok", got.CaptureStatus)
+	}
+	if len(got.Matches) != 1 {
+		t.Fatalf("Matches len = %d, want 1", len(got.Matches))
+	}
+	m := got.Matches[0]
+	if m.SignalID != "sig_1" || m.AlertID != "CheckoutPaymentFailure" || m.Strategy != "family" {
+		t.Fatalf("match = %+v", m)
+	}
+	if len(m.EvidenceIDs) != 1 || m.EvidenceIDs[0] != "sig_1" {
+		t.Fatalf("EvidenceIDs = %+v", m.EvidenceIDs)
+	}
+}
+
+func TestCaptureAlertEvidence_MatchesOlderIncidentAlert(t *testing.T) {
+	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	inc := Incident{
+		IncidentID:  "inc_1",
+		Env:         "demo",
+		ErrorFamily: apiv2.ErrorFamily{Service: "checkout", Step: "payment.charge", ErrorCode: "PMT_502"},
+		StartedAt:   now.Add(-45 * time.Minute),
+	}
+	rows := []signals.Signal{{
+		SignalID:  "sig_old",
+		Type:      signals.TypeAlert,
+		Source:    "alertmanager",
+		Service:   "checkout",
+		Env:       "demo",
+		Severity:  signals.SeverityCritical,
+		Reason:    "PMT_502 spike",
+		Timestamp: now.Add(-40 * time.Minute),
+		Metadata:  map[string]any{"error_code": "PMT_502", "step": "payment.charge"},
+	}}
+
+	got := captureAlertEvidenceFromSignals(rows, inc, now, 15*time.Minute)
+	if got.CaptureStatus != CaptureOK {
+		t.Fatalf("CaptureStatus = %s, want ok", got.CaptureStatus)
+	}
+	if len(got.Matches) != 1 || got.Matches[0].SignalID != "sig_old" {
+		t.Fatalf("Matches = %+v", got.Matches)
+	}
+}
+
+func TestCaptureAlertEvidence_NoMatchMissing(t *testing.T) {
+	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	inc := Incident{
+		IncidentID:  "inc_1",
+		Env:         "demo",
+		ErrorFamily: apiv2.ErrorFamily{Service: "checkout", Step: "payment.charge", ErrorCode: "PMT_502"},
+		StartedAt:   now.Add(-time.Minute),
+	}
+	rows := []signals.Signal{{
+		SignalID:  "sig_other",
+		Type:      signals.TypeAlert,
+		Source:    "alertmanager",
+		Service:   "checkout",
+		Env:       "demo",
+		Severity:  signals.SeverityCritical,
+		Reason:    "other",
+		Timestamp: now.Add(-30 * time.Second),
+		Metadata:  map[string]any{"error_code": "OTHER"},
+	}}
+
+	got := captureAlertEvidenceFromSignals(rows, inc, now, 15*time.Minute)
+	if got.CaptureStatus != CaptureMissing {
+		t.Fatalf("CaptureStatus = %s, want missing", got.CaptureStatus)
+	}
+	if len(got.Matches) != 0 {
+		t.Fatalf("Matches = %+v, want none", got.Matches)
+	}
+}
+
+func TestUpdateAlertSnapshot_FirstOKSetsOpening(t *testing.T) {
+	fresh := &AlertEvidence{
+		Matches:       []MatchedAlert{{SignalID: "sig_1"}},
+		CapturedAt:    time.Now(),
+		CaptureStatus: CaptureOK,
+	}
+	snap := updateAlertSnapshot(nil, fresh)
+	if snap.Opening != fresh || snap.Latest != fresh {
+		t.Fatalf("snapshot = %+v, want opening/latest fresh", snap)
 	}
 }

@@ -1,10 +1,12 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-examples ingest ingest-mcp waylog checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
+.PHONY: help build build-crux install-local build-examples ingest ingest-mcp waylog checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
 	@echo "  build    - build core binaries (SDK tooling)"
+	@echo "  build-crux - build Crux interactive shell"
+	@echo "  install-local - install crux and waylog to GOPATH/bin"
 	@echo "  build-examples - build example/demo binaries"
 	@echo "  ingest   - run ingest server"
 	@echo "  ingest-mcp - run ingest server with MCP stdio enabled"
@@ -39,6 +41,17 @@ build:
 	go build ./cmd/checkout
 	go build ./cmd/waylog
 	go build ./cmd/bridge
+
+build-crux:
+	go build -o crux ./cmd/crux
+
+install-local: build build-crux
+	@mkdir -p "$$(go env GOPATH)/bin"
+	cp crux waylog "$$(go env GOPATH)/bin/"
+	@echo "installed: crux waylog -> $$(go env GOPATH)/bin/"
+	@echo ""
+	@echo "Add to PATH if needed:"
+	@echo "  export PATH=\"$$(go env GOPATH)/bin:$$PATH\""
 
 build-examples:
 	go build ./examples/cmd/api-gateway
@@ -81,7 +94,7 @@ vet-sdk: ## Vet SDK modules
 	cd pkg && go vet ./...
 	cd pkg/transport/kafka && go vet ./...
 
-ci: fmt vet vet-sdk test-race test-sdk ts-test check-doc-links check-rollup-contract otlp-conformance
+ci: fmt vet vet-sdk test-race test-sdk ts-test build-crux check-doc-links check-rollup-contract otlp-conformance
 	@echo "CI checks passed"
 
 ts-install: ## Install TS SDK deps (skipped if node_modules is already present)
@@ -105,7 +118,7 @@ bench-gate: ## Enforce v2 SDK §4.4.1 perf budgets (optional; not in `ci` yet)
 	@bash scripts/bench-gate.sh
 
 clean:
-	rm -f ingest checkout waylog bridge api-gateway checkout-demo db-demo payment-demo
+	rm -f ingest checkout waylog bridge crux api-gateway checkout-demo db-demo payment-demo
 
 kafka-up:
 	docker compose -f docker-compose.kafka.yml up -d

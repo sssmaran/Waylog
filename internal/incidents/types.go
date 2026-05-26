@@ -80,6 +80,24 @@ type BlastEvidence struct {
 	CaptureStatus    EvidenceCaptureStatus `json:"capture_status"`
 }
 
+type MatchedAlert struct {
+	SignalID    string    `json:"signal_id"`
+	AlertID     string    `json:"alert_id,omitempty"`
+	Source      string    `json:"source"`
+	Severity    string    `json:"severity"`
+	Reason      string    `json:"reason"`
+	ProviderURL string    `json:"provider_url,omitempty"`
+	EvidenceIDs []string  `json:"evidence_ids,omitempty"`
+	MatchedAt   time.Time `json:"matched_at"`
+	Strategy    string    `json:"strategy"`
+}
+
+type AlertEvidence struct {
+	Matches       []MatchedAlert        `json:"matches"`
+	CapturedAt    time.Time             `json:"captured_at"`
+	CaptureStatus EvidenceCaptureStatus `json:"capture_status"`
+}
+
 type PropagationSnapshot struct {
 	Opening *PropagationEvidence `json:"opening,omitempty"`
 	Latest  *PropagationEvidence `json:"latest,omitempty"`
@@ -88,6 +106,11 @@ type PropagationSnapshot struct {
 type BlastSnapshot struct {
 	Opening *BlastEvidence `json:"opening,omitempty"`
 	Latest  *BlastEvidence `json:"latest,omitempty"`
+}
+
+type AlertSnapshot struct {
+	Opening *AlertEvidence `json:"opening,omitempty"`
+	Latest  *AlertEvidence `json:"latest,omitempty"`
 }
 
 type Evidence struct {
@@ -129,6 +152,7 @@ type Incident struct {
 	CurrentCount            int                  `json:"current_count"`
 	Propagation             *PropagationSnapshot `json:"propagation,omitempty"`
 	Blast                   *BlastSnapshot       `json:"blast,omitempty"`
+	Alerts                  *AlertSnapshot       `json:"alerts,omitempty"`
 }
 
 type Deployment struct {

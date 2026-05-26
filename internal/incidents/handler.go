@@ -114,6 +114,7 @@ func toAPIIncident(inc Incident) apiv2.Incident {
 		CurrentCount:            inc.CurrentCount,
 		Propagation:             toAPIPropagation(inc.Propagation),
 		Blast:                   toAPIBlast(inc.Blast),
+		Alerts:                  toAPIAlerts(inc.Alerts),
 	}
 }
 
@@ -185,6 +186,41 @@ func toAPIBlastEvidence(b *BlastEvidence) *apiv2.BlastEvidence {
 		SampledTraces:    append([]string(nil), b.SampledTraces...),
 		CapturedAt:       b.CapturedAt,
 		CaptureStatus:    string(b.CaptureStatus),
+	}
+}
+
+func toAPIAlerts(s *AlertSnapshot) *apiv2.AlertSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &apiv2.AlertSnapshot{
+		Opening: toAPIAlertEvidence(s.Opening),
+		Latest:  toAPIAlertEvidence(s.Latest),
+	}
+}
+
+func toAPIAlertEvidence(a *AlertEvidence) *apiv2.AlertEvidence {
+	if a == nil {
+		return nil
+	}
+	matches := make([]apiv2.MatchedAlert, 0, len(a.Matches))
+	for _, m := range a.Matches {
+		matches = append(matches, apiv2.MatchedAlert{
+			SignalID:    m.SignalID,
+			AlertID:     m.AlertID,
+			Source:      m.Source,
+			Severity:    m.Severity,
+			Reason:      m.Reason,
+			ProviderURL: m.ProviderURL,
+			EvidenceIDs: append([]string(nil), m.EvidenceIDs...),
+			MatchedAt:   m.MatchedAt,
+			Strategy:    m.Strategy,
+		})
+	}
+	return &apiv2.AlertEvidence{
+		Matches:       matches,
+		CapturedAt:    a.CapturedAt,
+		CaptureStatus: string(a.CaptureStatus),
 	}
 }
 

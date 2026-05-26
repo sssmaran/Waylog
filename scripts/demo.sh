@@ -133,30 +133,43 @@ wait_for_tcp 127.0.0.1 9082 checkout-demo
 start api-gateway "${BIN_DIR}/api-gateway"
 wait_for_http "http://localhost:9081/demo" "api-gateway"
 
+# Auto-fire loop: produces a fresh burst every DEMO_FIRE_INTERVAL_SEC.
+# Opt out with DEMO_AUTO_FIRE=0 before running `make demo`.
+auto_fire_msg="Auto-fire disabled. Run ./scripts/demo-fire-burst.sh for an immediate incident."
+if [[ "${DEMO_AUTO_FIRE:-1}" == "1" ]]; then
+  export DEMO_FIRE_INTERVAL_SEC="${DEMO_FIRE_INTERVAL_SEC:-60}"
+  start auto-fire bash -c '
+    set -euo pipefail
+    sleep 5
+    while true; do
+      "'"${ROOT}"'"/scripts/demo-fire-burst.sh >/dev/null 2>&1 || true
+      sleep "${DEMO_FIRE_INTERVAL_SEC}"
+    done
+  '
+  auto_fire_msg="First incident in ~30 seconds (auto-fire loop active)."
+fi
+
 cat <<INFO
-Waylog dashboard demo is running.
 
-Open:
-  Demo controls: http://localhost:9081/demo
-  Dashboard:     http://localhost:8080/ui/
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Crux demo
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-How to demo it:
-  1. Open Demo controls and click "Run proof loop".
-  2. Inspect the alert, incident, triage hash, operator report, and scorecard.
-  3. Open Dashboard to inspect the active incident, errors, impact, and trace explanation.
-  4. Or run: make demo-acceptance
+  Dashboard:  http://localhost:8080/ui/
+  API:        http://localhost:8080
+  Demo UI:    http://localhost:9081/demo
 
-Useful CLI checks:
-  ./waylog capabilities
-  ./waylog recent --limit 5
-  ./waylog incidents
-  ./waylog errors --window 15m
-  ./waylog blast --service checkout --step payment.charge --code PMT_502 --window 15m
-  ./waylog incident <incident_id> --snapshot
+  ${auto_fire_msg}
+  Set DEMO_AUTO_FIRE=0 before \`make demo\` to disable.
 
-Logs:
-  ${LOG_DIR}
+  Stop:       make demo-stop
+  Acceptance: make demo-acceptance
+  Logs:       ${LOG_DIR}
 
-Stop:
-  make demo-stop
+  Useful CLI:
+    ./waylog incidents
+    ./waylog incident <incident_id> --snapshot
+    ./waylog errors --window 15m
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 INFO

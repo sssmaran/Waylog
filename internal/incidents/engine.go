@@ -383,7 +383,11 @@ func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Inci
 		SearchFilter{Since: since, Until: now},
 		apiv2.BlastKey{Service: row.ErrorFamily.Service, Step: row.ErrorFamily.Step, ErrorCode: row.ErrorFamily.ErrorCode},
 	)
-	sigs, err := e.querySignals(ctx, env, now.Add(-e.cfg.DeployCorrelationWindow), now)
+	signalSince := now.Add(-e.cfg.DeployCorrelationWindow)
+	if alertSince := startedAt.Add(-e.cfg.DeployCorrelationWindow); alertSince.Before(signalSince) {
+		signalSince = alertSince
+	}
+	sigs, err := e.querySignals(ctx, env, signalSince, now)
 	if err != nil && !errors.Is(err, signals.ErrUnavailable) {
 		return Incident{}, false, err
 	}
@@ -443,6 +447,9 @@ func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Inci
 			}
 		}
 		inc.Propagation = updatePropagationSnapshot(existing.Propagation, newPropagationEvidence(story, sampleTraceID, firstSeenAt, now))
+	}
+	if inc.Status != StatusResolved {
+		inc.Alerts = updateAlertSnapshot(existing.Alerts, captureAlertEvidenceFromSignals(sigs, inc, now, e.cfg.DeployCorrelationWindow))
 	}
 	class := Classify(ClassificationInput{Incident: inc, Events: events, Signals: sigs, Deployments: deploys, Now: now})
 	inc.Cause = class.Cause

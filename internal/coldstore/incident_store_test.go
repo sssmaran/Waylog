@@ -268,6 +268,71 @@ func TestIncidentStore_NilSnapshotsRoundTrip(t *testing.T) {
 	if got.Blast != nil {
 		t.Errorf("Blast = %+v; want nil", got.Blast)
 	}
+	if got.Alerts != nil {
+		t.Errorf("Alerts = %+v; want nil", got.Alerts)
+	}
+}
+
+func TestIncidentStore_AlertSnapshotRoundTrip(t *testing.T) {
+	managed, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer managed.Close()
+	store := NewIncidentStore(managed.(*SQLiteStore))
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	inc := baseEvidenceIncident("inc_test_alerts", ts)
+	inc.Alerts = &incidents.AlertSnapshot{
+		Opening: &incidents.AlertEvidence{
+			Matches: []incidents.MatchedAlert{{
+				SignalID:    "sig_open",
+				AlertID:     "CheckoutPaymentFailure",
+				Source:      "alertmanager",
+				Severity:    "critical",
+				Reason:      "PMT_502 spike",
+				ProviderURL: "https://alerts.example/open",
+				EvidenceIDs: []string{"sig_open"},
+				MatchedAt:   ts,
+				Strategy:    "family",
+			}},
+			CapturedAt:    ts,
+			CaptureStatus: incidents.CaptureOK,
+		},
+		Latest: &incidents.AlertEvidence{
+			Matches: []incidents.MatchedAlert{{
+				SignalID:    "sig_latest",
+				AlertID:     "CheckoutPaymentFailure",
+				Source:      "alertmanager",
+				Severity:    "critical",
+				Reason:      "PMT_502 still firing",
+				EvidenceIDs: []string{"sig_latest"},
+				MatchedAt:   ts.Add(time.Minute),
+				Strategy:    "family",
+			}},
+			CapturedAt:    ts.Add(time.Minute),
+			CaptureStatus: incidents.CaptureOK,
+		},
+	}
+	if err := store.Upsert(ctx, inc); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := store.Get(ctx, inc.IncidentID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Alerts == nil || got.Alerts.Opening == nil || got.Alerts.Latest == nil {
+		t.Fatalf("Alerts snapshot lost: %+v", got.Alerts)
+	}
+	if got.Alerts.Opening.Matches[0].SignalID != "sig_open" {
+		t.Fatalf("opening match = %+v", got.Alerts.Opening.Matches)
+	}
+	if got.Alerts.Latest.Matches[0].SignalID != "sig_latest" {
+		t.Fatalf("latest match = %+v", got.Alerts.Latest.Matches)
+	}
+	if got.Alerts.Latest.CaptureStatus != incidents.CaptureOK {
+		t.Fatalf("latest status = %s", got.Alerts.Latest.CaptureStatus)
+	}
 }
 
 func TestIncidentStore_DoesNotMergeOpening(t *testing.T) {

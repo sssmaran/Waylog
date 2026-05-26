@@ -487,3 +487,39 @@ func TestEngine_Build_ProjectionIsByteStable(t *testing.T) {
 		t.Fatalf("ReportHash drifted: %s vs %s", rpt1.ReportHash, rpt2.ReportHash)
 	}
 }
+
+func TestEngine_Build_UsesAlertSnapshotWhenPresent(t *testing.T) {
+	ts := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	firstSeen := ts.Add(-30 * time.Second)
+	inc := makeFixedSummary(t, ts, firstSeen)
+	inc.Alerts = &incidents.AlertSnapshot{
+		Latest: &incidents.AlertEvidence{
+			Matches: []incidents.MatchedAlert{{
+				SignalID:    "sig_snapshot",
+				AlertID:     "CheckoutPaymentFailure",
+				Source:      "alertmanager",
+				Severity:    "critical",
+				Reason:      "PMT_502 spike",
+				ProviderURL: "https://alerts.example/inc",
+				EvidenceIDs: []string{"sig_snapshot"},
+				MatchedAt:   ts,
+				Strategy:    "family",
+			}},
+			CapturedAt:    ts,
+			CaptureStatus: incidents.CaptureOK,
+		},
+	}
+	eng := newSnapshotProjectionEngine(t, inc, ts)
+
+	rpt, err := eng.Build(context.Background(), inc.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(rpt.Alerts) != 1 {
+		t.Fatalf("Alerts len = %d, want 1: %+v", len(rpt.Alerts), rpt.Alerts)
+	}
+	got := rpt.Alerts[0]
+	if got.SignalID != "sig_snapshot" || got.AlertID != "CheckoutPaymentFailure" || got.Source != "alertmanager" {
+		t.Fatalf("alert ref = %+v", got)
+	}
+}

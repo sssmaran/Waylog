@@ -196,6 +196,15 @@ waylog search   PMT_502 --window 1h
 
 `waylog capabilities` is intentionally ungated so it can diagnose server setup; other verbs require `v2_reads.enabled=true` (the default). Defaults: `INGEST_ADDR`, `WAYLOG_READ_KEY`, `WAYLOG_CLI_TIMEOUT`. Add `--json` to any verb for machine-readable output.
 
+### Interactive shell
+
+```bash
+make build-crux
+./crux
+```
+
+`crux` opens a lightweight incident-triage shell with `help`, `status`, `incidents`, `open <id>`, `triage <id>`, `blast <service>:<step>:<code>`, `explain <trace_id>`, and `exit`. With arguments, it delegates to the same command library as `waylog`, so `crux incidents` and `waylog incidents` share behavior.
+
 ### Dashboard
 
 Embedded Geist UI at <http://localhost:8080/ui/>. Uses the dashboard session cookie for read-scope auth and runs against the v2 reader.

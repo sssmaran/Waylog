@@ -76,6 +76,7 @@ func (a incidentLookupAdapter) GetIncident(ctx context.Context, id string) (Inci
 		NextChecks:  append([]string(nil), inc.NextChecks...),
 		Propagation: inc.Propagation,
 		Blast:       inc.Blast,
+		Alerts:      inc.Alerts,
 	}, nil
 }
 

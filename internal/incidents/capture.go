@@ -3,6 +3,7 @@ package incidents
 import (
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/signals"
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	eventv2 "github.com/sssmaran/WaylogCLI/pkg/event/v2"
 )
@@ -128,6 +129,106 @@ func updateBlastSnapshot(prior *BlastSnapshot, fresh *BlastEvidence) *BlastSnaps
 		prior = &BlastSnapshot{}
 	}
 	out := &BlastSnapshot{Opening: prior.Opening, Latest: fresh}
+	if out.Opening == nil && fresh != nil && fresh.CaptureStatus == CaptureOK {
+		out.Opening = fresh
+	}
+	return out
+}
+
+func captureAlertEvidenceFromSignals(rows []signals.Signal, inc Incident, capturedAt time.Time, matchWindow time.Duration) *AlertEvidence {
+	if matchWindow <= 0 {
+		matchWindow = 15 * time.Minute
+	}
+	if matchWindow > 24*time.Hour {
+		matchWindow = 24 * time.Hour
+	}
+	matches := make([]MatchedAlert, 0, len(rows))
+	for i := range rows {
+		sig := rows[i]
+		if ok, strategy := matchAlertSignalToIncident(&sig, inc, matchWindow, capturedAt); ok {
+			matches = append(matches, matchedAlertFromSignal(sig, strategy))
+		}
+	}
+	status := CaptureMissing
+	if len(matches) > 0 {
+		status = CaptureOK
+	}
+	return &AlertEvidence{Matches: matches, CapturedAt: capturedAt, CaptureStatus: status}
+}
+
+func matchAlertSignalToIncident(sig *signals.Signal, inc Incident, matchWindow time.Duration, now time.Time) (bool, string) {
+	if sig == nil || sig.Type != signals.TypeAlert {
+		return false, ""
+	}
+	ts := sig.Timestamp
+	if ts.IsZero() {
+		ts = sig.ReceivedAt
+	}
+	if !ts.IsZero() {
+		lo := inc.StartedAt.Add(-matchWindow)
+		hi := now
+		if ts.Before(lo) || ts.After(hi) {
+			return false, ""
+		}
+	}
+	if id := signalMetaString(sig.Metadata, "incident_id"); id != "" {
+		if id == inc.IncidentID {
+			return true, "incident_id"
+		}
+		return false, ""
+	}
+	if sig.Env != "" && inc.Env != "" && sig.Env != inc.Env {
+		return false, ""
+	}
+	if sig.Service != "" && sig.Service != inc.ErrorFamily.Service {
+		return false, ""
+	}
+	if code := signalMetaString(sig.Metadata, "error_code"); code != "" && code == inc.ErrorFamily.ErrorCode {
+		step := signalMetaString(sig.Metadata, "step")
+		if step == "" || step == inc.ErrorFamily.Step {
+			return true, "family"
+		}
+	}
+	return false, ""
+}
+
+func matchedAlertFromSignal(sig signals.Signal, strategy string) MatchedAlert {
+	evidenceIDs := []string(nil)
+	if sig.SignalID != "" {
+		evidenceIDs = []string{sig.SignalID}
+	}
+	matchedAt := sig.Timestamp
+	if matchedAt.IsZero() {
+		matchedAt = sig.ReceivedAt
+	}
+	return MatchedAlert{
+		SignalID:    sig.SignalID,
+		AlertID:     signalMetaString(sig.Metadata, "alert_id"),
+		Source:      sig.Source,
+		Severity:    string(sig.Severity),
+		Reason:      sig.Reason,
+		ProviderURL: signalMetaString(sig.Metadata, "provider_url"),
+		EvidenceIDs: evidenceIDs,
+		MatchedAt:   matchedAt,
+		Strategy:    strategy,
+	}
+}
+
+func signalMetaString(m map[string]any, key string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
+}
+
+func updateAlertSnapshot(prior *AlertSnapshot, fresh *AlertEvidence) *AlertSnapshot {
+	if prior == nil {
+		prior = &AlertSnapshot{}
+	}
+	out := &AlertSnapshot{Opening: prior.Opening, Latest: fresh}
 	if out.Opening == nil && fresh != nil && fresh.CaptureStatus == CaptureOK {
 		out.Opening = fresh
 	}

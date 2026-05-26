@@ -83,6 +83,13 @@ func TestHandler_IncidentDetail_EmitsPropagationAndBlast(t *testing.T) {
 		Blast: &BlastSnapshot{
 			Latest: &BlastEvidence{AffectedRequests: 5, AffectedServices: 2, AffectedUsers: &users, TopServices: []string{"checkout"}, CapturedAt: ts, CaptureStatus: CaptureOK},
 		},
+		Alerts: &AlertSnapshot{
+			Latest: &AlertEvidence{
+				Matches:       []MatchedAlert{{SignalID: "sig_1", AlertID: "CheckoutPaymentFailure", Source: "alertmanager", Severity: "critical", Reason: "PMT_502 spike", MatchedAt: ts, Strategy: "family"}},
+				CapturedAt:    ts,
+				CaptureStatus: CaptureOK,
+			},
+		},
 	}
 	store := NewMemoryStore()
 	if err := store.Upsert(context.Background(), inc); err != nil {
@@ -111,5 +118,11 @@ func TestHandler_IncidentDetail_EmitsPropagationAndBlast(t *testing.T) {
 	}
 	if got.Incident.Blast.Latest.AffectedRequests != 5 {
 		t.Errorf("Blast.Latest.AffectedRequests = %d; want 5", got.Incident.Blast.Latest.AffectedRequests)
+	}
+	if got.Incident.Alerts == nil || got.Incident.Alerts.Latest == nil {
+		t.Errorf("response missing .incident.alerts.latest: %s", rec.Body.String())
+	}
+	if len(got.Incident.Alerts.Latest.Matches) != 1 || got.Incident.Alerts.Latest.Matches[0].SignalID != "sig_1" {
+		t.Errorf("Alerts.Latest.Matches = %+v", got.Incident.Alerts.Latest.Matches)
 	}
 }

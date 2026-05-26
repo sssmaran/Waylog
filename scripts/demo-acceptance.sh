@@ -8,6 +8,7 @@ WAYLOG_WRITE_KEY="${WAYLOG_WRITE_KEY:-demo}"
 REQUESTS="${REQUESTS:-20}"
 CONCURRENCY="${CONCURRENCY:-5}"
 TIMEOUT="${WAYLOG_CLI_TIMEOUT:-5s}"
+WAYLOG_DEMO_EXPECT_ALERTS="${WAYLOG_DEMO_EXPECT_ALERTS:-1}"
 CLI_BIN="${WAYLOG_CLI_BIN:-}"
 JSON_BIN="${WAYLOG_JSON_HELPER_BIN:-}"
 
@@ -149,29 +150,47 @@ incident_id="$(json_first_incident_id <<<"$incidents_json")"
 "${CLI[@]}" --json incident "$incident_id" >/dev/null || fail "waylog incident failed for incident $incident_id"
 echo "PASS: waylog incident"
 
-# --- v1.0 incident evidence: propagation.latest + blast.latest ---
-# Parity gate: every active incident must have both snapshots populated.
-# Wait up to ~70s (≈ two engine ticks at 30s default) for capture to fire
-# on each one before failing.
+# --- v1.0 incident evidence: propagation.latest + blast.latest (+ alerts.latest after A2) ---
+# MVP gate: at least one active incident must have the current expected
+# evidence snapshots captured successfully. The demo auto-fire loop can create
+# fresh active incidents while acceptance is running, so requiring every active
+# incident to be fully captured is intentionally too strict.
 active_ids="$(json_active_incident_ids <<<"$incidents_json")"
 [[ -n "$active_ids" ]] || fail "no active incident_ids returned from /v1/incidents/active"
+evidence_ok=0
 while IFS= read -r active_id; do
   [[ -n "$active_id" ]] || continue
   inc_detail=""
-  latest_present="false"
+  prop_status="missing"
+  blast_status="missing"
+  alert_status="missing"
   for _ in $(seq 1 14); do
     inc_detail="$(curl -fsS -H "Authorization: Bearer ${WAYLOG_READ_KEY}" "${INGEST_URL}/v1/incidents/${active_id}")" || fail "GET /v1/incidents/${active_id} failed"
-    latest_present="$(echo "$inc_detail" | jq -r '.incident.blast.latest != null and .incident.propagation.latest != null')"
-    if [[ "$latest_present" == "true" ]]; then
+    prop_status="$(echo "$inc_detail" | jq -r '.incident.propagation.latest.capture_status // "missing"')"
+    blast_status="$(echo "$inc_detail" | jq -r '.incident.blast.latest.capture_status // "missing"')"
+    alert_status="$(echo "$inc_detail" | jq -r '.incident.alerts.latest.capture_status // "missing"')"
+    if [[ "$prop_status" == "ok" && "$blast_status" == "ok" ]] && { [[ "$WAYLOG_DEMO_EXPECT_ALERTS" != "1" ]] || [[ "$alert_status" == "ok" ]]; }; then
+      evidence_ok=1
       break
     fi
     sleep 5
   done
-  [[ "$latest_present" == "true" ]] || fail "incident ${active_id} missing propagation.latest or blast.latest after waiting: $(echo "$inc_detail" | jq -c '{propagation:.incident.propagation,blast:.incident.blast}')"
   echo "  ${active_id} propagation: $(echo "$inc_detail" | jq -r '.incident.propagation.latest | "origin=\(.origin_service)/\(.origin_step) status=\(.capture_status)" // "MISSING"')"
   echo "  ${active_id} blast:       $(echo "$inc_detail" | jq -r '.incident.blast.latest | "req=\(.affected_requests) svc=\(.affected_services) users=\(.affected_users // 0) status=\(.capture_status)" // "MISSING"')"
+  if [[ "$WAYLOG_DEMO_EXPECT_ALERTS" == "1" ]]; then
+    echo "  ${active_id} alerts:      $(echo "$inc_detail" | jq -r '.incident.alerts.latest | "matches=\(.matches | length) status=\(.capture_status)" // "MISSING"')"
+  fi
+  if [[ "$evidence_ok" -eq 1 ]]; then
+    break
+  fi
 done <<<"$active_ids"
-echo "PASS: incident evidence (propagation.latest + blast.latest captured on every active incident)"
+if [[ "$WAYLOG_DEMO_EXPECT_ALERTS" == "1" ]]; then
+  [[ "$evidence_ok" -eq 1 ]] || fail "no active incident reached propagation.latest=ok AND blast.latest=ok AND alerts.latest=ok"
+  echo "PASS: incident evidence (at least one active incident has propagation.latest=ok AND blast.latest=ok AND alerts.latest=ok)"
+else
+  [[ "$evidence_ok" -eq 1 ]] || fail "no active incident reached propagation.latest=ok AND blast.latest=ok"
+  echo "PASS: incident evidence (at least one active incident has propagation.latest=ok AND blast.latest=ok)"
+fi
 
 snapshot="$("${CLI[@]}" incident "$incident_id" --snapshot)" || fail "waylog incident snapshot failed for incident $incident_id"
 [[ "$snapshot" == *"payment.charge"* ]] || fail "incident snapshot did not mention payment.charge"

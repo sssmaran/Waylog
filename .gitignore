@@ -37,6 +37,7 @@ data/demo-state/
 /checkout
 /waylog
 /bridge
+/crux
 /waylog-live
 /api-gateway
 /bin/
