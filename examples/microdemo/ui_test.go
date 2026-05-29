@@ -19,7 +19,16 @@ func TestDemoUIProductShowcaseCopy(t *testing.T) {
 	}
 	html := rec.Body.String()
 	required := []string{
-		"Simulate a checkout outage. Watch Waylog explain the cascade.",
+		"<title>Crux — Live demo</title>",
+		"<span class=\"name\">Crux</span>",
+		"#FF7300",
+		"--ok: #15803d",
+		".proof-checklist .ok { color: var(--ok);",
+		"failure cascade",
+		"blast radius",
+		"alert evidence",
+		"triage report",
+		"Simulate a checkout outage. Watch Crux explain the cascade.",
 		"Run payment outage",
 		"Run happy checkout",
 		"Run suppressed known issue",
@@ -59,7 +68,8 @@ func TestDemoUIProductShowcaseCopy(t *testing.T) {
 		"Open dashboard",
 		"Explain this trace",
 		"View impact",
-		"Still propagating through Waylog…",
+		"Still propagating through Crux…",
+		"In this local demo, provider links open demo controls.",
 		"Happy checkout captured",
 		"Payment outage captured",
 		"Cart not found captured",
@@ -76,6 +86,12 @@ func TestDemoUIProductShowcaseCopy(t *testing.T) {
 		"waylog explain &lt;trace_id&gt;",
 		"waylog errors",
 		"waylog blast",
+		"Watch Waylog explain",
+		"Still propagating through Waylog",
+		"<title>Waylog — Live demo</title>",
+		"#22c55e",
+		"rgba(34, 197, 94",
+		"rgba(94, 255, 139",
 	}
 	for _, needle := range forbidden {
 		if strings.Contains(html, needle) {

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#ece7da">
-  <title>Waylog — Live demo</title>
+  <title>Crux — Live demo</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -19,12 +19,13 @@
       --line-strong: #a8a18d;
       --surface: #f4efe1;
       --surface-2: #ede7d6;
-      --accent: #15803d;
-      --accent-bright: #22c55e;
-      --accent-soft: rgba(34, 197, 94, 0.18);
+      --accent: #FF7300;
+      --accent-bright: #FF7300;
+      --accent-soft: rgba(255, 115, 0, 0.18);
       --danger: #b42318;
       --danger-soft: rgba(180, 35, 24, 0.16);
       --warn: #b45309;
+      --ok: #15803d;
       --focus: #2563eb;
       --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -43,12 +44,13 @@
         --line-strong: #2a2a2a;
         --surface: #0c0c0c;
         --surface-2: #121212;
-        --accent: #5eff8b;
-        --accent-bright: #5eff8b;
-        --accent-soft: rgba(94, 255, 139, 0.18);
+        --accent: #FF7300;
+        --accent-bright: #FF7300;
+        --accent-soft: rgba(255, 115, 0, 0.18);
         --danger: #f87171;
         --danger-soft: rgba(248, 113, 113, 0.18);
         --warn: #fbbf24;
+        --ok: #5eff8b;
       }
     }
 
@@ -398,7 +400,7 @@
       color: var(--muted);
       font-size: 0.86rem;
     }
-    .proof-checklist .ok { color: var(--accent); font-family: var(--font-mono); font-weight: 600; }
+    .proof-checklist .ok { color: var(--ok); font-family: var(--font-mono); font-weight: 600; }
     .proof-checklist .bad { color: var(--danger); font-family: var(--font-mono); font-weight: 600; }
     .proof-table {
       width: 100%;
@@ -638,7 +640,7 @@
   <a class="skip" href="#demo">Skip to demo</a>
   <header class="topbar">
     <div class="brand">
-      <span class="name">Waylog</span>
+      <span class="name">Crux</span>
       <span class="div">/</span>
       <span class="ctx">live demo</span>
     </div>
@@ -647,8 +649,8 @@
 
   <main id="demo">
     <section class="hero">
-      <h1>Simulate a checkout outage. Watch Waylog explain the cascade.</h1>
-      <p class="lede">Trigger a real request through <span class="mono">api-gateway</span> → <span class="mono">checkout</span> → <span class="mono">db</span>/<span class="mono">payment</span>, then jump into Waylog to see the failure path, blast radius, and trace narrative.</p>
+      <h1>Simulate a checkout outage. Watch Crux explain the cascade.</h1>
+      <p class="lede">Trigger a real request through <span class="mono">api-gateway</span> → <span class="mono">checkout</span> → <span class="mono">db</span>/<span class="mono">payment</span>, then jump into Crux to see the failure cascade, blast radius, alert evidence, and triage report.</p>
       <div class="actions">
         <button type="button" class="primary" data-scenario="payment_502">Run payment outage</button>
         <button type="button" data-scenario="db_miss">Run cart not found</button>
@@ -661,23 +663,23 @@
     <section class="section" aria-label="Scenario expectations">
       <h2>Scenarios</h2>
       <div class="expectations">
-        <article class="expectation bracketed">
+        <article class="expectation">
           <strong>Happy checkout</strong>
           <span class="detail">Captured as a successful recent request; no error family appears.</span>
         </article>
-        <article class="expectation bracketed">
+        <article class="expectation">
           <strong>Payment outage</strong>
           <span class="detail">Checkout records <code>payment.charge</code> with <code>PMT_502</code>; dashboard shows the failure path and blast radius.</span>
         </article>
-        <article class="expectation bracketed">
+        <article class="expectation">
           <strong>Cart not found</strong>
           <span class="detail">DB returns 404; checkout records <code>db.load_cart</code> with <code>CART_NOT_FOUND</code> — a logical (not infra) failure.</span>
         </article>
-        <article class="expectation bracketed">
+        <article class="expectation">
           <strong>Checkout 500</strong>
           <span class="detail">Checkout fails before any downstream call: <code>cart.validate</code> raises <code>CHK_500</code> with no payment or db hop.</span>
         </article>
-        <article class="expectation bracketed">
+        <article class="expectation">
           <strong>Suppressed known issue</strong>
           <span class="detail">Visible in recent/direct trace views, excluded from error rollups and blast radius.</span>
         </article>
@@ -743,17 +745,17 @@
       },
       payment_502: {
         title: "Payment outage captured",
-        detail: "Waylog should show checkout:payment.charge:PMT_502 in Failures and Impact.",
+        detail: "Crux should show checkout:payment.charge:PMT_502 in Failures and Impact.",
         impactFamily: "checkout:payment.charge:PMT_502"
       },
       db_miss: {
         title: "Cart not found captured",
-        detail: "Waylog should show checkout:db.load_cart:CART_NOT_FOUND in Failures and Impact.",
+        detail: "Crux should show checkout:db.load_cart:CART_NOT_FOUND in Failures and Impact.",
         impactFamily: "checkout:db.load_cart:CART_NOT_FOUND"
       },
       checkout_error: {
         title: "Checkout 500 captured",
-        detail: "Waylog should show checkout:cart.validate:CHK_500 in Failures and Impact — no payment or db hop should appear.",
+        detail: "Crux should show checkout:cart.validate:CHK_500 in Failures and Impact — no payment or db hop should appear.",
         impactFamily: "checkout:cart.validate:CHK_500"
       },
       suppressed_payment_502: {
@@ -904,7 +906,7 @@
         data.trace_id ? `<a class="button" href="${explain}">Explain this trace</a>` : "",
         copy.impactFamily ? `<a class="button" href="${impactURL(copy.impactFamily)}">View impact</a>` : ""
       ].filter(Boolean).join("");
-      const timeline = story ? renderTimeline(story) : `<div class="result-empty">${timedOut ? "Trace captured, but the story is still catching up. Use the dashboard link to retry." : "Still propagating through Waylog…"}</div>`;
+      const timeline = story ? renderTimeline(story) : `<div class="result-empty">${timedOut ? "Trace captured, but the story is still catching up. Use the dashboard link to retry." : "Still propagating through Crux…"}</div>`;
       const result = document.getElementById("result");
       result.className = "bracketed";
       result.innerHTML = `
@@ -1008,7 +1010,8 @@
           <div>
             <div class="eyebrow">Proof loop complete</div>
             <h3 class="proof-headline">Alert correlated. Root cause identified. Report verified.</h3>
-            <p class="muted">Waylog correlated an external alert with an active incident, found <span class="mono">${esc(rootCause)}</span>, and produced a cited operator report whose hash was stable across CLI, read, direct tool, and plan-template surfaces in this run.</p>
+            <p class="muted">Crux correlated an external alert with an active incident, found <span class="mono">${esc(rootCause)}</span>, and produced a cited operator report whose hash was stable across CLI, read, direct tool, and plan-template surfaces in this run.</p>
+            ${isLocalDemo() ? `<p class="muted small">In this local demo, provider links open demo controls. In a real install, they point to your alert provider.</p>` : ""}
           </div>
           <div class="proof-summary">
             <div class="proof-metric"><span>Root cause</span><strong>${esc(rootCause)}</strong></div>

@@ -28,59 +28,115 @@ type Classification struct {
 
 func Classify(input ClassificationInput) Classification {
 	evidence := collectTraceEvidence(input.Events)
-	evidence = append(evidence, matchingAlertEvidence(input)...)
+	alerts := matchingAlerts(input)
+	for _, sig := range alerts {
+		evidence = append(evidence, signalEvidence(sig, alertLabel(sig)))
+	}
 	warnings := instrumentationWarnings(input.Events, input.Signals)
+	ctx := NextCheckContext{
+		Service:                 input.Incident.Service,
+		ErrorCode:               input.Incident.ErrorFamily.ErrorCode,
+		Step:                    input.Incident.ErrorFamily.Step,
+		SampleTraceID:           sampleTraceID(input),
+		MissingServiceVersion:   containsString(warnings, "missing_service_version"),
+		MissingDependencySignal: containsString(warnings, "missing_dependency_signal"),
+		HasPartialTrace:         containsString(warnings, "partial_trace"),
+	}
+	if top := pickTopAlert(alerts); top != nil {
+		ctx.AlertSignalID = top.SignalID
+		ctx.AlertID = stringField(top.Metadata, "alert_id")
+		ctx.AlertSource = top.Source
+		ctx.AlertProviderURL = stringField(top.Metadata, "provider_url")
+	}
 
 	if dep := matchingDependencySignal(input); dep != nil {
-		evidence = append(evidence, signalEvidence(*dep, "Dependency signal overlaps first failing downstream"))
-		return classification(CauseDependency, ConfidenceHigh, evidence, warnings)
+		ctx.Downstream = dep.Service
+		ctx.DepSignalID = dep.SignalID
+		ctx.DepSignalReason = dep.Reason
+		evidence = append(evidence, signalEvidence(*dep, dependencyLabel(*dep)))
+		return classification(CauseDependency, ConfidenceHigh, evidence, warnings, ctx)
 	}
 	if downstream := firstFailingDownstream(input.Events); downstream != "" {
+		ctx.Downstream = downstream
 		evidence = append(evidence, Evidence{
 			Kind:       EvidenceTrace,
-			Title:      "First failing step calls downstream service",
+			Title:      fmt.Sprintf("First failing step calls `%s`", downstream),
 			Detail:     downstream,
 			Service:    downstream,
 			OccurredAt: input.Incident.StartedAt,
 		})
-		return classification(CauseDependency, ConfidenceMedium, evidence, warnings)
+		return classification(CauseDependency, ConfidenceMedium, evidence, warnings, ctx)
 	}
 	if dep := matchingDeployment(input); dep != nil {
+		ctx.DeployVersion = dep.Version
+		ctx.DeployFirstSeen = dep.FirstSeen
 		evidence = append(evidence, deploymentEvidence(*dep))
-		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings)
+		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
 	}
 	if sig := matchingSignal(input, signals.TypeDeploy); sig != nil {
-		evidence = append(evidence, signalEvidence(*sig, "Deploy signal overlaps incident window"))
-		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings)
+		ctx.DeployVersion = stringField(sig.Metadata, "version")
+		ctx.DeploySignalID = sig.SignalID
+		if !sig.Timestamp.IsZero() {
+			ctx.DeployFirstSeen = sig.Timestamp
+		}
+		evidence = append(evidence, signalEvidence(*sig, deployLabel(*sig)))
+		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
 	}
 	if sig := matchingRuntimeSignal(input); sig != nil {
-		evidence = append(evidence, signalEvidence(*sig, "Runtime signal overlaps incident window"))
-		return classification(CauseRuntime, ConfidenceHigh, evidence, warnings)
+		ctx.RuntimeSignalID = sig.SignalID
+		ctx.RuntimeReason = sig.Reason
+		ctx.RuntimeSubtype = stringField(sig.Metadata, "subtype")
+		evidence = append(evidence, signalEvidence(*sig, runtimeLabel(*sig)))
+		return classification(CauseRuntime, ConfidenceHigh, evidence, warnings, ctx)
 	}
 	if len(input.Events) > 0 && input.Incident.ErrorFamily.Step != "" && firstFailingDownstream(input.Events) == "" {
-		return classification(CauseApp, ConfidenceMedium, evidence, warnings)
+		return classification(CauseApp, ConfidenceMedium, evidence, warnings, ctx)
 	}
-	return classification(CauseUnknown, ConfidenceLow, evidence, warnings)
+	return classification(CauseUnknown, ConfidenceLow, evidence, warnings, ctx)
 }
 
-func classification(cause Cause, confidence Confidence, evidence []Evidence, warnings []string) Classification {
+func sampleTraceID(input ClassificationInput) string {
+	if len(input.Incident.SampleTraces) > 0 && input.Incident.SampleTraces[0] != "" {
+		return input.Incident.SampleTraces[0]
+	}
+	for _, ev := range input.Events {
+		if ev != nil && ev.TraceID != "" {
+			return ev.TraceID
+		}
+	}
+	return ""
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func classification(cause Cause, confidence Confidence, evidence []Evidence, warnings []string, ctx NextCheckContext) Classification {
 	return Classification{
 		Cause:                   cause,
 		Confidence:              confidence,
 		Evidence:                normalizeEvidence(evidence, 8),
-		NextChecks:              NextChecks(cause, confidence),
+		NextChecks:              NextChecks(cause, confidence, ctx),
 		InstrumentationWarnings: uniqueStrings(warnings),
 	}
 }
 
 func matchingDependencySignal(input ClassificationInput) *signals.Signal {
 	downstream := firstFailingDownstream(input.Events)
+	if downstream == "" {
+		return nil
+	}
 	for i := range input.Signals {
 		sig := input.Signals[i]
 		if sig.Type != signals.TypeDependency {
 			continue
 		}
-		if downstream != "" && sig.Service != downstream {
+		if sig.Service != downstream {
 			continue
 		}
 		return &input.Signals[i]
@@ -143,14 +199,14 @@ func matchingSignal(input ClassificationInput, typ signals.Type) *signals.Signal
 	return nil
 }
 
-func matchingAlertEvidence(input ClassificationInput) []Evidence {
+func matchingAlerts(input ClassificationInput) []signals.Signal {
 	start := input.Incident.StartedAt
 	lo := start.Add(-15 * time.Minute)
 	hi := input.Now
 	if hi.IsZero() {
 		hi = input.Incident.UpdatedAt
 	}
-	out := []Evidence{}
+	var out []signals.Signal
 	for _, sig := range input.Signals {
 		if sig.Type != signals.TypeAlert {
 			continue
@@ -164,9 +220,38 @@ func matchingAlertEvidence(input ClassificationInput) []Evidence {
 		if sig.Timestamp.Before(lo) || sig.Timestamp.After(hi) {
 			continue
 		}
-		out = append(out, signalEvidence(sig, "External alert overlaps incident window"))
+		out = append(out, sig)
 	}
 	return out
+}
+
+func pickTopAlert(alerts []signals.Signal) *signals.Signal {
+	if len(alerts) == 0 {
+		return nil
+	}
+	best := &alerts[0]
+	bestRank := severityRank(best.Severity)
+	for i := 1; i < len(alerts); i++ {
+		cand := &alerts[i]
+		rank := severityRank(cand.Severity)
+		if rank > bestRank || (rank == bestRank && cand.Timestamp.After(best.Timestamp)) {
+			best = cand
+			bestRank = rank
+		}
+	}
+	return best
+}
+
+func severityRank(s signals.Severity) int {
+	switch s {
+	case signals.SeverityCritical:
+		return 3
+	case signals.SeverityWarning:
+		return 2
+	case signals.SeverityInfo:
+		return 1
+	}
+	return 0
 }
 
 func collectTraceEvidence(events []*eventv2.Event) []Evidence {
@@ -191,12 +276,79 @@ func collectTraceEvidence(events []*eventv2.Event) []Evidence {
 func deploymentEvidence(dep Deployment) Evidence {
 	return Evidence{
 		Kind:       EvidenceDeployment,
-		Title:      "Deployment overlaps incident window",
+		Title:      deploymentLabel(dep),
 		Detail:     dep.Version,
 		Service:    dep.Service,
 		DeployID:   dep.ID,
 		OccurredAt: dep.FirstSeen,
 	}
+}
+
+func alertLabel(sig signals.Signal) string {
+	sev := string(sig.Severity)
+	if sev == "" {
+		sev = "info"
+	}
+	reason := sig.Reason
+	if reason == "" {
+		reason = "external alert"
+	}
+	source := sig.Source
+	if source == "" {
+		source = "alert"
+	}
+	return fmt.Sprintf("%s: %s (%s)", sev, reason, source)
+}
+
+func dependencyLabel(sig signals.Signal) string {
+	service := sig.Service
+	if service == "" {
+		service = "downstream"
+	}
+	reason := sig.Reason
+	if reason == "" {
+		reason = "dependency signal"
+	}
+	return fmt.Sprintf("Dependency %s: %s", service, reason)
+}
+
+func deployLabel(sig signals.Signal) string {
+	service := sig.Service
+	if service == "" {
+		service = "service"
+	}
+	detail := stringField(sig.Metadata, "version")
+	if detail == "" {
+		detail = sig.Reason
+	}
+	if detail == "" {
+		detail = "deploy event"
+	}
+	return fmt.Sprintf("Deploy %s: %s", service, detail)
+}
+
+func deploymentLabel(dep Deployment) string {
+	service := dep.Service
+	if service == "" {
+		service = "service"
+	}
+	version := dep.Version
+	if version == "" {
+		version = "new revision"
+	}
+	return fmt.Sprintf("Deploy %s: %s", service, version)
+}
+
+func runtimeLabel(sig signals.Signal) string {
+	service := sig.Service
+	if service == "" {
+		service = "service"
+	}
+	reason := sig.Reason
+	if reason == "" {
+		reason = "runtime event"
+	}
+	return fmt.Sprintf("Runtime %s: %s", service, reason)
 }
 
 func signalEvidence(sig signals.Signal, title string) Evidence {

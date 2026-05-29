@@ -1,6 +1,7 @@
 package incidents
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -196,10 +197,96 @@ func TestClassifierRuntime(t *testing.T) {
 	})
 }
 
+func TestUnrelatedDependencySignalDoesNotAttachToLeafIncident(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	base := Incident{Service: "db", Env: "prod", StartedAt: now, ErrorFamily: testFamily()}
+	// Leaf-service event (no downstream call) — e.g. DB returning CART_NOT_FOUND.
+	leafEvent := testIncidentEvent("e1", "trace-a", now, "db", "cart.lookup", "CART_NOT_FOUND", "")
+	// An unrelated dependency signal that happens to be in the signal store for a different service.
+	unrelated := signals.Signal{
+		SignalID:  "sig_dep_unrelated",
+		Type:      signals.TypeDependency,
+		Service:   "payment",
+		Env:       "prod",
+		Reason:    "payment_gateway_5xx",
+		Severity:  signals.SeverityCritical,
+		Timestamp: now.Add(-time.Minute),
+	}
+
+	got := Classify(ClassificationInput{
+		Incident: base,
+		Events:   []*eventv2.Event{leafEvent},
+		Signals:  []signals.Signal{unrelated},
+	})
+
+	if got.Cause == CauseDependency {
+		t.Fatalf("leaf-service incident with unrelated dep signal should not classify as dependency: %+v", got)
+	}
+	for _, ev := range got.Evidence {
+		if ev.SignalID == "sig_dep_unrelated" {
+			t.Fatalf("unrelated dependency signal should not appear in evidence: %+v", ev)
+		}
+	}
+	for _, line := range got.NextChecks {
+		if strings.Contains(line, "`payment`") {
+			t.Fatalf("next checks should not reference unrelated `payment`: %q", line)
+		}
+	}
+}
+
 func TestNextChecksRuntime(t *testing.T) {
-	got := NextChecks(CauseRuntime, ConfidenceHigh)
+	got := NextChecks(CauseRuntime, ConfidenceHigh, NextCheckContext{
+		Service:         "payment",
+		RuntimeSignalID: "sig_rt_42",
+		RuntimeReason:   "OOMKilled",
+		RuntimeSubtype:  "oom_killed",
+	})
 	if len(got) == 0 {
 		t.Fatalf("expected non-empty next checks for runtime cause")
+	}
+	foundSignalLine := false
+	foundMemoryLine := false
+	for _, line := range got {
+		if strings.Contains(line, "runtime signal") && strings.Contains(line, "`OOMKilled`") && strings.Contains(line, "`payment`") {
+			foundSignalLine = true
+		}
+		if strings.Contains(line, "memory") && strings.Contains(line, "`payment`") {
+			foundMemoryLine = true
+		}
+	}
+	if !foundSignalLine {
+		t.Fatalf("expected runtime signal line referencing payment+OOMKilled, got %v", got)
+	}
+	if !foundMemoryLine {
+		t.Fatalf("expected memory-usage line for oom_killed subtype, got %v", got)
+	}
+}
+
+func TestNextChecksRuntimeWithoutSubtypeOmitsCategoryLine(t *testing.T) {
+	got := NextChecks(CauseRuntime, ConfidenceHigh, NextCheckContext{
+		Service:         "payment",
+		RuntimeSignalID: "sig_rt",
+		RuntimeReason:   "container restarted",
+	})
+	for _, line := range got {
+		if strings.Contains(line, "memory") || strings.Contains(line, "readiness") || strings.Contains(line, "liveness") {
+			t.Fatalf("runtime cause without subtype must not emit memory/probe lines, got %q", line)
+		}
+	}
+}
+
+func TestNextChecksFallbackWhenContextEmpty(t *testing.T) {
+	causes := []Cause{CauseDependency, CauseDeploy, CauseRuntime, CauseApp, CauseUnknown}
+	for _, cause := range causes {
+		got := NextChecks(cause, ConfidenceMedium, NextCheckContext{})
+		if len(got) == 0 {
+			t.Fatalf("%s: expected non-empty next checks", cause)
+		}
+		for _, line := range got {
+			if strings.Contains(line, "{") || strings.Contains(line, "``") {
+				t.Fatalf("%s: empty context produced unfilled placeholder in %q", cause, line)
+			}
+		}
 	}
 }
 
@@ -241,7 +328,11 @@ func TestClassifyIncludesAlertEvidenceWithoutChangingCause(t *testing.T) {
 		if ev.SignalID == "sig_other_env" {
 			t.Fatalf("alert evidence from another env should not be included: %+v", ev)
 		}
-		if ev.SignalID == "sig_alert" && ev.Title == "External alert overlaps incident window" {
+		if ev.SignalID == "sig_alert" {
+			wantTitle := "critical: PMT_502 spike (grafana)"
+			if ev.Title != wantTitle {
+				t.Fatalf("alert evidence title %q, want %q", ev.Title, wantTitle)
+			}
 			if ev.Fields["alert_id"] != "alert_1" {
 				t.Fatalf("alert metadata missing: %+v", ev.Fields)
 			}

@@ -434,9 +434,9 @@ type nextChecksAdapter struct{}
 
 // NewNextChecksAdapter returns a passthrough that converts the incident's
 // own NextChecks list (already populated by the incidents engine via
-// internal/incidents.NextChecks(cause, confidence)) into the typed
-// NextCheckSpec entries the report consumes. Stable IDs (check_<index>)
-// keep the report deterministic across runs.
+// internal/incidents.NextChecks) into the typed NextCheckSpec entries the
+// report consumes. Stable IDs (check_<index>) keep the report deterministic
+// across runs.
 func NewNextChecksAdapter() NextChecksProvider {
 	return nextChecksAdapter{}
 }
