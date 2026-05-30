@@ -89,14 +89,18 @@ func upsertIncident(ctx context.Context, execer incidentExecer, inc incidents.In
 	if err != nil {
 		return fmt.Errorf("coldstore incident alerts: %w", err)
 	}
+	runtime, err := jsonText(inc.Runtime)
+	if err != nil {
+		return fmt.Errorf("coldstore incident runtime: %w", err)
+	}
 	_, err = execer.ExecContext(ctx, `
 		INSERT INTO incidents (
 			incident_id, env, service, error_service, error_step, error_code,
 			status, cause, confidence, severity, started_at, updated_at, last_seen_at,
 			recovering_at, resolved_at, affected_requests, affected_users, affected_services,
 			top_services, sample_traces, evidence, next_checks, instrumentation_warnings,
-			lift, baseline_count, current_count, propagation_json, blast_json, alert_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			lift, baseline_count, current_count, propagation_json, blast_json, alert_json, runtime_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(incident_id) DO UPDATE SET
 			status = excluded.status,
 			cause = excluded.cause,
@@ -119,14 +123,15 @@ func upsertIncident(ctx context.Context, execer incidentExecer, inc incidents.In
 			current_count = excluded.current_count,
 			propagation_json = excluded.propagation_json,
 			blast_json = excluded.blast_json,
-			alert_json = excluded.alert_json`,
+			alert_json = excluded.alert_json,
+			runtime_json = excluded.runtime_json`,
 		inc.IncidentID, inc.Env, inc.Service, inc.ErrorFamily.Service, inc.ErrorFamily.Step, inc.ErrorFamily.ErrorCode,
 		string(inc.Status), string(inc.Cause), string(inc.Confidence), inc.Severity,
 		formatTime(inc.StartedAt), formatTime(inc.UpdatedAt), formatTime(inc.LastSeenAt),
 		nullableTime(inc.RecoveringAt), nullableTime(inc.ResolvedAt),
 		inc.AffectedRequests, nullableInt(inc.AffectedUsers), inc.AffectedServices,
 		topServices, samples, evidence, nextChecks, warnings, inc.Lift, inc.BaselineCount, inc.CurrentCount,
-		propagation, blast, alerts,
+		propagation, blast, alerts, runtime,
 	)
 	if err != nil {
 		return err
@@ -183,7 +188,7 @@ func incidentSelectSQL() string {
 		COALESCE(top_services, ''), COALESCE(sample_traces, ''), COALESCE(evidence, ''),
 		COALESCE(next_checks, ''), COALESCE(instrumentation_warnings, ''),
 		lift, baseline_count, current_count,
-		COALESCE(propagation_json, ''), COALESCE(blast_json, ''), COALESCE(alert_json, '')
+		COALESCE(propagation_json, ''), COALESCE(blast_json, ''), COALESCE(alert_json, ''), COALESCE(runtime_json, '')
 		FROM incidents`
 }
 
@@ -193,13 +198,13 @@ func scanIncident(row interface{ Scan(dest ...any) error }) (incidents.Incident,
 	var startedAt, updatedAt, lastSeenAt, recoveringAt, resolvedAt string
 	var affectedUsers sql.NullInt64
 	var topServices, samples, evidence, nextChecks, warnings string
-	var propagationJSON, blastJSON, alertJSON string
+	var propagationJSON, blastJSON, alertJSON, runtimeJSON string
 	err := row.Scan(
 		&inc.IncidentID, &inc.Env, &inc.Service, &inc.ErrorFamily.Service, &inc.ErrorFamily.Step, &inc.ErrorFamily.ErrorCode,
 		&status, &cause, &confidence, &inc.Severity, &startedAt, &updatedAt, &lastSeenAt,
 		&recoveringAt, &resolvedAt, &inc.AffectedRequests, &affectedUsers, &inc.AffectedServices,
 		&topServices, &samples, &evidence, &nextChecks, &warnings, &inc.Lift, &inc.BaselineCount, &inc.CurrentCount,
-		&propagationJSON, &blastJSON, &alertJSON,
+		&propagationJSON, &blastJSON, &alertJSON, &runtimeJSON,
 	)
 	if err != nil {
 		return incidents.Incident{}, err
@@ -258,6 +263,9 @@ func scanIncident(row interface{ Scan(dest ...any) error }) (incidents.Incident,
 	}
 	if err := parseJSONText(alertJSON, &inc.Alerts); err != nil {
 		return incidents.Incident{}, fmt.Errorf("coldstore incident alerts: %w", err)
+	}
+	if err := parseJSONText(runtimeJSON, &inc.Runtime); err != nil {
+		return incidents.Incident{}, fmt.Errorf("coldstore incident runtime: %w", err)
 	}
 	return inc, nil
 }

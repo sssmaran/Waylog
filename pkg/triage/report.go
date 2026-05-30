@@ -24,6 +24,7 @@ type Report struct {
 	SampleTraces  []TraceSample   `json:"sample_traces,omitempty"`
 	Signals       []SignalRef     `json:"signals,omitempty"`
 	Alerts        []AlertRef      `json:"alerts,omitempty"`
+	Runtime       []RuntimeRef    `json:"runtime,omitempty"`
 	NextChecks    []NextCheck     `json:"next_checks,omitempty"`
 	Confidence    Confidence      `json:"confidence"`
 	GeneratedAt   string          `json:"generated_at"`
@@ -69,6 +70,20 @@ type AlertRef struct {
 	Reason      string   `json:"reason"`
 	ProviderURL string   `json:"provider_url,omitempty"`
 	EvidenceIDs []string `json:"evidence_ids"`
+}
+
+// RuntimeRef is a runtime evidence row in the report — infra (k8s OOMKill,
+// crashloop) or app (panic, unhandled rejection). It deliberately omits the
+// capture timestamp: only stable signal fields participate in report_hash so
+// the hash does not churn as fresh captures update CapturedAt.
+type RuntimeRef struct {
+	SignalID   string `json:"signal_id"`
+	Subtype    string `json:"subtype"`
+	Service    string `json:"service"`
+	Source     string `json:"source"`
+	Severity   string `json:"severity"`
+	Reason     string `json:"reason"`
+	OccurredAt string `json:"occurred_at"`
 }
 
 type NextCheck struct {

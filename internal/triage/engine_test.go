@@ -523,3 +523,44 @@ func TestEngine_Build_UsesAlertSnapshotWhenPresent(t *testing.T) {
 		t.Fatalf("alert ref = %+v", got)
 	}
 }
+
+func TestEngine_Build_IncludesRuntimeFromSnapshot(t *testing.T) {
+	ts := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	firstSeen := ts.Add(-30 * time.Second)
+	inc := makeFixedSummary(t, ts, firstSeen)
+	inc.Runtime = &incidents.RuntimeSnapshot{
+		Matches: []incidents.RuntimeEvidence{
+			{SignalID: "sig_oom", Subtype: "oom_killed", Service: "checkout", Source: "k8s-demo",
+				Severity: "critical", Reason: "OOMKilled", OccurredAt: ts.Add(-2 * time.Minute), CapturedAt: ts},
+			{SignalID: "sig_panic", Subtype: "panic", Service: "checkout", Source: "go-sdk",
+				Severity: "warning", Reason: "runtime panic", OccurredAt: ts.Add(-time.Minute), CapturedAt: ts},
+		},
+	}
+	eng := newSnapshotProjectionEngine(t, inc, ts)
+
+	rpt, err := eng.Build(context.Background(), inc.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(rpt.Runtime) != 2 {
+		t.Fatalf("Runtime len = %d, want 2: %+v", len(rpt.Runtime), rpt.Runtime)
+	}
+	if rpt.Runtime[0].Subtype != "oom_killed" || rpt.Runtime[1].Subtype != "panic" {
+		t.Fatalf("runtime subtypes wrong: %+v", rpt.Runtime)
+	}
+	// CapturedAt must not leak into the report (and thus not into the hash).
+	rawA, _ := json.Marshal(rpt)
+	if strings.Contains(string(rawA), "captured_at") {
+		t.Fatalf("report leaked captured_at: %s", rawA)
+	}
+	// Changing CapturedAt only must not change report_hash.
+	inc.Runtime.Matches[0].CapturedAt = ts.Add(time.Hour)
+	eng2 := newSnapshotProjectionEngine(t, inc, ts)
+	rpt2, err := eng2.Build(context.Background(), inc.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build 2: %v", err)
+	}
+	if rpt.ReportHash != rpt2.ReportHash {
+		t.Fatalf("report_hash changed when only CapturedAt differed: %s vs %s", rpt.ReportHash, rpt2.ReportHash)
+	}
+}

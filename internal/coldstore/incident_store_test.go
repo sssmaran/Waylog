@@ -245,6 +245,51 @@ func TestIncidentStore_BlastSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestIncidentStore_RuntimeSnapshotRoundTrip(t *testing.T) {
+	managed, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer managed.Close()
+	store := NewIncidentStore(managed.(*SQLiteStore))
+	ctx := context.Background()
+	ts := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	inc := baseEvidenceIncident("inc_test_runtime", ts)
+	oom := incidents.RuntimeEvidence{
+		SignalID: "sig_oom", Subtype: "oom_killed", Service: "checkout", Source: "k8s-demo",
+		Severity: "critical", Reason: "OOMKilled", OccurredAt: ts.Add(-2 * time.Minute), CapturedAt: ts,
+		CaptureStatus: incidents.CaptureOK, Metadata: map[string]any{"pod": "checkout-7f8b9c-x2k"},
+	}
+	panicEv := incidents.RuntimeEvidence{
+		SignalID: "sig_panic", Subtype: "panic", Service: "checkout", Source: "go-sdk",
+		Severity: "warning", Reason: "runtime panic", OccurredAt: ts.Add(-time.Minute), CapturedAt: ts,
+		CaptureStatus: incidents.CaptureOK,
+	}
+	inc.Runtime = &incidents.RuntimeSnapshot{Matches: []incidents.RuntimeEvidence{oom, panicEv}, Opening: &oom, Latest: &panicEv}
+	if err := store.Upsert(ctx, inc); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := store.Get(ctx, inc.IncidentID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Runtime == nil || len(got.Runtime.Matches) != 2 {
+		t.Fatalf("Runtime snapshot lost: %+v", got.Runtime)
+	}
+	if got.Runtime.Matches[0].Subtype != "oom_killed" || got.Runtime.Matches[1].Subtype != "panic" {
+		t.Errorf("runtime subtypes round-trip wrong: %+v", got.Runtime.Matches)
+	}
+	if got.Runtime.Opening == nil || got.Runtime.Opening.SignalID != "sig_oom" {
+		t.Errorf("Opening lost: %+v", got.Runtime.Opening)
+	}
+	if got.Runtime.Latest == nil || got.Runtime.Latest.SignalID != "sig_panic" {
+		t.Errorf("Latest lost: %+v", got.Runtime.Latest)
+	}
+	if got.Runtime.Matches[0].Metadata["pod"] != "checkout-7f8b9c-x2k" {
+		t.Errorf("metadata lost: %+v", got.Runtime.Matches[0].Metadata)
+	}
+}
+
 func TestIncidentStore_NilSnapshotsRoundTrip(t *testing.T) {
 	managed, err := Open(":memory:")
 	if err != nil {

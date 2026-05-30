@@ -165,6 +165,7 @@ type Incident struct {
 	Propagation             *PropagationSnapshot `json:"propagation,omitempty"`
 	Blast                   *BlastSnapshot       `json:"blast,omitempty"`
 	Alerts                  *AlertSnapshot       `json:"alerts,omitempty"`
+	Runtime                 *RuntimeSnapshot     `json:"runtime,omitempty"`
 }
 
 type PropagationSnapshot struct {
@@ -227,6 +228,25 @@ type MatchedAlert struct {
 	EvidenceIDs []string  `json:"evidence_ids,omitempty"`
 	MatchedAt   time.Time `json:"matched_at"`
 	Strategy    string    `json:"strategy"`
+}
+
+type RuntimeSnapshot struct {
+	Matches []RuntimeEvidence `json:"matches,omitempty"`
+	Opening *RuntimeEvidence  `json:"opening,omitempty"`
+	Latest  *RuntimeEvidence  `json:"latest,omitempty"`
+}
+
+type RuntimeEvidence struct {
+	Subtype       string         `json:"subtype"`
+	Service       string         `json:"service"`
+	Reason        string         `json:"reason"`
+	Severity      string         `json:"severity"`
+	Source        string         `json:"source"`
+	SignalID      string         `json:"signal_id"`
+	OccurredAt    time.Time      `json:"occurred_at"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+	CapturedAt    time.Time      `json:"captured_at"`
+	CaptureStatus string         `json:"capture_status"`
 }
 
 type IncidentListResponse struct {

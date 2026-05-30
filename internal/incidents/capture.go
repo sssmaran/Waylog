@@ -1,6 +1,7 @@
 package incidents
 
 import (
+	"sort"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/signals"
@@ -231,6 +232,138 @@ func updateAlertSnapshot(prior *AlertSnapshot, fresh *AlertEvidence) *AlertSnaps
 	out := &AlertSnapshot{Opening: prior.Opening, Latest: fresh}
 	if out.Opening == nil && fresh != nil && fresh.CaptureStatus == CaptureOK {
 		out.Opening = fresh
+	}
+	return out
+}
+
+// matchRuntimeSignalToIncident reports whether sig is a runtime/healthcheck
+// signal for inc's service within [lo, hi]. Env mismatch excludes (signals are
+// already env-filtered at query time; this is a defensive second guard — see
+// Critical Design Decision 1: runtime signals must carry env to correlate).
+func matchRuntimeSignalToIncident(sig signals.Signal, inc Incident, lo, hi time.Time) bool {
+	if sig.Type != signals.TypeRuntime && sig.Type != signals.TypeHealthcheck {
+		return false
+	}
+	if sig.Env != "" && inc.Env != "" && sig.Env != inc.Env {
+		return false
+	}
+	if sig.Service != inc.Service {
+		return false
+	}
+	ts := sig.Timestamp
+	if ts.IsZero() {
+		ts = sig.ReceivedAt
+	}
+	if ts.Before(lo) || ts.After(hi) {
+		return false
+	}
+	return true
+}
+
+func runtimeSeverityRank(s string) int {
+	switch signals.Severity(s) {
+	case signals.SeverityCritical:
+		return 3
+	case signals.SeverityWarning:
+		return 2
+	case signals.SeverityInfo:
+		return 1
+	}
+	return 0
+}
+
+// sortRuntimeMatches orders runtime evidence deterministically: severity
+// priority (critical > warning > info), then OccurredAt ascending, then
+// SignalID. Stable ordering keeps report_hash stable across ticks.
+func sortRuntimeMatches(m []RuntimeEvidence) {
+	sort.SliceStable(m, func(i, j int) bool {
+		if ri, rj := runtimeSeverityRank(m[i].Severity), runtimeSeverityRank(m[j].Severity); ri != rj {
+			return ri > rj
+		}
+		if !m[i].OccurredAt.Equal(m[j].OccurredAt) {
+			return m[i].OccurredAt.Before(m[j].OccurredAt)
+		}
+		return m[i].SignalID < m[j].SignalID
+	})
+}
+
+func runtimeEvidenceFromSignal(sig signals.Signal, capturedAt time.Time) RuntimeEvidence {
+	occurred := sig.Timestamp
+	if occurred.IsZero() {
+		occurred = sig.ReceivedAt
+	}
+	var meta map[string]any
+	if len(sig.Metadata) > 0 {
+		meta = make(map[string]any, len(sig.Metadata))
+		for k, v := range sig.Metadata {
+			meta[k] = v
+		}
+	}
+	return RuntimeEvidence{
+		Subtype:       signalMetaString(sig.Metadata, "subtype"),
+		Service:       sig.Service,
+		Reason:        sig.Reason,
+		Severity:      string(sig.Severity),
+		Source:        sig.Source,
+		SignalID:      sig.SignalID,
+		OccurredAt:    occurred,
+		Metadata:      meta,
+		CapturedAt:    capturedAt,
+		CaptureStatus: CaptureOK,
+	}
+}
+
+// captureRuntimeEvidence projects all runtime signals matching inc within the
+// window into sorted RuntimeEvidence rows. Window mirrors alert capture:
+// [StartedAt-matchWindow, capturedAt]. The engine passes DeployCorrelationWindow
+// here, which matches the classifier's 15m runtime lookback at the default
+// config so the snapshot and the flat evidence rows agree on what matched.
+func captureRuntimeEvidence(rows []signals.Signal, inc Incident, capturedAt time.Time, matchWindow time.Duration) []RuntimeEvidence {
+	if matchWindow <= 0 {
+		matchWindow = 15 * time.Minute
+	}
+	if matchWindow > 24*time.Hour {
+		matchWindow = 24 * time.Hour
+	}
+	lo := inc.StartedAt.Add(-matchWindow)
+	out := make([]RuntimeEvidence, 0)
+	for i := range rows {
+		if matchRuntimeSignalToIncident(rows[i], inc, lo, capturedAt) {
+			out = append(out, runtimeEvidenceFromSignal(rows[i], capturedAt))
+		}
+	}
+	sortRuntimeMatches(out)
+	return out
+}
+
+// updateRuntimeSnapshot sets Matches to exactly the fresh windowed capture
+// (already sorted) so the live surfaces (API/dashboard/report) only ever show
+// currently-correlating runtime signals — never stale ones that have aged out
+// of the query window. Opening (earliest ever) and Latest (most recent ever)
+// are preserved across ticks as historical provenance. A tick with zero matches
+// clears Matches but keeps that provenance, mirroring how alert evidence sets
+// its Latest to the fresh (possibly empty) capture each tick.
+func updateRuntimeSnapshot(prior *RuntimeSnapshot, fresh []RuntimeEvidence) *RuntimeSnapshot {
+	if len(fresh) == 0 {
+		if prior == nil {
+			return nil
+		}
+		return &RuntimeSnapshot{Opening: prior.Opening, Latest: prior.Latest}
+	}
+	out := &RuntimeSnapshot{Matches: fresh}
+	if prior != nil {
+		out.Opening = prior.Opening
+		out.Latest = prior.Latest
+	}
+	for i := range fresh {
+		if out.Opening == nil || fresh[i].OccurredAt.Before(out.Opening.OccurredAt) {
+			cp := fresh[i]
+			out.Opening = &cp
+		}
+		if out.Latest == nil || fresh[i].OccurredAt.After(out.Latest.OccurredAt) {
+			cp := fresh[i]
+			out.Latest = &cp
+		}
 	}
 	return out
 }

@@ -450,6 +450,7 @@ func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Inci
 	}
 	if inc.Status != StatusResolved {
 		inc.Alerts = updateAlertSnapshot(existing.Alerts, captureAlertEvidenceFromSignals(sigs, inc, now, e.cfg.DeployCorrelationWindow))
+		inc.Runtime = updateRuntimeSnapshot(existing.Runtime, captureRuntimeEvidence(sigs, inc, now, e.cfg.DeployCorrelationWindow))
 	}
 	class := Classify(ClassificationInput{Incident: inc, Events: events, Signals: sigs, Deployments: deploys, Now: now})
 	inc.Cause = class.Cause

@@ -115,6 +115,52 @@ func toAPIIncident(inc Incident) apiv2.Incident {
 		Propagation:             toAPIPropagation(inc.Propagation),
 		Blast:                   toAPIBlast(inc.Blast),
 		Alerts:                  toAPIAlerts(inc.Alerts),
+		Runtime:                 toAPIRuntime(inc.Runtime),
+	}
+}
+
+func toAPIRuntime(s *RuntimeSnapshot) *apiv2.RuntimeSnapshot {
+	if s == nil {
+		return nil
+	}
+	matches := make([]apiv2.RuntimeEvidence, 0, len(s.Matches))
+	for i := range s.Matches {
+		matches = append(matches, toAPIRuntimeEvidenceVal(s.Matches[i]))
+	}
+	return &apiv2.RuntimeSnapshot{
+		Matches: matches,
+		Opening: toAPIRuntimeEvidence(s.Opening),
+		Latest:  toAPIRuntimeEvidence(s.Latest),
+	}
+}
+
+func toAPIRuntimeEvidence(r *RuntimeEvidence) *apiv2.RuntimeEvidence {
+	if r == nil {
+		return nil
+	}
+	out := toAPIRuntimeEvidenceVal(*r)
+	return &out
+}
+
+func toAPIRuntimeEvidenceVal(r RuntimeEvidence) apiv2.RuntimeEvidence {
+	var meta map[string]any
+	if len(r.Metadata) > 0 {
+		meta = make(map[string]any, len(r.Metadata))
+		for k, v := range r.Metadata {
+			meta[k] = v
+		}
+	}
+	return apiv2.RuntimeEvidence{
+		Subtype:       r.Subtype,
+		Service:       r.Service,
+		Reason:        r.Reason,
+		Severity:      r.Severity,
+		Source:        r.Source,
+		SignalID:      r.SignalID,
+		OccurredAt:    r.OccurredAt,
+		Metadata:      meta,
+		CapturedAt:    r.CapturedAt,
+		CaptureStatus: string(r.CaptureStatus),
 	}
 }
 

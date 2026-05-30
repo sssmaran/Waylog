@@ -1066,6 +1066,29 @@
         color: var(--muted);
         font-size: 0.82rem;
       }
+      .runtime-list {
+        display: grid;
+        gap: 8px;
+      }
+      .runtime-item {
+        display: grid;
+        gap: 6px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background: var(--item-bg);
+        padding: 10px 12px;
+      }
+      .runtime-title {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        min-width: 0;
+        flex-wrap: wrap;
+      }
+      .runtime-title strong {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
       .copy-toast {
         position: fixed;
         right: 20px;
@@ -1866,6 +1889,7 @@
             <div class="cascade-col">
               ${renderPropagationBlock(incident.propagation)}
               ${renderAlertEvidenceBlock(incident.alerts, incident.incident_id || id)}
+              ${renderRuntimeBlock(incident.runtime)}
               ${storyCard("Evidence", renderEvidence(incident.evidence || []))}
             </div>
             <div class="summary-col">
@@ -2039,6 +2063,60 @@
           ${toggle}
           ${note}
           ${capturedFooter(l, source)}
+        </section>`;
+      }
+      function runtimeSubtypeLabel(s) {
+        const map = {
+          oom_killed: "OOMKilled",
+          crashloop: "CrashLoopBackOff",
+          readiness_fail: "Readiness fail",
+          liveness_fail: "Liveness fail",
+          panic: "Panic",
+          unhandled_rejection: "Unhandled rejection",
+          uncaught_exception: "Uncaught exception",
+        };
+        return map[s] || (s || "runtime event");
+      }
+      function runtimeSourceKind(src) {
+        return src === "go-sdk" || src === "ts-sdk"
+          ? "Application"
+          : "Infrastructure";
+      }
+      function renderRuntimeBlock(runtime) {
+        const matches = (runtime && runtime.matches) || [];
+        if (!matches.length) {
+          const status =
+            (runtime && runtime.latest && runtime.latest.capture_status) ||
+            "missing";
+          return `<section class="card panel" data-runtime-evidence>
+            <div class="panel-head"><div><h2 class="panel-title">Runtime evidence</h2><div class="panel-sub">Infrastructure &amp; application failures</div></div><span class="status ${statusClass(status)}">${esc(status)}</span></div>
+            <div class="empty"><p class="empty-state">No correlated runtime events (pod restarts, OOMKills, panics) for this incident yet.</p></div>
+          </section>`;
+        }
+        const infra = matches.filter(
+          (m) => runtimeSourceKind(m.source) === "Infrastructure",
+        );
+        const app = matches.filter(
+          (m) => runtimeSourceKind(m.source) === "Application",
+        );
+        const summary = `<div class="item-meta">${nf.format(matches.length)} runtime event${matches.length === 1 ? "" : "s"} · ${nf.format(infra.length)} infrastructure · ${nf.format(app.length)} application</div>`;
+        const renderRow = (m) =>
+          `<article class="runtime-item" data-runtime-row data-subtype="${esc(m.subtype || "")}" data-source="${esc(m.source || "")}">
+            <div class="runtime-title">
+              <span class="status ${statusClass(m.severity)}">${esc(runtimeSubtypeLabel(m.subtype))}</span>
+              <strong>${esc(m.service || "service")}</strong>
+              <span class="faint">${esc(runtimeSourceKind(m.source))}</span>
+            </div>
+            <div class="item-meta">${esc(m.reason || "runtime event")}</div>
+            <div class="item-meta">source ${esc(m.source || "unknown")} · signal_id <span title="${esc(m.signal_id || "unknown")}">${esc(shortID(m.signal_id || "") || "unknown")}</span> · occurred <span title="${esc(absoluteTime(m.occurred_at))}">${esc(ago(m.occurred_at))}</span></div>
+          </article>`;
+        const status =
+          (runtime.latest && runtime.latest.capture_status) || "ok";
+        return `<section class="card panel" data-runtime-evidence>
+          <div class="panel-head"><div><h2 class="panel-title">Runtime evidence</h2><div class="panel-sub">Infrastructure &amp; application failures</div></div><span class="status ${statusClass(status)}">${esc(status)}</span></div>
+          ${summary}
+          <div class="runtime-list">${matches.map(renderRow).join("")}</div>
+          ${runtime.latest ? capturedFooter(runtime.latest, "latest") : ""}
         </section>`;
       }
       function safeHTTPURL(raw) {

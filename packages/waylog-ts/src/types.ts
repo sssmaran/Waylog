@@ -1,6 +1,12 @@
 export const SCHEMA_VERSION = "2.0";
 
-export type Status = "ok" | "error" | "timeout" | "partial" | "aborted" | "suppressed";
+export type Status =
+  | "ok"
+  | "error"
+  | "timeout"
+  | "partial"
+  | "aborted"
+  | "suppressed";
 export type StepStatus = "ok" | "error";
 export type LogLevel = "info" | "warn" | "error";
 export type Fields = Record<string, unknown>;

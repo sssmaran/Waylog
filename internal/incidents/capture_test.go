@@ -266,3 +266,71 @@ func TestUpdateAlertSnapshot_FirstOKSetsOpening(t *testing.T) {
 		t.Fatalf("snapshot = %+v, want opening/latest fresh", snap)
 	}
 }
+
+func TestCaptureRuntimeEvidence_SortsAndMatchesBothKinds(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	inc := Incident{Service: "payment", Env: "demo", StartedAt: now}
+	rows := []signals.Signal{
+		{SignalID: "panic", Type: signals.TypeRuntime, Service: "payment", Env: "demo",
+			Severity: signals.SeverityWarning, Reason: "panic", Source: "go-sdk",
+			Timestamp: now.Add(-time.Minute), Metadata: map[string]any{"subtype": "panic"}},
+		{SignalID: "oom", Type: signals.TypeRuntime, Service: "payment", Env: "demo",
+			Severity: signals.SeverityCritical, Reason: "OOMKilled", Source: "k8s-demo",
+			Timestamp: now.Add(-2 * time.Minute), Metadata: map[string]any{"subtype": "oom_killed"}},
+		// foreign service + foreign env should be excluded
+		{SignalID: "other", Type: signals.TypeRuntime, Service: "checkout", Env: "demo",
+			Severity: signals.SeverityCritical, Timestamp: now.Add(-time.Minute)},
+	}
+	got := captureRuntimeEvidence(rows, inc, now, 15*time.Minute)
+	if len(got) != 2 {
+		t.Fatalf("want 2 matches, got %d: %+v", len(got), got)
+	}
+	// critical (oom) sorts before warning (panic)
+	if got[0].SignalID != "oom" || got[1].SignalID != "panic" {
+		t.Fatalf("sort wrong: %+v", got)
+	}
+}
+
+func TestUpdateRuntimeSnapshot_FreshMatchesPreservedOpening(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	infra := RuntimeEvidence{SignalID: "oom", Subtype: "oom_killed", Severity: "critical",
+		OccurredAt: now.Add(-3 * time.Minute), Source: "k8s-demo"}
+	prior := updateRuntimeSnapshot(nil, []RuntimeEvidence{infra})
+	app := RuntimeEvidence{SignalID: "panic", Subtype: "panic", Severity: "warning",
+		OccurredAt: now.Add(-time.Minute), Source: "go-sdk"}
+	// fresh capture has only the app match (infra aged out of the query window).
+	// Matches is bounded to the fresh set (no unbounded union), but Opening still
+	// points at the earliest event ever observed.
+	out := updateRuntimeSnapshot(prior, []RuntimeEvidence{app})
+	if len(out.Matches) != 1 || out.Matches[0].SignalID != "panic" {
+		t.Fatalf("Matches should be the fresh set [panic], got %+v", out.Matches)
+	}
+	if out.Opening == nil || out.Opening.SignalID != "oom" {
+		t.Fatalf("Opening should be the preserved earliest (oom): %+v", out.Opening)
+	}
+	if out.Latest == nil || out.Latest.SignalID != "panic" {
+		t.Fatalf("Latest should be most recent (panic): %+v", out.Latest)
+	}
+}
+
+func TestUpdateRuntimeSnapshot_EmptyFreshClearsMatchesKeepsProvenance(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	infra := RuntimeEvidence{SignalID: "oom", Subtype: "oom_killed", Severity: "critical",
+		OccurredAt: now.Add(-time.Minute), Source: "k8s-demo"}
+	prior := updateRuntimeSnapshot(nil, []RuntimeEvidence{infra})
+	// A tick with no matches must not leak the stale match into Matches, but
+	// keeps Opening/Latest as historical provenance.
+	got := updateRuntimeSnapshot(prior, nil)
+	if got == nil || len(got.Matches) != 0 {
+		t.Fatalf("empty fresh should clear Matches, got %+v", got)
+	}
+	if got.Opening == nil || got.Opening.SignalID != "oom" {
+		t.Fatalf("Opening provenance lost: %+v", got.Opening)
+	}
+	if got.Latest == nil || got.Latest.SignalID != "oom" {
+		t.Fatalf("Latest provenance lost: %+v", got.Latest)
+	}
+	if got := updateRuntimeSnapshot(nil, nil); got != nil {
+		t.Fatalf("no prior + empty fresh should stay nil, got %+v", got)
+	}
+}

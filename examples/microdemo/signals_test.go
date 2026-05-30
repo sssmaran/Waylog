@@ -35,16 +35,16 @@ func TestDemoSignalPosterPostsDeployAndDependencySignals(t *testing.T) {
 	})}
 	poster.now = func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
 	results := poster.PostDemoSignals(t.Context())
-	if len(results) != 2 {
-		t.Fatalf("results len = %d, want 2", len(results))
+	if len(results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(results))
 	}
 	for _, result := range results {
 		if !result.Accepted || result.SignalID == "" || result.Status != http.StatusCreated {
 			t.Fatalf("result = %+v", result)
 		}
 	}
-	if len(posted) != 2 {
-		t.Fatalf("posted len = %d, want 2", len(posted))
+	if len(posted) != 3 {
+		t.Fatalf("posted len = %d, want 3", len(posted))
 	}
 	if posted[0]["type"] != "deploy" || posted[0]["service"] != "checkout" || posted[0]["env"] != "demo" {
 		t.Fatalf("deploy signal = %+v", posted[0])
@@ -55,6 +55,18 @@ func TestDemoSignalPosterPostsDeployAndDependencySignals(t *testing.T) {
 	metadata, ok := posted[1]["metadata"].(map[string]any)
 	if !ok || metadata["error_code"] != "PMT_502" {
 		t.Fatalf("dependency metadata = %+v", posted[1]["metadata"])
+	}
+	// Infra runtime (OOMKill) targets checkout with env=demo so it correlates
+	// onto the same incident as the alert/dependency evidence.
+	if posted[2]["type"] != "runtime" || posted[2]["service"] != "checkout" || posted[2]["env"] != "demo" {
+		t.Fatalf("runtime signal = %+v", posted[2])
+	}
+	if posted[2]["source"] != "k8s-demo" || posted[2]["reason"] != "OOMKilled" {
+		t.Fatalf("runtime signal source/reason = %+v", posted[2])
+	}
+	rtMeta, ok := posted[2]["metadata"].(map[string]any)
+	if !ok || rtMeta["subtype"] != "oom_killed" {
+		t.Fatalf("runtime metadata = %+v", posted[2]["metadata"])
 	}
 }
 
@@ -67,8 +79,8 @@ func TestDemoSignalPosterReportsNonCreatedResponse(t *testing.T) {
 		}, nil
 	})}
 	results := poster.PostDemoSignals(t.Context())
-	if len(results) != 2 {
-		t.Fatalf("results len = %d, want 2", len(results))
+	if len(results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(results))
 	}
 	for _, result := range results {
 		if result.Accepted || result.Status != http.StatusServiceUnavailable || result.Error == "" {

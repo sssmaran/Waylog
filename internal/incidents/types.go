@@ -41,6 +41,7 @@ const (
 	EvidenceMetric      EvidenceKind = "metric"
 	EvidencePropagation EvidenceKind = "propagation"
 	EvidenceBlast       EvidenceKind = "blast"
+	EvidenceRuntime     EvidenceKind = "runtime"
 )
 
 type EvidenceCaptureStatus string
@@ -113,6 +114,31 @@ type AlertSnapshot struct {
 	Latest  *AlertEvidence `json:"latest,omitempty"`
 }
 
+// RuntimeEvidence is a single matched runtime signal — infra (k8s OOMKill,
+// crashloop) or app (panic, unhandled rejection). Severity uses accepted
+// signal severities (critical|warning|info), never "error".
+type RuntimeEvidence struct {
+	Subtype       string                `json:"subtype"` // oom_killed, crashloop, readiness_fail, liveness_fail, panic, unhandled_rejection, uncaught_exception
+	Service       string                `json:"service"`
+	Reason        string                `json:"reason"`
+	Severity      string                `json:"severity"`
+	Source        string                `json:"source"` // k8s, k8s-demo, go-sdk, ts-sdk
+	SignalID      string                `json:"signal_id"`
+	OccurredAt    time.Time             `json:"occurred_at"` // sig.Timestamp — when the runtime event happened
+	Metadata      map[string]any        `json:"metadata,omitempty"`
+	CapturedAt    time.Time             `json:"captured_at"` // when captured — provenance only, never in report hash
+	CaptureStatus EvidenceCaptureStatus `json:"capture_status"`
+}
+
+// RuntimeSnapshot holds all matched runtime signals for an incident. Matches
+// preserves every match (infra AND app) so a later app panic does not erase
+// an earlier infra OOMKill. Opening/Latest are by OccurredAt.
+type RuntimeSnapshot struct {
+	Matches []RuntimeEvidence `json:"matches,omitempty"`
+	Opening *RuntimeEvidence  `json:"opening,omitempty"`
+	Latest  *RuntimeEvidence  `json:"latest,omitempty"`
+}
+
 type Evidence struct {
 	Kind       EvidenceKind   `json:"kind"`
 	Title      string         `json:"title"`
@@ -153,6 +179,7 @@ type Incident struct {
 	Propagation             *PropagationSnapshot `json:"propagation,omitempty"`
 	Blast                   *BlastSnapshot       `json:"blast,omitempty"`
 	Alerts                  *AlertSnapshot       `json:"alerts,omitempty"`
+	Runtime                 *RuntimeSnapshot     `json:"runtime,omitempty"`
 }
 
 type Deployment struct {

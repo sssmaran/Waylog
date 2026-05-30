@@ -97,6 +97,15 @@ func TestStaticDashboardHTML(t *testing.T) {
 		"capturedFooter(l, source, \"span\", \"Captured\")",
 		"renderPropagationBlock",
 		"renderBlastBlock",
+		"renderRuntimeBlock",
+		"Runtime evidence",
+		"Infrastructure &amp; application failures",
+		"data-runtime-row",
+		"runtimeSubtypeLabel",
+		"OOMKilled",
+		"CrashLoopBackOff",
+		"No correlated runtime events (pod restarts, OOMKills, panics)",
+		"incident.runtime",
 	}
 	for _, needle := range required {
 		if !strings.Contains(html, needle) {

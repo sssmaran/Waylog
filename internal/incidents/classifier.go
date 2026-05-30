@@ -32,6 +32,13 @@ func Classify(input ClassificationInput) Classification {
 	for _, sig := range alerts {
 		evidence = append(evidence, signalEvidence(sig, alertLabel(sig)))
 	}
+	// Runtime signals are correlated evidence, not incident openers (Design
+	// Decision 2). Attach every matched runtime signal — infra AND app — as an
+	// evidence row regardless of the cause the classifier ultimately picks.
+	runtimeSigs := matchingRuntimeSignals(input)
+	for i := range runtimeSigs {
+		evidence = append(evidence, runtimeEvidence(runtimeSigs[i]))
+	}
 	warnings := instrumentationWarnings(input.Events, input.Signals)
 	ctx := NextCheckContext{
 		Service:                 input.Incident.Service,
@@ -82,11 +89,11 @@ func Classify(input ClassificationInput) Classification {
 		evidence = append(evidence, signalEvidence(*sig, deployLabel(*sig)))
 		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
 	}
-	if sig := matchingRuntimeSignal(input); sig != nil {
-		ctx.RuntimeSignalID = sig.SignalID
-		ctx.RuntimeReason = sig.Reason
-		ctx.RuntimeSubtype = stringField(sig.Metadata, "subtype")
-		evidence = append(evidence, signalEvidence(*sig, runtimeLabel(*sig)))
+	if len(runtimeSigs) > 0 {
+		top := runtimeSigs[0]
+		ctx.RuntimeSignalID = top.SignalID
+		ctx.RuntimeReason = top.Reason
+		ctx.RuntimeSubtype = stringField(top.Metadata, "subtype")
 		return classification(CauseRuntime, ConfidenceHigh, evidence, warnings, ctx)
 	}
 	if len(input.Events) > 0 && input.Incident.ErrorFamily.Step != "" && firstFailingDownstream(input.Events) == "" {
@@ -120,7 +127,7 @@ func classification(cause Cause, confidence Confidence, evidence []Evidence, war
 	return Classification{
 		Cause:                   cause,
 		Confidence:              confidence,
-		Evidence:                normalizeEvidence(evidence, 8),
+		Evidence:                normalizeEvidence(evidence, 12),
 		NextChecks:              NextChecks(cause, confidence, ctx),
 		InstrumentationWarnings: uniqueStrings(warnings),
 	}
@@ -162,24 +169,36 @@ func matchingDeployment(input ClassificationInput) *Deployment {
 	return nil
 }
 
-func matchingRuntimeSignal(input ClassificationInput) *signals.Signal {
+// matchingRuntimeSignals returns every runtime/healthcheck signal matching the
+// incident's service and env within [StartedAt-15m, Now], sorted by severity
+// priority, then timestamp, then signal_id. Returning all matches (not the
+// first) lets both infra (oom_killed) and app (panic) evidence coexist.
+func matchingRuntimeSignals(input ClassificationInput) []signals.Signal {
 	start := input.Incident.StartedAt
-	lo := start.Add(-5 * time.Minute)
-	hi := start.Add(time.Minute)
-	for i := range input.Signals {
-		sig := input.Signals[i]
-		if sig.Type != signals.TypeRuntime && sig.Type != signals.TypeHealthcheck {
-			continue
-		}
-		if sig.Service != input.Incident.Service {
-			continue
-		}
-		if sig.Timestamp.Before(lo) || sig.Timestamp.After(hi) {
-			continue
-		}
-		return &input.Signals[i]
+	lo := start.Add(-15 * time.Minute)
+	hi := input.Now
+	if hi.IsZero() {
+		hi = input.Incident.UpdatedAt
 	}
-	return nil
+	if hi.Before(start) {
+		hi = start.Add(time.Minute)
+	}
+	var out []signals.Signal
+	for i := range input.Signals {
+		if matchRuntimeSignalToIncident(input.Signals[i], input.Incident, lo, hi) {
+			out = append(out, input.Signals[i])
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if ri, rj := severityRank(out[i].Severity), severityRank(out[j].Severity); ri != rj {
+			return ri > rj
+		}
+		if !out[i].Timestamp.Equal(out[j].Timestamp) {
+			return out[i].Timestamp.Before(out[j].Timestamp)
+		}
+		return out[i].SignalID < out[j].SignalID
+	})
+	return out
 }
 
 func matchingSignal(input ClassificationInput, typ signals.Type) *signals.Signal {
@@ -348,7 +367,33 @@ func runtimeLabel(sig signals.Signal) string {
 	if reason == "" {
 		reason = "runtime event"
 	}
+	if sig.Source != "" {
+		return fmt.Sprintf("Runtime %s: %s (%s)", service, reason, sig.Source)
+	}
 	return fmt.Sprintf("Runtime %s: %s", service, reason)
+}
+
+// runtimeEvidence builds a flat EvidenceRuntime row. subtype/source/severity
+// live in Fields so the generic Evidence struct stays unchanged while
+// acceptance assertions can query subtypes (Design Decision 4).
+func runtimeEvidence(sig signals.Signal) Evidence {
+	occurred := sig.Timestamp
+	if occurred.IsZero() {
+		occurred = sig.ReceivedAt
+	}
+	return Evidence{
+		Kind:       EvidenceRuntime,
+		Title:      runtimeLabel(sig),
+		Detail:     sig.Reason,
+		Service:    sig.Service,
+		SignalID:   sig.SignalID,
+		OccurredAt: occurred,
+		Fields: map[string]any{
+			"subtype":  stringField(sig.Metadata, "subtype"),
+			"source":   sig.Source,
+			"severity": string(sig.Severity),
+		},
+	}
 }
 
 func signalEvidence(sig signals.Signal, title string) Evidence {
@@ -385,16 +430,38 @@ func normalizeEvidence(evidence []Evidence, limit int) []Evidence {
 		return evidence[i].Title < evidence[j].Title
 	})
 	seen := map[string]struct{}{}
-	out := make([]Evidence, 0, len(evidence))
+	deduped := make([]Evidence, 0, len(evidence))
 	for _, ev := range evidence {
 		key := string(ev.Kind) + "|" + ev.Title + "|" + ev.SignalID + "|" + ev.DeployID + "|" + ev.TraceID
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		out = append(out, ev)
-		if limit > 0 && len(out) == limit {
-			break
+		deduped = append(deduped, ev)
+	}
+	if limit <= 0 || len(deduped) <= limit {
+		return deduped
+	}
+	// Runtime evidence must never be truncated by the cap: the acceptance gate
+	// and the dashboard Runtime panel both rely on every matched runtime signal
+	// being present. Keep all EvidenceRuntime rows, then fill remaining slots
+	// with the earliest non-runtime rows. Chronological order is preserved
+	// because deduped is already sorted and we append in order.
+	budget := limit
+	for _, ev := range deduped {
+		if ev.Kind == EvidenceRuntime {
+			budget--
+		}
+	}
+	out := make([]Evidence, 0, limit)
+	for _, ev := range deduped {
+		if ev.Kind == EvidenceRuntime {
+			out = append(out, ev)
+			continue
+		}
+		if budget > 0 {
+			out = append(out, ev)
+			budget--
 		}
 	}
 	return out

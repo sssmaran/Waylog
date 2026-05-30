@@ -117,6 +117,44 @@ func TestClassifierRuntime(t *testing.T) {
 		}
 	})
 
+	t.Run("infra and app runtime both present, deterministic order", func(t *testing.T) {
+		infra := signals.Signal{
+			SignalID: "sig_oom", Type: signals.TypeRuntime, Service: "checkout", Env: "prod",
+			Reason: "OOMKilled", Severity: signals.SeverityCritical, Timestamp: now.Add(-2 * time.Minute),
+			Source: "k8s-demo", Metadata: map[string]any{"subtype": "oom_killed"},
+		}
+		app := signals.Signal{
+			SignalID: "sig_panic", Type: signals.TypeRuntime, Service: "checkout", Env: "prod",
+			Reason: "runtime panic", Severity: signals.SeverityWarning, Timestamp: now.Add(-time.Minute),
+			Source: "go-sdk", Metadata: map[string]any{"subtype": "panic"},
+		}
+		// Provide app first to prove sort (not input order) drives the result.
+		got := Classify(ClassificationInput{
+			Incident: base, Now: now,
+			Events:  []*eventv2.Event{checkoutEvent},
+			Signals: []signals.Signal{app, infra},
+		})
+		var runtimeRows []Evidence
+		for _, ev := range got.Evidence {
+			if ev.Kind == EvidenceRuntime {
+				runtimeRows = append(runtimeRows, ev)
+			}
+		}
+		if len(runtimeRows) != 2 {
+			t.Fatalf("want 2 runtime evidence rows, got %d: %+v", len(runtimeRows), got.Evidence)
+		}
+		// normalizeEvidence sorts by OccurredAt asc; infra (-2m) precedes app (-1m).
+		if runtimeRows[0].SignalID != "sig_oom" || runtimeRows[1].SignalID != "sig_panic" {
+			t.Fatalf("runtime evidence order wrong: %+v", runtimeRows)
+		}
+		if st, _ := runtimeRows[0].Fields["subtype"].(string); st != "oom_killed" {
+			t.Fatalf("infra subtype wrong: %+v", runtimeRows[0].Fields)
+		}
+		if st, _ := runtimeRows[1].Fields["subtype"].(string); st != "panic" {
+			t.Fatalf("app subtype wrong: %+v", runtimeRows[1].Fields)
+		}
+	})
+
 	t.Run("alert with OOM reason does not classify runtime", func(t *testing.T) {
 		sig := runtimeSig
 		sig.Type = signals.TypeAlert
@@ -133,7 +171,7 @@ func TestClassifierRuntime(t *testing.T) {
 
 	t.Run("runtime signal outside window", func(t *testing.T) {
 		sig := runtimeSig
-		sig.Timestamp = now.Add(-6 * time.Minute)
+		sig.Timestamp = now.Add(-20 * time.Minute)
 		got := Classify(ClassificationInput{
 			Incident: base,
 			Events:   []*eventv2.Event{checkoutEvent},
@@ -340,4 +378,38 @@ func TestClassifyIncludesAlertEvidenceWithoutChangingCause(t *testing.T) {
 		}
 	}
 	t.Fatalf("alert evidence missing: %+v", got.Evidence)
+}
+
+func TestNormalizeEvidence_RuntimeSurvivesCap(t *testing.T) {
+	base := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	var ev []Evidence
+	// 20 earlier alert rows, all occurring before the runtime events.
+	for i := 0; i < 20; i++ {
+		ev = append(ev, Evidence{
+			Kind: EvidenceSignal, Title: "alert", SignalID: "a" + string(rune('A'+i)),
+			OccurredAt: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+	// Two runtime rows occurring AFTER all the alerts — would be truncated by a
+	// naive time-sorted cap.
+	ev = append(ev,
+		Evidence{Kind: EvidenceRuntime, Title: "Runtime checkout: OOMKilled", SignalID: "oom",
+			OccurredAt: base.Add(time.Hour), Fields: map[string]any{"subtype": "oom_killed"}},
+		Evidence{Kind: EvidenceRuntime, Title: "Runtime checkout: panic", SignalID: "panic",
+			OccurredAt: base.Add(2 * time.Hour), Fields: map[string]any{"subtype": "panic"}},
+	)
+	out := normalizeEvidence(ev, 12)
+	subtypes := map[string]bool{}
+	for _, e := range out {
+		if e.Kind == EvidenceRuntime {
+			st, _ := e.Fields["subtype"].(string)
+			subtypes[st] = true
+		}
+	}
+	if !subtypes["oom_killed"] || !subtypes["panic"] {
+		t.Fatalf("runtime rows truncated by cap; out kinds=%v", out)
+	}
+	if len(out) > 12 {
+		t.Fatalf("cap exceeded: %d rows", len(out))
+	}
 }

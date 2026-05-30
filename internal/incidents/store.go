@@ -118,6 +118,7 @@ func cloneIncident(in Incident) Incident {
 	out.Propagation = clonePropagationSnapshot(in.Propagation)
 	out.Blast = cloneBlastSnapshot(in.Blast)
 	out.Alerts = cloneAlertSnapshot(in.Alerts)
+	out.Runtime = cloneRuntimeSnapshot(in.Runtime)
 	return out
 }
 
@@ -196,4 +197,35 @@ func cloneAlertSnapshot(s *AlertSnapshot) *AlertSnapshot {
 		Opening: cloneAlertEvidence(s.Opening),
 		Latest:  cloneAlertEvidence(s.Latest),
 	}
+}
+
+func cloneRuntimeEvidence(r *RuntimeEvidence) *RuntimeEvidence {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	if r.Metadata != nil {
+		out.Metadata = make(map[string]any, len(r.Metadata))
+		for k, v := range r.Metadata {
+			out.Metadata[k] = v
+		}
+	}
+	return &out
+}
+
+func cloneRuntimeSnapshot(s *RuntimeSnapshot) *RuntimeSnapshot {
+	if s == nil {
+		return nil
+	}
+	out := &RuntimeSnapshot{
+		Opening: cloneRuntimeEvidence(s.Opening),
+		Latest:  cloneRuntimeEvidence(s.Latest),
+	}
+	if s.Matches != nil {
+		out.Matches = make([]RuntimeEvidence, len(s.Matches))
+		for i := range s.Matches {
+			out.Matches[i] = *cloneRuntimeEvidence(&s.Matches[i])
+		}
+	}
+	return out
 }

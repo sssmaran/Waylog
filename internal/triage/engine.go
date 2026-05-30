@@ -29,6 +29,7 @@ type IncidentSummary struct {
 	Propagation *incidents.PropagationSnapshot
 	Blast       *incidents.BlastSnapshot
 	Alerts      *incidents.AlertSnapshot
+	Runtime     *incidents.RuntimeSnapshot
 }
 
 type BlastSnapshotResult struct {
@@ -139,6 +140,7 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 		SampleTraces: story.SampleTraces,
 		Signals:      sigs,
 		Alerts:       alerts,
+		Runtime:      runtimeFromSnapshot(inc.Runtime),
 		NextChecks:   checks,
 		Confidence:   inc.Confidence,
 		GeneratedAt:  e.deps.Now().UTC().Format(time.RFC3339Nano),
@@ -176,4 +178,31 @@ func alertsFromSnapshot(s *incidents.AlertSnapshot) ([]pkgtriage.AlertRef, bool)
 		})
 	}
 	return out, true
+}
+
+// runtimeFromSnapshot projects all matched runtime evidence (infra AND app)
+// into report RuntimeRefs. Uses RuntimeSnapshot.Matches (not Opening/Latest) so
+// both infra and app rows survive into the report. OccurredAt is stable, so the
+// rows participate in report_hash; CapturedAt is deliberately excluded.
+func runtimeFromSnapshot(s *incidents.RuntimeSnapshot) []pkgtriage.RuntimeRef {
+	if s == nil || len(s.Matches) == 0 {
+		return nil
+	}
+	out := make([]pkgtriage.RuntimeRef, 0, len(s.Matches))
+	for _, m := range s.Matches {
+		occurred := ""
+		if !m.OccurredAt.IsZero() {
+			occurred = m.OccurredAt.UTC().Format(time.RFC3339Nano)
+		}
+		out = append(out, pkgtriage.RuntimeRef{
+			SignalID:   m.SignalID,
+			Subtype:    m.Subtype,
+			Service:    m.Service,
+			Source:     m.Source,
+			Severity:   m.Severity,
+			Reason:     m.Reason,
+			OccurredAt: occurred,
+		})
+	}
+	return out
 }
