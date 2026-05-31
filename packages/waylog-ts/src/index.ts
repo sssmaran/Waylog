@@ -13,6 +13,7 @@ export {
   newSpanId,
   newTraceId,
   parseTraceparent,
+  postSignal,
   recordOutgoingSpan,
   runWithContext,
   setField,
@@ -26,6 +27,7 @@ export {
   suppress,
   traceId,
 } from "./logger.js";
+export { installGlobalHandlers } from "./runtime.js";
 export { Transport, normalizeIngestUrl } from "./transport.js";
 export { SCHEMA_VERSION, WaylogError } from "./types.js";
 export type {
@@ -39,6 +41,7 @@ export type {
   Fields,
   Log,
   Logger,
+  Signal,
   Stats,
   Status,
   Step,

@@ -20,10 +20,12 @@ func TestPickBurstScenarioFloatBoundaries(t *testing.T) {
 		{0.70, ScenarioPayment502},
 		{0.849, ScenarioPayment502},
 		{0.85, ScenarioDBMiss},
-		{0.929, ScenarioDBMiss},
-		{0.93, ScenarioCheckoutError},
-		{0.979, ScenarioCheckoutError},
-		{0.98, ScenarioSuppressedPayment502},
+		{0.919, ScenarioDBMiss},
+		{0.92, ScenarioCheckoutError},
+		{0.969, ScenarioCheckoutError},
+		{0.97, ScenarioCheckoutPanic},
+		{0.989, ScenarioCheckoutPanic},
+		{0.99, ScenarioSuppressedPayment502},
 		{0.999, ScenarioSuppressedPayment502},
 		{1.0, ScenarioSuppressedPayment502},
 	}
@@ -36,7 +38,7 @@ func TestPickBurstScenarioFloatBoundaries(t *testing.T) {
 
 func TestPickBurstScenarioFloatAllScenariosReachable(t *testing.T) {
 	seen := map[string]bool{}
-	for _, x := range []float64{0.1, 0.75, 0.88, 0.95, 0.99} {
+	for _, x := range []float64{0.1, 0.75, 0.88, 0.95, 0.98, 0.995} {
 		seen[pickBurstScenarioFloat(x)] = true
 	}
 	for _, scenario := range []string{
@@ -44,6 +46,7 @@ func TestPickBurstScenarioFloatAllScenariosReachable(t *testing.T) {
 		ScenarioPayment502,
 		ScenarioDBMiss,
 		ScenarioCheckoutError,
+		ScenarioCheckoutPanic,
 		ScenarioSuppressedPayment502,
 	} {
 		if !seen[scenario] {
@@ -97,6 +100,9 @@ func TestPickBurstScenarioForIndexSeedsPaymentFailures(t *testing.T) {
 		if got := pickBurstScenarioForIndex(i, 20); got != ScenarioPayment502 {
 			t.Fatalf("seed scenario[%d] = %q, want payment_502", i, got)
 		}
+	}
+	if got := pickBurstScenarioForIndex(incidentSeedPayments, 20); got != ScenarioCheckoutPanic {
+		t.Fatalf("post-seed scenario = %q, want checkout_panic", got)
 	}
 	if got := incidentSeedPaymentCount(3); got != 3 {
 		t.Fatalf("seed count = %d, want capped to request count 3", got)

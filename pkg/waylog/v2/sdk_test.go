@@ -311,7 +311,7 @@ func TestLifecyclePanicAndTimeoutPreserveExistingExplicitFailAnchor(t *testing.T
 		finalize  func(context.Context) (*eventv2.Event, error)
 		wantState eventv2.Status
 	}{
-		{name: "panic", finalize: FinalizePanic, wantState: eventv2.StatusError},
+		{name: "panic", finalize: func(ctx context.Context) (*eventv2.Event, error) { return FinalizePanic(ctx) }, wantState: eventv2.StatusError},
 		{name: "timeout", finalize: FinalizeTimeout, wantState: eventv2.StatusTimeout},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

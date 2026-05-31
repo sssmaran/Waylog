@@ -28,6 +28,36 @@ export interface WaylogConfig {
   batchMode?: boolean;
   redactor?: (fields: Fields) => Fields;
   fetch?: typeof fetch;
+  /**
+   * Enable runtime signal reporting. When on, installGlobalHandlers() posts a
+   * "runtime" signal to /v1/signals on an uncaught exception or unhandled
+   * rejection so crashes correlate with incidents. Off by default.
+   */
+  enableRuntimeHooks?: boolean;
+  /**
+   * Override the signal endpoint. Defaults to the ingestUrl host's /v1/signals
+   * path. Set only when signals go to a different host than events.
+   */
+  signalUrl?: string;
+}
+
+/**
+ * Signal is a production-context signal posted to /v1/signals. The SDK emits
+ * "runtime" signals (uncaught exceptions, unhandled rejections) so they
+ * correlate with incidents during triage. type/service/env/source/severity/
+ * reason/timestamp are required by the server; postSignal fills service, env and
+ * timestamp from config when unset.
+ */
+export interface Signal {
+  type: string;
+  service?: string;
+  env?: string;
+  severity?: string;
+  reason?: string;
+  message?: string;
+  source?: string;
+  timestamp?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface Stats {

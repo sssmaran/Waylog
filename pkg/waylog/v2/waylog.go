@@ -50,6 +50,16 @@ type Config struct {
 	MaxEventsPerSec  int
 
 	Redactor func(F) F
+
+	// EnableRuntimeHooks turns on runtime signal reporting: recovered panics
+	// (via the HTTP middleware and SafeGo) post a "runtime" signal to
+	// /v1/signals so they correlate with incidents during triage. Off by default.
+	EnableRuntimeHooks bool
+
+	// SignalURL overrides the signal endpoint. When empty, signals are posted to
+	// the IngestURL host's /v1/signals path. Set this only when signals go to a
+	// different host than events.
+	SignalURL string
 }
 
 const (

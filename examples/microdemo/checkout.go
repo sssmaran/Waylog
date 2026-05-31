@@ -40,6 +40,13 @@ func (h *CheckoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	setDemoFields(ctx, "checkout", reqBody)
 
+	if reqBody.Scenario == ScenarioCheckoutPanic {
+		// Real recoverable panic inside the instrumented request. The Waylog
+		// HTTP middleware recovers it -> emits a failed checkout WideEvent and,
+		// with runtime hooks on, posts a go-sdk "runtime" panic signal.
+		panic("checkout: simulated panic charging payment (demo)")
+	}
+
 	if reqBody.Scenario == ScenarioSuppressedPayment502 {
 		h.serveSuppressedPayment(w, reqBody, ctx)
 		return

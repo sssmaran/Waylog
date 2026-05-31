@@ -43,8 +43,9 @@ var scenarioWeights = []struct {
 }{
 	{0.70, ScenarioHappy},
 	{0.85, ScenarioPayment502},
-	{0.93, ScenarioDBMiss},
-	{0.98, ScenarioCheckoutError},
+	{0.92, ScenarioDBMiss},
+	{0.97, ScenarioCheckoutError},
+	{0.99, ScenarioCheckoutPanic},
 	{1.00, ScenarioSuppressedPayment502},
 }
 
@@ -90,8 +91,16 @@ func normalizeBurstRequest(raw BurstRequest) (requested, accepted BurstRequest) 
 }
 
 func pickBurstScenarioForIndex(i, requests int) string {
-	if i < incidentSeedPaymentCount(requests) {
+	seeds := incidentSeedPaymentCount(requests)
+	if i < seeds {
 		return ScenarioPayment502
+	}
+	// Deterministically seed exactly one checkout panic right after the payment
+	// seeds (within the PMT_502 timing window) so the acceptance gate always has
+	// app-runtime evidence; a weighted-only panic can be missed at low request
+	// counts.
+	if i == seeds && requests > seeds {
+		return ScenarioCheckoutPanic
 	}
 	return pickBurstScenario()
 }

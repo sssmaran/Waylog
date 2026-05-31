@@ -155,42 +155,45 @@ echo "PASS: waylog incident"
 # evidence snapshots captured successfully. The demo auto-fire loop can create
 # fresh active incidents while acceptance is running, so requiring every active
 # incident to be fully captured is intentionally too strict.
-active_ids="$(json_active_incident_ids <<<"$incidents_json")"
-[[ -n "$active_ids" ]] || fail "no active incident_ids returned from /v1/incidents/active"
+# Pin all evidence/snapshot/triage assertions to the PMT_502 dependency incident
+# (incident_id above). The deterministic checkout panic opens a separate
+# checkout:request:WAYLOG_PANIC incident, but its runtime signal correlates by
+# service+env onto this dependency incident too, so this incident must carry BOTH
+# infra (oom_killed) and app (panic) runtime evidence.
 evidence_ok=0
-while IFS= read -r active_id; do
-  [[ -n "$active_id" ]] || continue
-  inc_detail=""
-  prop_status="missing"
-  blast_status="missing"
-  alert_status="missing"
-  for _ in $(seq 1 14); do
-    inc_detail="$(curl -fsS -H "Authorization: Bearer ${WAYLOG_READ_KEY}" "${INGEST_URL}/v1/incidents/${active_id}")" || fail "GET /v1/incidents/${active_id} failed"
-    prop_status="$(echo "$inc_detail" | jq -r '.incident.propagation.latest.capture_status // "missing"')"
-    blast_status="$(echo "$inc_detail" | jq -r '.incident.blast.latest.capture_status // "missing"')"
-    alert_status="$(echo "$inc_detail" | jq -r '.incident.alerts.latest.capture_status // "missing"')"
-    if [[ "$prop_status" == "ok" && "$blast_status" == "ok" ]] && { [[ "$WAYLOG_DEMO_EXPECT_ALERTS" != "1" ]] || [[ "$alert_status" == "ok" ]]; }; then
-      evidence_ok=1
-      break
-    fi
-    sleep 5
-  done
-  echo "  ${active_id} propagation: $(echo "$inc_detail" | jq -r '.incident.propagation.latest | "origin=\(.origin_service)/\(.origin_step) status=\(.capture_status)" // "MISSING"')"
-  echo "  ${active_id} blast:       $(echo "$inc_detail" | jq -r '.incident.blast.latest | "req=\(.affected_requests) svc=\(.affected_services) users=\(.affected_users // 0) status=\(.capture_status)" // "MISSING"')"
-  if [[ "$WAYLOG_DEMO_EXPECT_ALERTS" == "1" ]]; then
-    echo "  ${active_id} alerts:      $(echo "$inc_detail" | jq -r '.incident.alerts.latest | "matches=\(.matches | length) status=\(.capture_status)" // "MISSING"')"
-  fi
-  if [[ "$evidence_ok" -eq 1 ]]; then
+runtime_subtypes=""
+inc_detail=""
+prop_status="missing"
+blast_status="missing"
+alert_status="missing"
+alert_ids=""
+runtime_status="missing"
+for _ in $(seq 1 20); do
+  inc_detail="$(curl -fsS -H "Authorization: Bearer ${WAYLOG_READ_KEY}" "${INGEST_URL}/v1/incidents/${incident_id}")" || fail "GET /v1/incidents/${incident_id} failed"
+  prop_status="$(echo "$inc_detail" | jq -r '.incident.propagation.latest.capture_status // "missing"')"
+  blast_status="$(echo "$inc_detail" | jq -r '.incident.blast.latest.capture_status // "missing"')"
+  alert_status="$(echo "$inc_detail" | jq -r '.incident.alerts.latest.capture_status // "missing"')"
+  alert_ids="$(echo "$inc_detail" | jq -r '[.incident.alerts.latest.matches[]?.alert_id // empty] | unique | join(" ")')"
+  runtime_status="$(echo "$inc_detail" | jq -r '.incident.runtime.latest.capture_status // "missing"')"
+  runtime_subtypes="$(echo "$inc_detail" | jq -r '[.incident.runtime.matches[]?.subtype // empty] | unique | join(" ")')"
+  has_infra=0; case " $runtime_subtypes " in *" oom_killed "*|*" crashloop "*) has_infra=1 ;; esac
+  has_app=0; case " $runtime_subtypes " in *" panic "*|*" unhandled_rejection "*) has_app=1 ;; esac
+  has_expected_alert=0; case " $alert_ids " in *" ${alert_id} "*) has_expected_alert=1 ;; esac
+  if [[ "$prop_status" == "ok" && "$blast_status" == "ok" && "$runtime_status" == "ok" && "$has_infra" -eq 1 && "$has_app" -eq 1 ]] \
+     && { [[ "$WAYLOG_DEMO_EXPECT_ALERTS" != "1" ]] || [[ "$alert_status" == "ok" && "$has_expected_alert" -eq 1 ]]; }; then
+    evidence_ok=1
     break
   fi
-done <<<"$active_ids"
+  sleep 5
+done
+echo "  ${incident_id} propagation: $(echo "$inc_detail" | jq -r '.incident.propagation.latest | "origin=\(.origin_service)/\(.origin_step) status=\(.capture_status)" // "MISSING"')"
+echo "  ${incident_id} blast:       $(echo "$inc_detail" | jq -r '.incident.blast.latest | "req=\(.affected_requests) svc=\(.affected_services) users=\(.affected_users // 0) status=\(.capture_status)" // "MISSING"')"
+echo "  ${incident_id} runtime:     status=${runtime_status} subtypes=[${runtime_subtypes}]"
 if [[ "$WAYLOG_DEMO_EXPECT_ALERTS" == "1" ]]; then
-  [[ "$evidence_ok" -eq 1 ]] || fail "no active incident reached propagation.latest=ok AND blast.latest=ok AND alerts.latest=ok"
-  echo "PASS: incident evidence (at least one active incident has propagation.latest=ok AND blast.latest=ok AND alerts.latest=ok)"
-else
-  [[ "$evidence_ok" -eq 1 ]] || fail "no active incident reached propagation.latest=ok AND blast.latest=ok"
-  echo "PASS: incident evidence (at least one active incident has propagation.latest=ok AND blast.latest=ok)"
+  echo "  ${incident_id} alerts:      $(echo "$inc_detail" | jq -r '.incident.alerts.latest | "matches=\(.matches | length) status=\(.capture_status)" // "MISSING"') ids=[${alert_ids}]"
 fi
+[[ "$evidence_ok" -eq 1 ]] || fail "incident ${incident_id} did not reach propagation+blast+alerts ok with expected alert ${alert_id} and BOTH infra (oom_killed) and app (panic) runtime evidence; got alert ids=[${alert_ids}] runtime subtypes=[${runtime_subtypes}]"
+echo "PASS: incident ${incident_id} evidence (propagation+blast+alerts ok, runtime infra+app: ${runtime_subtypes})"
 
 snapshot="$("${CLI[@]}" incident "$incident_id" --snapshot)" || fail "waylog incident snapshot failed for incident $incident_id"
 [[ "$snapshot" == *"payment.charge"* ]] || fail "incident snapshot did not mention payment.charge"
@@ -214,5 +217,10 @@ report_status="$(curl -s -o /tmp/waylog-demo-triage-report.md -w "%{http_code}" 
 grep -q "$hash_a" /tmp/waylog-demo-triage-report.md || fail "triage markdown report did not cite report_hash"
 grep -q "$alert_id" /tmp/waylog-demo-triage-report.md || fail "triage markdown report did not cite alert evidence"
 echo "PASS: triage markdown report cites alert evidence"
+
+# Runtime evidence must reach the deterministic report too, not just the API/dashboard.
+grep -qiE 'oom' /tmp/waylog-demo-triage-report.md || fail "triage report did not cite infra runtime (oom) evidence"
+grep -qiE 'panic' /tmp/waylog-demo-triage-report.md || fail "triage report did not cite app runtime (panic) evidence"
+echo "PASS: triage report cites infra (oom) and app (panic) runtime evidence"
 
 echo "Demo acceptance passed."

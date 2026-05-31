@@ -17,12 +17,14 @@ import {
   type LogLevel,
   type Logger,
   type Stats,
+  type Signal,
   type Status,
   type Step,
   type StepError,
   type WaylogConfig,
   type WideEvent,
 } from "./types.js";
+import { postSignal as postSignalTransport } from "./signal-transport.js";
 
 const defaultMaxSteps = 128;
 const defaultMaxLogs = 256;
@@ -131,6 +133,15 @@ export function stats(): Stats {
     eventsRejected: sdk.stats.eventsRejected + (sdk.transport?.rejectedCount() ?? 0),
     deprecatedSchemaResponses: sdk.stats.deprecatedSchemaResponses + (sdk.transport?.deprecatedCount() ?? 0),
   };
+}
+
+export function runtimeHooksEnabled(): boolean {
+  return sdk?.cfg.enableRuntimeHooks === true;
+}
+
+export function postSignal(signal: Signal): Promise<void> {
+  if (!sdk) return Promise.resolve();
+  return postSignalTransport(sdk.cfg, signal);
 }
 
 export function begin(ctx: Context = {}, opts: BeginOptions = {}): Context {
