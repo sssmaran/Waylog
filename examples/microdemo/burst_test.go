@@ -16,16 +16,18 @@ func TestPickBurstScenarioFloatBoundaries(t *testing.T) {
 		want string
 	}{
 		{0.00, ScenarioHappy},
-		{0.699, ScenarioHappy},
-		{0.70, ScenarioPayment502},
-		{0.849, ScenarioPayment502},
-		{0.85, ScenarioDBMiss},
-		{0.919, ScenarioDBMiss},
-		{0.92, ScenarioCheckoutError},
-		{0.969, ScenarioCheckoutError},
-		{0.97, ScenarioCheckoutPanic},
-		{0.989, ScenarioCheckoutPanic},
-		{0.99, ScenarioSuppressedPayment502},
+		{0.679, ScenarioHappy},
+		{0.68, ScenarioPayment502},
+		{0.829, ScenarioPayment502},
+		{0.83, ScenarioDBMiss},
+		{0.899, ScenarioDBMiss},
+		{0.90, ScenarioCheckoutError},
+		{0.949, ScenarioCheckoutError},
+		{0.95, ScenarioInventory503},
+		{0.979, ScenarioInventory503},
+		{0.98, ScenarioCheckoutPanic},
+		{0.994, ScenarioCheckoutPanic},
+		{0.995, ScenarioSuppressedPayment502},
 		{0.999, ScenarioSuppressedPayment502},
 		{1.0, ScenarioSuppressedPayment502},
 	}
@@ -38,7 +40,7 @@ func TestPickBurstScenarioFloatBoundaries(t *testing.T) {
 
 func TestPickBurstScenarioFloatAllScenariosReachable(t *testing.T) {
 	seen := map[string]bool{}
-	for _, x := range []float64{0.1, 0.75, 0.88, 0.95, 0.98, 0.995} {
+	for _, x := range []float64{0.1, 0.75, 0.86, 0.92, 0.96, 0.985, 0.997} {
 		seen[pickBurstScenarioFloat(x)] = true
 	}
 	for _, scenario := range []string{
@@ -46,6 +48,7 @@ func TestPickBurstScenarioFloatAllScenariosReachable(t *testing.T) {
 		ScenarioPayment502,
 		ScenarioDBMiss,
 		ScenarioCheckoutError,
+		ScenarioInventory503,
 		ScenarioCheckoutPanic,
 		ScenarioSuppressedPayment502,
 	} {
@@ -96,16 +99,42 @@ func TestRunBurstDispatchesEveryRequestThroughHandler(t *testing.T) {
 }
 
 func TestPickBurstScenarioForIndexSeedsPaymentFailures(t *testing.T) {
-	for i := 0; i < incidentSeedPayments; i++ {
-		if got := pickBurstScenarioForIndex(i, 20); got != ScenarioPayment502 {
-			t.Fatalf("seed scenario[%d] = %q, want payment_502", i, got)
+	// Seeds must be deterministic regardless of the (jittered) weight table, so
+	// the acceptance gate always finds a complete PMT_502 incident + one panic.
+	for _, weights := range [][]scenarioWeight{scenarioWeights, jitteredScenarioWeights()} {
+		for i := 0; i < incidentSeedPayments; i++ {
+			if got := pickBurstScenarioForIndex(i, 20, weights); got != ScenarioPayment502 {
+				t.Fatalf("seed scenario[%d] = %q, want payment_502", i, got)
+			}
 		}
-	}
-	if got := pickBurstScenarioForIndex(incidentSeedPayments, 20); got != ScenarioCheckoutPanic {
-		t.Fatalf("post-seed scenario = %q, want checkout_panic", got)
+		if got := pickBurstScenarioForIndex(incidentSeedPayments, 20, weights); got != ScenarioCheckoutPanic {
+			t.Fatalf("post-seed scenario = %q, want checkout_panic", got)
+		}
 	}
 	if got := incidentSeedPaymentCount(3); got != 3 {
 		t.Fatalf("seed count = %d, want capped to request count 3", got)
+	}
+}
+
+func TestJitteredScenarioWeightsStaysValid(t *testing.T) {
+	for run := 0; run < 200; run++ {
+		w := jitteredScenarioWeights()
+		if len(w) != len(scenarioWeights) {
+			t.Fatalf("len = %d, want %d", len(w), len(scenarioWeights))
+		}
+		prev := 0.0
+		for i, weight := range w {
+			if weight.Scenario != scenarioWeights[i].Scenario {
+				t.Fatalf("scenario[%d] = %q, want %q (order must be preserved)", i, weight.Scenario, scenarioWeights[i].Scenario)
+			}
+			if weight.Cutoff <= prev {
+				t.Fatalf("cutoff[%d] = %v not strictly greater than previous %v", i, weight.Cutoff, prev)
+			}
+			prev = weight.Cutoff
+		}
+		if last := w[len(w)-1].Cutoff; last != 1.0 {
+			t.Fatalf("final cutoff = %v, want exactly 1.0", last)
+		}
 	}
 }
 

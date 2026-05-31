@@ -21,6 +21,8 @@ func normalizeScenario(s string) string {
 		return ScenarioDBMiss
 	case ScenarioCheckoutError:
 		return ScenarioCheckoutError
+	case ScenarioInventory503:
+		return ScenarioInventory503
 	case ScenarioCheckoutPanic:
 		return ScenarioCheckoutPanic
 	default:

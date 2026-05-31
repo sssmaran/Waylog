@@ -168,6 +168,8 @@ blast_status="missing"
 alert_status="missing"
 alert_ids=""
 runtime_status="missing"
+ev_kinds=""
+ev_runtime_subtypes=""
 for _ in $(seq 1 20); do
   inc_detail="$(curl -fsS -H "Authorization: Bearer ${WAYLOG_READ_KEY}" "${INGEST_URL}/v1/incidents/${incident_id}")" || fail "GET /v1/incidents/${incident_id} failed"
   prop_status="$(echo "$inc_detail" | jq -r '.incident.propagation.latest.capture_status // "missing"')"
@@ -179,8 +181,19 @@ for _ in $(seq 1 20); do
   has_infra=0; case " $runtime_subtypes " in *" oom_killed "*|*" crashloop "*) has_infra=1 ;; esac
   has_app=0; case " $runtime_subtypes " in *" panic "*|*" unhandled_rejection "*) has_app=1 ;; esac
   has_expected_alert=0; case " $alert_ids " in *" ${alert_id} "*) has_expected_alert=1 ;; esac
-  if [[ "$prop_status" == "ok" && "$blast_status" == "ok" && "$runtime_status" == "ok" && "$has_infra" -eq 1 && "$has_app" -eq 1 ]] \
-     && { [[ "$WAYLOG_DEMO_EXPECT_ALERTS" != "1" ]] || [[ "$alert_status" == "ok" && "$has_expected_alert" -eq 1 ]]; }; then
+  # Flat evidence[] rows must carry the same evidence kinds as the snapshots, so
+  # the API/dashboard/report surfaces cannot drift apart silently. Snapshot checks
+  # above prove capture; these prove the same evidence reached the incident's flat
+  # evidence list (what the triage report and CLI render from).
+  ev_kinds="$(echo "$inc_detail" | jq -r '[.incident.evidence[]?.kind] | unique | join(" ")')"
+  ev_runtime_subtypes="$(echo "$inc_detail" | jq -r '[.incident.evidence[]? | select(.kind == "runtime") | .fields.subtype // empty] | unique | join(" ")')"
+  row_trace=0; case " $ev_kinds " in *" trace "*) row_trace=1 ;; esac
+  row_signal=0; case " $ev_kinds " in *" signal "*) row_signal=1 ;; esac
+  row_infra=0; case " $ev_runtime_subtypes " in *" oom_killed "*|*" crashloop "*) row_infra=1 ;; esac
+  row_app=0; case " $ev_runtime_subtypes " in *" panic "*|*" unhandled_rejection "*) row_app=1 ;; esac
+  if [[ "$prop_status" == "ok" && "$blast_status" == "ok" && "$runtime_status" == "ok" && "$has_infra" -eq 1 && "$has_app" -eq 1 \
+        && "$row_trace" -eq 1 && "$row_infra" -eq 1 && "$row_app" -eq 1 ]] \
+     && { [[ "$WAYLOG_DEMO_EXPECT_ALERTS" != "1" ]] || [[ "$alert_status" == "ok" && "$has_expected_alert" -eq 1 && "$row_signal" -eq 1 ]]; }; then
     evidence_ok=1
     break
   fi
@@ -189,11 +202,12 @@ done
 echo "  ${incident_id} propagation: $(echo "$inc_detail" | jq -r '.incident.propagation.latest | "origin=\(.origin_service)/\(.origin_step) status=\(.capture_status)" // "MISSING"')"
 echo "  ${incident_id} blast:       $(echo "$inc_detail" | jq -r '.incident.blast.latest | "req=\(.affected_requests) svc=\(.affected_services) users=\(.affected_users // 0) status=\(.capture_status)" // "MISSING"')"
 echo "  ${incident_id} runtime:     status=${runtime_status} subtypes=[${runtime_subtypes}]"
+echo "  ${incident_id} evidence[]:  kinds=[${ev_kinds}] runtime_subtypes=[${ev_runtime_subtypes}]"
 if [[ "$WAYLOG_DEMO_EXPECT_ALERTS" == "1" ]]; then
   echo "  ${incident_id} alerts:      $(echo "$inc_detail" | jq -r '.incident.alerts.latest | "matches=\(.matches | length) status=\(.capture_status)" // "MISSING"') ids=[${alert_ids}]"
 fi
-[[ "$evidence_ok" -eq 1 ]] || fail "incident ${incident_id} did not reach propagation+blast+alerts ok with expected alert ${alert_id} and BOTH infra (oom_killed) and app (panic) runtime evidence; got alert ids=[${alert_ids}] runtime subtypes=[${runtime_subtypes}]"
-echo "PASS: incident ${incident_id} evidence (propagation+blast+alerts ok, runtime infra+app: ${runtime_subtypes})"
+[[ "$evidence_ok" -eq 1 ]] || fail "incident ${incident_id} did not reach propagation+blast+alerts ok AND flat evidence[] rows (trace + signal + runtime infra + runtime app) with expected alert ${alert_id} and BOTH infra (oom_killed) and app (panic) runtime evidence; got snapshot runtime subtypes=[${runtime_subtypes}] evidence[] kinds=[${ev_kinds}] evidence[] runtime subtypes=[${ev_runtime_subtypes}] alert ids=[${alert_ids}]"
+echo "PASS: incident ${incident_id} evidence (snapshots propagation+blast+alerts ok + runtime infra+app; flat evidence[] kinds=[${ev_kinds}])"
 
 snapshot="$("${CLI[@]}" incident "$incident_id" --snapshot)" || fail "waylog incident snapshot failed for incident $incident_id"
 [[ "$snapshot" == *"payment.charge"* ]] || fail "incident snapshot did not mention payment.charge"

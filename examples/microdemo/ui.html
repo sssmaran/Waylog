@@ -655,6 +655,7 @@
         <button type="button" class="primary" data-scenario="payment_502">Run payment outage</button>
         <button type="button" data-scenario="db_miss">Run cart not found</button>
         <button type="button" data-scenario="checkout_error">Run checkout 500</button>
+        <button type="button" data-scenario="inventory_503">Run inventory outage</button>
         <button type="button" data-scenario="happy">Run happy checkout</button>
         <button type="button" data-scenario="suppressed_payment_502">Run suppressed known issue</button>
       </div>
@@ -678,6 +679,10 @@
         <article class="expectation">
           <strong>Checkout 500</strong>
           <span class="detail">Checkout fails before any downstream call: <code>cart.validate</code> raises <code>CHK_500</code> with no payment or db hop.</span>
+        </article>
+        <article class="expectation">
+          <strong>Inventory outage</strong>
+          <span class="detail">DB load succeeds, then <code>inventory.reserve</code> fails with <code>INV_503</code> — an alternate dependency failure before any payment hop.</span>
         </article>
         <article class="expectation">
           <strong>Suppressed known issue</strong>
@@ -728,13 +733,15 @@
     const burstImpactFamilies = {
       payment_502: "checkout:payment.charge:PMT_502",
       db_miss: "checkout:db.load_cart:CART_NOT_FOUND",
-      checkout_error: "checkout:cart.validate:CHK_500"
+      checkout_error: "checkout:cart.validate:CHK_500",
+      inventory_503: "checkout:inventory.reserve:INV_503"
     };
     const scenarioLabels = {
       happy: "happy",
       payment_502: "payment_502",
       db_miss: "db_miss",
       checkout_error: "checkout_error",
+      inventory_503: "inventory_503",
       suppressed_payment_502: "suppressed"
     };
     const scenarioCopy = {
@@ -757,6 +764,11 @@
         title: "Checkout 500 captured",
         detail: "Crux should show checkout:cart.validate:CHK_500 in Failures and Impact — no payment or db hop should appear.",
         impactFamily: "checkout:cart.validate:CHK_500"
+      },
+      inventory_503: {
+        title: "Inventory outage captured",
+        detail: "Crux should show checkout:inventory.reserve:INV_503 in Failures and Impact — the db hop succeeds, payment is never reached.",
+        impactFamily: "checkout:inventory.reserve:INV_503"
       },
       suppressed_payment_502: {
         title: "Suppressed issue captured",

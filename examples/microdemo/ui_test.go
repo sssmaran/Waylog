@@ -34,6 +34,7 @@ func TestDemoUIProductShowcaseCopy(t *testing.T) {
 		"Run suppressed known issue",
 		"Run cart not found",
 		"Run checkout 500",
+		"Run inventory outage",
 		"Run traffic burst",
 		"Run proof loop",
 		"Alert-to-report proof",
