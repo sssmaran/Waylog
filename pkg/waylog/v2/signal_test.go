@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestPostSignalPostsToSignalsEndpoint(t *testing.T) {
@@ -59,6 +61,71 @@ func TestPostSignalPostsToSignalsEndpoint(t *testing.T) {
 	}
 	if gotBody.Metadata["subtype"] != "panic" {
 		t.Errorf("subtype = %v, want panic", gotBody.Metadata["subtype"])
+	}
+}
+
+// Parity with the TS SDK (which truncates reason→512 and message→4096 in its
+// signal transport): PostSignal must bound both for every signal, not just the
+// panic path via sanitizeReason.
+func TestPostSignalBoundsReasonAndMessage(t *testing.T) {
+	t.Cleanup(resetForTest)
+
+	var (
+		mu      sync.Mutex
+		gotBody Signal
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	if err := Init(Config{Service: "checkout", Env: "demo", IngestURL: srv.URL}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	err := PostSignal(context.Background(), Signal{
+		Type:    "runtime",
+		Source:  "go-sdk",
+		Reason:  strings.Repeat("r", maxSignalReasonLen+500),
+		Message: strings.Repeat("m", maxSignalMessageLen+500),
+	})
+	if err != nil {
+		t.Fatalf("PostSignal: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotBody.Reason) != maxSignalReasonLen {
+		t.Errorf("reason len = %d, want bounded to %d", len(gotBody.Reason), maxSignalReasonLen)
+	}
+	if len(gotBody.Message) != maxSignalMessageLen {
+		t.Errorf("message len = %d, want bounded to %d", len(gotBody.Message), maxSignalMessageLen)
+	}
+}
+
+// boundString must cap on a rune boundary so a truncated reason/message never
+// ships split UTF-8 (which json.Marshal would otherwise replace with U+FFFD).
+func TestBoundStringKeepsRuneBoundary(t *testing.T) {
+	s := strings.Repeat("→", 5) // U+2192 = 3 bytes each → 15 bytes
+	// Cap at 7 bytes: lands inside the 3rd rune (bytes 6,7,8); must step back to 6.
+	got := boundString(s, 7)
+	if len(got) != 6 {
+		t.Fatalf("expected step-back to 6 bytes, got %d (%q)", len(got), got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("boundString produced invalid UTF-8: %q", got)
+	}
+	if strings.ContainsRune(got, '�') {
+		t.Fatalf("boundString produced a replacement char: %q", got)
+	}
+	if asciiCap := boundString(strings.Repeat("a", 10), 4); asciiCap != "aaaa" {
+		t.Fatalf("ascii cap: got %q, want aaaa", asciiCap)
+	}
+	if noop := boundString("short", 100); noop != "short" {
+		t.Fatalf("under-cap must be unchanged: got %q", noop)
 	}
 }
 

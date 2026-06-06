@@ -171,3 +171,65 @@ func TestParseConfig_ProfileDemoAllowsOpen(t *testing.T) {
 		t.Fatalf("profile = %q, want %q", cfg.Profile, ProfileDemo)
 	}
 }
+
+func TestWeakKeyWarnings(t *testing.T) {
+	t.Run("flags placeholder keys across scopes in dev", func(t *testing.T) {
+		cfg := AuthConfig{
+			Profile:       ProfileDev,
+			WriteKeys:     []string{"changeme-write"},
+			ReadKeys:      []string{"demo"},
+			AgentKeys:     []string{"a-real-strong-agent-key"},
+			DashboardMode: "basic",
+			DashboardPass: "changeme",
+		}
+		warns := cfg.WeakKeyWarnings()
+		joined := strings.Join(warns, "\n")
+		for _, want := range []string{"WAYLOG_WRITE_KEY", "WAYLOG_READ_KEY", "DASHBOARD_AUTH basic"} {
+			if !strings.Contains(joined, want) {
+				t.Fatalf("warnings %q missing mention of %q", joined, want)
+			}
+		}
+		if strings.Contains(joined, "WAYLOG_AGENT_KEY") {
+			t.Fatalf("strong agent key should not be flagged: %q", joined)
+		}
+	})
+
+	t.Run("still warns in demo profile (make demo runs with a demo key)", func(t *testing.T) {
+		cfg := AuthConfig{Profile: ProfileDemo, WriteKeys: []string{"demo"}, ReadKeys: []string{"demo"}}
+		warns := cfg.WeakKeyWarnings()
+		if len(warns) == 0 {
+			t.Fatal("demo profile with demo keys should warn (plan G5a: start with demo key -> warning log)")
+		}
+		for _, w := range warns {
+			if !strings.Contains(w, "local demo") {
+				t.Fatalf("demo warning should read as non-fatal/expected for local demo, got %q", w)
+			}
+		}
+	})
+
+	t.Run("silent when keys are strong", func(t *testing.T) {
+		cfg := AuthConfig{
+			Profile:   ProfileProd,
+			WriteKeys: []string{"K7f2-write-9aZ"},
+			ReadKeys:  []string{"K7f2-read-9aZ"},
+			AgentKeys: []string{"K7f2-agent-9aZ"},
+		}
+		if warns := cfg.WeakKeyWarnings(); len(warns) != 0 {
+			t.Fatalf("strong keys should not warn, got %v", warns)
+		}
+	})
+
+	t.Run("names WAYLOG_API_KEY when the weak write key came from the legacy var", func(t *testing.T) {
+		cfg, err := ParseConfig(map[string]string{"WAYLOG_API_KEY": "demo"})
+		if err != nil {
+			t.Fatalf("ParseConfig: %v", err)
+		}
+		joined := strings.Join(cfg.WeakKeyWarnings(), "\n")
+		if !strings.Contains(joined, "WAYLOG_API_KEY") {
+			t.Fatalf("legacy weak write key should name WAYLOG_API_KEY, got %q", joined)
+		}
+		if strings.Contains(joined, "WAYLOG_WRITE_KEY") {
+			t.Fatalf("must not name WAYLOG_WRITE_KEY when the source was the legacy var, got %q", joined)
+		}
+	})
+}

@@ -143,6 +143,70 @@ func TestStaticDashboardHTML(t *testing.T) {
 	}
 }
 
+// TestDashboardXSSDefenses pins the dashboard's XSS invariants so a future edit
+// cannot silently drop escaping on attacker-influenceable event/incident fields.
+// All dashboard data originates from ingested WideEvents and signals, which an
+// untrusted service can populate with markup.
+func TestDashboardXSSDefenses(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+	body, err := io.ReadAll(rec.Result().Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	html := string(body)
+
+	// The escaping/URL primitives must exist and safeHTTPURL must enforce scheme.
+	mustHave := []string{
+		"function esc(",
+		"function safeHTTPURL(",
+		`u.protocol === "http:"`,
+		`u.protocol === "https:"`,
+		// Provider links are gated through safeHTTPURL before reaching an href.
+		"safeHTTPURL(alert.provider_url)",
+		"safeHTTPURL(a.provider_url)",
+		// Attacker-influenceable fields are escaped at the HTML sink.
+		"esc(alert.reason",
+		"esc(alert.source",
+		"esc(m.reason",
+		"esc(m.subtype",
+		"esc(m.service",
+		// The triage report preview is injected as text, never HTML.
+		"body.textContent = report",
+		`<pre id="report-body"`,
+	}
+	for _, needle := range mustHave {
+		if !strings.Contains(html, needle) {
+			t.Fatalf("dashboard XSS defense missing %q", needle)
+		}
+	}
+
+	// Raw, unescaped interpolation of user fields into HTML is forbidden. Current
+	// code wraps every one of these in esc()/safeHTTPURL(), so these literals must
+	// never appear; their presence signals a regressed sink. The needles omit the
+	// closing brace on purpose so a regression with a fallback — e.g.
+	// `${m.source || ""}` — is caught too, not just the bare `${m.source}`. The
+	// safe form is always `${esc(field` / `${safeHTTPURL(field`, so the `${field`
+	// prefix never matches correct code.
+	forbidden := []string{
+		"${alert.reason",
+		"${alert.message",
+		"${alert.source",
+		"${alert.provider_url",
+		"${m.reason",
+		"${m.subtype",
+		"${m.service",
+		"${m.source",
+		".innerHTML = report",
+	}
+	for _, needle := range forbidden {
+		if strings.Contains(html, needle) {
+			t.Fatalf("dashboard html has an unescaped user-data sink: %q", needle)
+		}
+	}
+}
+
 func TestVendoredDashboardBundlesRemoved(t *testing.T) {
 	for _, name := range []string{
 		"static/chart.umd.min.js",

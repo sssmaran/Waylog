@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const maxSignalReasonLen = 512
+const (
+	maxSignalReasonLen  = 512
+	maxSignalMessageLen = 4096
+)
 
 // signalClient is shared across signal posts. Signals are rare, so a small
 // pooled client with a short timeout is plenty.
@@ -64,6 +67,11 @@ func postSignalWithConfig(ctx context.Context, cfg Config, sig Signal) error {
 	if sig.Timestamp.IsZero() {
 		sig.Timestamp = time.Now().UTC()
 	}
+	// Bound reason and message for every signal (parity with the TS SDK, which
+	// truncates both in its signal transport) so no SDK caller can ship an
+	// unbounded payload. This is the single place the size cap is applied.
+	sig.Reason = boundString(sig.Reason, maxSignalReasonLen)
+	sig.Message = boundString(sig.Message, maxSignalMessageLen)
 
 	body, err := json.Marshal(sig)
 	if err != nil {
@@ -111,13 +119,23 @@ func signalURL(cfg Config) string {
 	return u.String()
 }
 
-// sanitizeReason stringifies a recovered panic value and bounds its length so
-// long or noisy panic payloads never ship unbounded. Full field redaction is a
-// later concern; this only caps size.
+// sanitizeReason stringifies a recovered panic value and trims whitespace. The
+// size cap is applied centrally in postSignalWithConfig, so this does not bound
+// length itself. Full field redaction is a later concern.
 func sanitizeReason(v any) string {
-	s := strings.TrimSpace(fmt.Sprintf("%v", v))
-	if len(s) > maxSignalReasonLen {
-		return s[:maxSignalReasonLen]
+	return strings.TrimSpace(fmt.Sprintf("%v", v))
+}
+
+// boundString caps s to at most n bytes without splitting a multibyte UTF-8
+// rune: if the cut lands mid-sequence it steps back off the trailing
+// continuation bytes, so a truncated reason/message stays valid UTF-8 in the
+// signal JSON. Mirrors the TS SDK's transport truncation.
+func boundString(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return s
+	for n > 0 && s[n]&0xC0 == 0x80 {
+		n--
+	}
+	return s[:n]
 }

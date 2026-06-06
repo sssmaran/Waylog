@@ -62,3 +62,21 @@ func TestDeploymentsTableExists(t *testing.T) {
 		t.Fatal("deployments table not created:", err)
 	}
 }
+
+func TestMigrationNamesListsEmbeddedMigrations(t *testing.T) {
+	names, err := MigrationNames()
+	if err != nil {
+		t.Fatalf("MigrationNames: %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("expected embedded migrations, got none")
+	}
+	if names[0] != "001_initial.sql" {
+		t.Fatalf("first migration = %q, want 001_initial.sql", names[0])
+	}
+	for i := 1; i < len(names); i++ {
+		if names[i-1] >= names[i] {
+			t.Fatalf("names not sorted ascending at %d: %q >= %q", i, names[i-1], names[i])
+		}
+	}
+}

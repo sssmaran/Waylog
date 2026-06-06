@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -69,6 +68,9 @@ func main() {
 	if err != nil {
 		slog.Error("auth config error", "err", err)
 		os.Exit(1)
+	}
+	for _, w := range authCfg.WeakKeyWarnings() {
+		slog.Warn("insecure auth configuration", "detail", w)
 	}
 
 	var sm *auth.SessionManager
@@ -142,7 +144,7 @@ func main() {
 		slog.Error("EVENT_LOG_RETENTION must be positive", "value", eventLogRetention)
 		os.Exit(1)
 	}
-	eventLogV2Dir := config.Getenv("EVENT_LOG_V2_DIR", defaultEventLogV2Dir(eventLogDir))
+	eventLogV2Dir := eventlogv2.ResolveDir(os.Getenv("EVENT_LOG_V2_DIR"), eventLogDir)
 	v2Wal, err := eventlogv2.New(eventLogV2Dir,
 		eventlogv2.WithSync(eventLogSync),
 		eventlogv2.WithMaxBytes(eventLogMaxMB*1024*1024),
@@ -724,13 +726,6 @@ func replLoop() {
 		args := strings.Fields(line)
 		cli.Run(args)
 	}
-}
-
-func defaultEventLogV2Dir(eventLogDir string) string {
-	if eventLogDir != "" {
-		return filepath.Join(eventLogDir, "v2")
-	}
-	return "./data/eventlog-v2"
 }
 
 func printHelp() {

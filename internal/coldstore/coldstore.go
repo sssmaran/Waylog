@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/pkg/event"
@@ -106,6 +107,22 @@ func Open(path string) (ManagedStore, error) {
 
 	slog.Info("coldstore opened", "path", path)
 	return s, nil
+}
+
+// MigrationNames returns the embedded migration file names, sorted ascending.
+// It reads the same embedded FS that Migrate applies, so callers (e.g. doctor)
+// can compare applied-vs-expected without opening the database.
+func MigrationNames() ([]string, error) {
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return nil, fmt.Errorf("coldstore: read migrations dir: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // Migrate runs all embedded SQL migration files idempotently. Applied

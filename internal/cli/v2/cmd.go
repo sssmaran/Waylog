@@ -67,6 +67,8 @@ func RunCLI(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return runSearch(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "triage":
 		return runTriage(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "doctor":
+		return runDoctor(cfg, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", rest[0])
 		printUsage(stderr)
@@ -503,6 +505,7 @@ func printUsage(w io.Writer) {
   waylog explain <event_id|trace_id> [--json]
   waylog blast (--service <svc> --step <step> --code <code> | --code <code> | <service:step:code>) [--window <dur>] [--json]
   waylog search <query> [--service <svc>] [--status <csv>] [--window <dur>] [--limit <n>] [--cursor <c>] [--json]
+  waylog doctor [--server] [--json]
 
 Recommended loop:
   waylog incidents

@@ -16,7 +16,10 @@ func SafeGo(fn func()) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				if s := getState(); s != nil && s.cfg.EnableRuntimeHooks {
-					postPanicSignal(s.cfg, rec)
+					// Post asynchronously (matching FinalizePanic in assemble.go)
+					// so a slow/unreachable signal endpoint can't block this
+					// goroutine's teardown for up to signalPostTimeout.
+					go postPanicSignal(s.cfg, rec)
 				}
 			}
 		}()
