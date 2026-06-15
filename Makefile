@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-crux install-local build-examples ingest ingest-mcp waylog checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
+.PHONY: help build build-crux first-run install-local build-examples ingest ingest-mcp waylog checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
@@ -44,6 +44,10 @@ build:
 
 build-crux:
 	go build -o crux ./cmd/crux
+
+first-run: build-crux
+	go build -o ingest ./cmd/ingest
+	./crux first-run
 
 install-local: build build-crux
 	@mkdir -p "$$(go env GOPATH)/bin"

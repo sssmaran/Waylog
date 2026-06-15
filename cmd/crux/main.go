@@ -13,6 +13,9 @@ import (
 func main() {
 	globalArgs, rest, ingestURL := splitCruxArgs(os.Args[1:])
 	if len(rest) > 0 {
+		if rest[0] == "first-run" {
+			os.Exit(runFirstRun(rest[1:]))
+		}
 		if rest[0] == "open" {
 			disp := NewDispatcher(ingestURL, globalArgs, os.Stdin)
 			res := disp.DispatchTokens(rest, os.Stdout, os.Stderr)
