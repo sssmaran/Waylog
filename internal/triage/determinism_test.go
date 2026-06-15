@@ -129,6 +129,85 @@ func TestHashIncludesMaterialFields(t *testing.T) {
 	}
 }
 
+// tickBlast simulates the recent-index window sliding between engine ticks:
+// every call returns different counts.
+type tickBlast struct{ calls *int }
+
+func (b tickBlast) BlastSnapshot(_ context.Context, _ IncidentSummary, _ BuildOptions) (BlastSnapshotResult, error) {
+	*b.calls++
+	return BlastSnapshotResult{
+		Requests: 10 + *b.calls, Users: 5 + *b.calls, Services: 4,
+		TopErrorFamilies: []pkgtriage.ErrorFamily{
+			{Service: "payment", Step: "payment.charge", ErrorCode: "PMT_502", Count: 10 + *b.calls},
+		},
+	}, nil
+}
+
+// extraSignals returns the rich signal set plus one newly attached signal.
+type extraSignals struct{}
+
+func (extraSignals) SignalsFor(_ context.Context, _ IncidentSummary, _ BuildOptions) ([]SignalEvidence, error) {
+	return []SignalEvidence{
+		{ID: "sig_1", Type: "deploy", EvidenceIDs: []string{"e1"}},
+		{ID: "sig_2", Type: "dependency", EvidenceIDs: []string{"e2"}},
+	}, nil
+}
+
+// Invariant (ADR 0002): evidence_fingerprint is stable across ticks while the
+// evidence set is unchanged, even though report_hash legitimately drifts with
+// the window; attaching evidence changes the fingerprint.
+func TestEvidenceFingerprintStableAcrossTicks(t *testing.T) {
+	calls := 0
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	deps := Deps{
+		Incidents: richIncidents{}, Blast: tickBlast{calls: &calls}, Story: richStory{},
+		Signals: richSignals{}, NextChecks: richNextChecks{},
+		Now: func() time.Time { return now },
+	}
+	eng, err := NewEngine(deps)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	build := func() *pkgtriage.Report {
+		opts, _ := ParseBuildOptions("15m", false, deps.Now())
+		r, err := eng.Build(context.Background(), "inc_abc", opts)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		return r
+	}
+
+	first := build()
+	now = now.Add(30 * time.Second) // next tick: window slid, counts changed
+	second := build()
+
+	if first.ReportHash == second.ReportHash {
+		t.Fatal("fixture error: blast drift should have changed report_hash between ticks")
+	}
+	if first.EvidenceFingerprint == "" {
+		t.Fatal("engine must populate evidence_fingerprint")
+	}
+	if first.EvidenceFingerprint != second.EvidenceFingerprint {
+		t.Fatalf("fingerprint must survive tick drift: %s vs %s",
+			first.EvidenceFingerprint, second.EvidenceFingerprint)
+	}
+
+	// A newly attached signal changes the fingerprint.
+	deps.Signals = extraSignals{}
+	eng2, err := NewEngine(deps)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	opts, _ := ParseBuildOptions("15m", false, deps.Now())
+	third, err := eng2.Build(context.Background(), "inc_abc", opts)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if third.EvidenceFingerprint == first.EvidenceFingerprint {
+		t.Fatal("attaching a signal must change the evidence fingerprint")
+	}
+}
+
 // Invariant (d): canonical hash is repeatable — identical across repeated calls
 // on the same report. Report has no map fields, so there is no map-key ordering
 // to canonicalize; this guards marshal determinism, not a deeper canonical-key

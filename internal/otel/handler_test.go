@@ -78,7 +78,7 @@ func postOTLP(handler http.Handler, body []byte, contentType, contentEncoding st
 }
 
 func TestHandler_HappyPath(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20, nil)
 	body, _ := proto.Marshal(validOTLPRequest())
 	rr := postOTLP(h, body, "application/x-protobuf", "")
 	if rr.Code != 200 {
@@ -94,7 +94,7 @@ func TestHandler_HappyPath(t *testing.T) {
 }
 
 func TestHandler_GzipCompressed(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20, nil)
 	body, _ := proto.Marshal(validOTLPRequest())
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
@@ -107,7 +107,7 @@ func TestHandler_GzipCompressed(t *testing.T) {
 }
 
 func TestHandler_ContentTypeWithParams(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20, nil)
 	body, _ := proto.Marshal(validOTLPRequest())
 	rr := postOTLP(h, body, "application/x-protobuf; charset=utf-8", "")
 	if rr.Code != 200 {
@@ -116,7 +116,7 @@ func TestHandler_ContentTypeWithParams(t *testing.T) {
 }
 
 func TestHandler_WrongContentType(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20, nil)
 	rr := postOTLP(h, []byte("{}"), "application/json", "")
 	if rr.Code != http.StatusUnsupportedMediaType {
 		t.Errorf("status = %d, want 415", rr.Code)
@@ -124,7 +124,7 @@ func TestHandler_WrongContentType(t *testing.T) {
 }
 
 func TestHandler_UnsupportedContentEncoding(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20, nil)
 	body, _ := proto.Marshal(validOTLPRequest())
 	rr := postOTLP(h, body, "application/x-protobuf", "deflate")
 	if rr.Code != http.StatusUnsupportedMediaType {
@@ -133,7 +133,7 @@ func TestHandler_UnsupportedContentEncoding(t *testing.T) {
 }
 
 func TestHandler_WrongMethod(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20, nil)
 	req := httptest.NewRequest(http.MethodGet, "/v1/otlp/v1/traces", nil)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -143,7 +143,7 @@ func TestHandler_WrongMethod(t *testing.T) {
 }
 
 func TestHandler_MalformedProtobuf(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20, nil)
 	rr := postOTLP(h, []byte("not protobuf"), "application/x-protobuf", "")
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rr.Code)
@@ -151,7 +151,7 @@ func TestHandler_MalformedProtobuf(t *testing.T) {
 }
 
 func TestHandler_BodyTooLarge(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 10)
+	h := NewHandler(testV2Ingest(t), nil, 10, nil)
 	body, _ := proto.Marshal(validOTLPRequest())
 	rr := postOTLP(h, body, "application/x-protobuf", "")
 	if rr.Code != http.StatusRequestEntityTooLarge {
@@ -160,7 +160,7 @@ func TestHandler_BodyTooLarge(t *testing.T) {
 }
 
 func TestHandler_EmptyRequest(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20, nil)
 	body, _ := proto.Marshal(&coltracepb.ExportTraceServiceRequest{})
 	rr := postOTLP(h, body, "application/x-protobuf", "")
 	if rr.Code != 200 {
@@ -169,7 +169,7 @@ func TestHandler_EmptyRequest(t *testing.T) {
 }
 
 func TestHandler_MissingV2IngestReturns503ForConvertedSpans(t *testing.T) {
-	h := NewHandler(nil, nil, 1<<20)
+	h := NewHandler(nil, nil, 1<<20, nil)
 	body, _ := proto.Marshal(validOTLPRequest())
 	rr := postOTLP(h, body, "application/x-protobuf", "")
 	if rr.Code != http.StatusServiceUnavailable {
@@ -178,7 +178,7 @@ func TestHandler_MissingV2IngestReturns503ForConvertedSpans(t *testing.T) {
 }
 
 func TestHandler_FutureTimestampDropped(t *testing.T) {
-	h := NewHandler(testV2Ingest(t), nil, 1<<20)
+	h := NewHandler(testV2Ingest(t), nil, 1<<20, nil)
 	req := validOTLPRequest()
 	// Stamp the span 10 minutes in the future — should be dropped with
 	// partial_success rather than skewing recent traces / overview.

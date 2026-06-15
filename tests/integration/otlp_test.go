@@ -56,7 +56,7 @@ func newOTLPV2Stack(t *testing.T) otlpV2Stack {
 		t.Fatalf("ingestv2.New: %v", err)
 	}
 	return otlpV2Stack{
-		otlp: otelhttp.NewHandler(v2, nil, 1<<20),
+		otlp: otelhttp.NewHandler(v2, nil, 1<<20, nil),
 		read: ingestv2.NewReadHandler(ingestv2.NewReader(index), nil, 24*time.Hour),
 		caps: ingest.NewServer(ingest.ServerConfig{OTLPEnabled: true}),
 	}

@@ -56,14 +56,20 @@ func Classify(input ClassificationInput) Classification {
 		ctx.AlertProviderURL = stringField(top.Metadata, "provider_url")
 	}
 
-	if dep := matchingDependencySignal(input); dep != nil {
-		ctx.Downstream = dep.Service
-		ctx.DepSignalID = dep.SignalID
-		ctx.DepSignalReason = dep.Reason
-		evidence = append(evidence, signalEvidence(*dep, dependencyLabel(*dep)))
-		return classification(CauseDependency, ConfidenceHigh, evidence, warnings, ctx)
+	depSig := matchingDependencySignal(input)
+	downstream := firstFailingDownstream(input.Events)
+	deployment := matchingDeployment(input)
+	var deploySig *signals.Signal
+	if deployment == nil {
+		deploySig = matchingSignal(input, signals.TypeDeploy)
 	}
-	if downstream := firstFailingDownstream(input.Events); downstream != "" {
+
+	if depSig != nil {
+		ctx.Downstream = depSig.Service
+		ctx.DepSignalID = depSig.SignalID
+		ctx.DepSignalReason = depSig.Reason
+		evidence = append(evidence, signalEvidence(*depSig, dependencyLabel(*depSig)))
+	} else if downstream != "" {
 		ctx.Downstream = downstream
 		evidence = append(evidence, Evidence{
 			Kind:       EvidenceTrace,
@@ -72,22 +78,46 @@ func Classify(input ClassificationInput) Classification {
 			Service:    downstream,
 			OccurredAt: input.Incident.StartedAt,
 		})
-		return classification(CauseDependency, ConfidenceMedium, evidence, warnings, ctx)
 	}
-	if dep := matchingDeployment(input); dep != nil {
-		ctx.DeployVersion = dep.Version
-		ctx.DeployFirstSeen = dep.FirstSeen
-		evidence = append(evidence, deploymentEvidence(*dep))
-		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
-	}
-	if sig := matchingSignal(input, signals.TypeDeploy); sig != nil {
-		ctx.DeployVersion = stringField(sig.Metadata, "version")
-		ctx.DeploySignalID = sig.SignalID
-		if !sig.Timestamp.IsZero() {
-			ctx.DeployFirstSeen = sig.Timestamp
+	var deployAt time.Time
+	hasDeploy := false
+	if deployment != nil {
+		hasDeploy = true
+		deployAt = deployment.FirstSeen
+		ctx.DeployVersion = deployment.Version
+		ctx.DeployFirstSeen = deployment.FirstSeen
+		evidence = append(evidence, deploymentEvidence(*deployment))
+	} else if deploySig != nil {
+		hasDeploy = true
+		ctx.DeployVersion = stringField(deploySig.Metadata, "version")
+		ctx.DeploySignalID = deploySig.SignalID
+		if !deploySig.Timestamp.IsZero() {
+			ctx.DeployFirstSeen = deploySig.Timestamp
+			deployAt = deploySig.Timestamp
 		}
-		evidence = append(evidence, signalEvidence(*sig, deployLabel(*sig)))
+		evidence = append(evidence, signalEvidence(*deploySig, deployLabel(*deploySig)))
+	}
+
+	switch {
+	case depSig != nil && hasDeploy:
+		// Both causes are signal-backed: a cause anchored at/before onset beats
+		// one that lands after it (a change after the incident started cannot
+		// have caused it); among causes on the same side of onset, temporal
+		// proximity decides and an exact tie keeps the dependency (ADR 0001).
+		// Both evidence rows are already attached; the loser surfaces in next
+		// checks.
+		if deployBeatsDependency(deployAt, depSig.Timestamp, input.Incident.StartedAt) {
+			return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
+		}
+		return classification(CauseDependency, ConfidenceHigh, evidence, warnings, ctx)
+	case depSig != nil:
+		return classification(CauseDependency, ConfidenceHigh, evidence, warnings, ctx)
+	case hasDeploy:
+		// A correlated deploy beats the unconfirmed trace-only downstream
+		// inference (ADR 0001); the downstream stays as evidence + next check.
 		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
+	case downstream != "":
+		return classification(CauseDependency, ConfidenceMedium, evidence, warnings, ctx)
 	}
 	if len(runtimeSigs) > 0 {
 		top := runtimeSigs[0]
@@ -112,6 +142,36 @@ func sampleTraceID(input ClassificationInput) string {
 		}
 	}
 	return ""
+}
+
+// deployBeatsDependency decides, when both a deploy and a dependency signal
+// correlate with the incident, whether the deploy is the better cause. A
+// non-zero anchor at/before onset is preferred over one strictly after onset
+// (a change that lands after the incident started cannot have caused it); when
+// both anchors are on the same side of onset (or either is missing), the one
+// closer to onset wins, and an exact tie keeps the dependency.
+func deployBeatsDependency(deployAt, depAt, onset time.Time) bool {
+	if !deployAt.IsZero() && !depAt.IsZero() {
+		deployPrecedes := !deployAt.After(onset)
+		depPrecedes := !depAt.After(onset)
+		if deployPrecedes != depPrecedes {
+			return deployPrecedes
+		}
+	}
+	return closerToOnset(deployAt, depAt, onset)
+}
+
+// closerToOnset reports whether a is strictly closer to the incident onset
+// than b. A zero time loses: it means "no timestamp", never "at epoch".
+func closerToOnset(a, b, onset time.Time) bool {
+	return absDuration(onset.Sub(a)) < absDuration(onset.Sub(b))
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 func containsString(haystack []string, needle string) bool {

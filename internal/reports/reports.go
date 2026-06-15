@@ -45,6 +45,7 @@ func Markdown(rep *pkgtriage.Report) string {
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "## Summary\n\n")
 	fmt.Fprintf(&b, "- Incident: `%s` (report `%s`)\n", nz(rep.IncidentRef.ID), nz(rep.ReportHash))
+	fmt.Fprintf(&b, "- Evidence fingerprint: `%s` (stable across ticks until evidence changes)\n", nz(rep.EvidenceFingerprint))
 	fmt.Fprintf(&b, "- Confidence: `%s` (incident `%s`, report `%s`)\n", nz(string(rep.Confidence)), nz(rep.IncidentRef.ID), nz(rep.ReportHash))
 	fmt.Fprintf(&b, "- Evidence status: alert=%s trace=%s signal=%s runtime=%s (report `%s`)\n", availability(len(rep.Alerts) > 0), availability(len(rep.SampleTraces) > 0), availability(len(rep.Signals) > 0), availability(len(rep.Runtime) > 0), nz(rep.ReportHash))
 	fmt.Fprintf(&b, "- Window: `%s` (incident `%s`)\n\n", nz(rep.IncidentRef.Window), nz(rep.IncidentRef.ID))
@@ -114,6 +115,7 @@ func Slack(rep *pkgtriage.Report) map[string]any {
 		{"type": "mrkdwn", "text": "*Impact*\n" + impactSummary(rep)},
 		{"type": "mrkdwn", "text": "*Trace*\n" + firstTrace(rep)},
 		{"type": "mrkdwn", "text": "*Report hash*\n`" + nz(rep.ReportHash) + "`"},
+		{"type": "mrkdwn", "text": "*Evidence fingerprint*\n`" + nz(rep.EvidenceFingerprint) + "`"},
 	}
 	alertText := "not available"
 	if len(rep.Alerts) > 0 {
@@ -137,8 +139,8 @@ func PagerDuty(rep *pkgtriage.Report) string {
 		a := rep.Alerts[0]
 		alert = fmt.Sprintf("%s alert %s via signal %s provider=%s", nz(a.Source), nz(a.AlertID), nz(a.SignalID), nz(a.ProviderURL))
 	}
-	return fmt.Sprintf("Waylog operator report: incident=%s confidence=%s impact=%s trace=%s report_hash=%s alert=%s runtime=%s next_check=%s",
-		nz(rep.IncidentRef.ID), nz(string(rep.Confidence)), impactSummary(rep), firstTrace(rep), nz(rep.ReportHash), alert, runtimeSummary(rep), firstCheck(rep))
+	return fmt.Sprintf("Waylog operator report: incident=%s confidence=%s impact=%s trace=%s report_hash=%s evidence_fingerprint=%s alert=%s runtime=%s next_check=%s",
+		nz(rep.IncidentRef.ID), nz(string(rep.Confidence)), impactSummary(rep), firstTrace(rep), nz(rep.ReportHash), nz(rep.EvidenceFingerprint), alert, runtimeSummary(rep), firstCheck(rep))
 }
 
 func EncodeBody(r Rendered) ([]byte, error) {

@@ -18,6 +18,7 @@ type Metrics struct {
 	EventsAccepted         prometheus.Counter
 	EventsDuplicate        prometheus.Counter
 	EventsRejected         *prometheus.CounterVec
+	RateLimited            *prometheus.CounterVec
 	EventlogFails          prometheus.Counter
 	EventDedupCacheSize    prometheus.Gauge
 	EventDedupReplayLoaded prometheus.Counter
@@ -56,9 +57,10 @@ type Metrics struct {
 	DeployUpsertsTotal prometheus.Counter
 	DeployUpsertErrors prometheus.Counter
 
-	SignalsAccepted       prometheus.Counter
-	SignalsRejected       *prometheus.CounterVec
-	SignalRetentionPruned prometheus.Counter
+	SignalsAccepted         prometheus.Counter
+	SignalsRejected         *prometheus.CounterVec
+	SignalRetentionPruned   prometheus.Counter
+	IncidentRetentionPruned prometheus.Counter
 
 	IncidentOpened          prometheus.Counter
 	IncidentUpdated         prometheus.Counter
@@ -113,6 +115,10 @@ func New(reg *prometheus.Registry) *Metrics {
 	for _, reason := range []string{"validation", "sampling"} {
 		m.EventsRejected.WithLabelValues(reason).Add(0)
 	}
+	m.RateLimited = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_rate_limited_total",
+		Help: "Requests rejected with 429 by the per-key rate limiter.",
+	}, []string{"scope"})
 	m.EventlogFails = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_eventlog_write_failures_total",
 		Help: "Failed eventlog writes.",
@@ -288,6 +294,10 @@ func New(reg *prometheus.Registry) *Metrics {
 		Name: "waylog_signal_retention_pruned_total",
 		Help: "Production-context signals pruned by retention.",
 	})
+	m.IncidentRetentionPruned = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incident_retention_pruned_total",
+		Help: "Resolved incidents pruned by retention.",
+	})
 
 	m.IncidentOpened = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_incidents_opened_total",
@@ -382,7 +392,7 @@ func New(reg *prometheus.Registry) *Metrics {
 
 	reg.MustRegister(
 		m.IngestLatency, m.IngestBatchSize,
-		m.EventsAccepted, m.EventsDuplicate, m.EventsRejected, m.EventlogFails,
+		m.EventsAccepted, m.EventsDuplicate, m.EventsRejected, m.RateLimited, m.EventlogFails,
 		m.EventDedupCacheSize, m.EventDedupReplayLoaded,
 		m.V2EventsProjected, m.V2IndexSize, m.V2IndexPruned, m.V2ReplayProjected,
 		m.V2ReplaySkipped,
@@ -396,7 +406,7 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
 		m.ColdEventsWritten, m.ColdEventsDropped, m.ColdBatchLatency,
 		m.DeployUpsertsTotal, m.DeployUpsertErrors,
-		m.SignalsAccepted, m.SignalsRejected, m.SignalRetentionPruned,
+		m.SignalsAccepted, m.SignalsRejected, m.SignalRetentionPruned, m.IncidentRetentionPruned,
 		m.IncidentOpened, m.IncidentUpdated, m.IncidentRecovered, m.IncidentResolved,
 		m.IncidentTickLatency, m.IncidentActive, m.IncidentClassifications,
 		m.IncidentRebuildDuration, m.IncidentRebuildRows, m.IncidentRebuildFailures, m.IncidentRebuildReplayed,

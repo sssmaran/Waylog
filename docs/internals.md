@@ -38,6 +38,31 @@ The v2 reader's in-memory index is pruned every tick to enforce `GRAPH_HOT_WINDO
 
 Retention bounds memory growth. Production deployments should tune this to match their incident-response window — you rarely need more than 24 hours of hot data in memory.
 
+For the single-node throughput, memory, and storage ceiling as a whole — and how to tune within it or scale past it — see [`scale-and-limits.md`](scale-and-limits.md).
+
+## Spike detection baseline
+
+The incident engine opens an incident when an error family's current-window
+count clears `WAYLOG_INCIDENT_MIN_COUNT` and its lift over baseline clears
+`WAYLOG_INCIDENT_MIN_LIFT`. Two design choices keep the detector deterministic
+and explainable (no learned models):
+
+- **Baseline = per-family median of the 3 prior windows** (`[now-2W, now-W]`,
+  `[now-3W, now-2W]`, `[now-4W, now-3W]`, where `W` is
+  `WAYLOG_INCIDENT_WINDOW`). A family absent from a window counts as 0. The
+  median means one anomalous prior window can neither suppress a real spike
+  (a prior burst inflating the baseline) nor fabricate lift (a single quiet
+  window deflating it). A family that is new or mostly-quiet has median 0 and
+  is treated as a fresh spike (lift = current count). All four windows are
+  served by the v2 reader and must fit inside `GRAPH_HOT_WINDOW` — the
+  startup rebuild replay window is sized to `4 × WAYLOG_INCIDENT_WINDOW` for
+  the same reason.
+- **Low-traffic guard** (`WAYLOG_INCIDENT_MIN_RATE`, errors/minute, default
+  `0` = disabled). On low-traffic services a handful of failures can clear
+  `MIN_COUNT` while representing trivially small absolute volume; when set,
+  a family must also sustain `MIN_RATE × window-minutes` failures in the
+  current window to open an incident.
+
 ## Service attribution
 
 The v2 reader carries per-request service info inferred from span fan-out:

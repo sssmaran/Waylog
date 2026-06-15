@@ -4,7 +4,7 @@ set -euo pipefail
 GOCACHE_DIR="${GOCACHE:-/tmp/go-build}"
 export GOCACHE="$GOCACHE_DIR"
 
-# v2 demo path: Kafka and cmd/bridge are intentionally unused here.
+# v2 demo path: no Kafka or bridge process — HTTP/OTLP ingest only.
 unset KAFKA_BROKERS
 
 export INGEST_ADDR="${INGEST_ADDR:-:8080}"

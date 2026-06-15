@@ -30,6 +30,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	otelhttp "github.com/sssmaran/WaylogCLI/internal/otel"
+	"github.com/sssmaran/WaylogCLI/internal/ratelimit"
 	"github.com/sssmaran/WaylogCLI/internal/signals"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 	"github.com/sssmaran/WaylogCLI/internal/triage"
@@ -113,6 +114,7 @@ func main() {
 		Window:                  config.GetenvDuration("WAYLOG_INCIDENT_WINDOW", 10*time.Minute),
 		MinCount:                config.GetenvInt("WAYLOG_INCIDENT_MIN_COUNT", 5),
 		MinLift:                 config.GetenvFloat("WAYLOG_INCIDENT_MIN_LIFT", 3.0),
+		MinRate:                 config.GetenvFloat("WAYLOG_INCIDENT_MIN_RATE", 0),
 		ResolveAfter:            config.GetenvDuration("WAYLOG_INCIDENT_RESOLVE_AFTER", 2*time.Minute),
 		DeployCorrelationWindow: config.GetenvDuration("WAYLOG_DEPLOY_CORRELATION_WINDOW", 15*time.Minute),
 		SampleLimit:             config.GetenvInt("WAYLOG_INCIDENT_SAMPLE_LIMIT", 5),
@@ -267,9 +269,22 @@ func main() {
 
 	corsOrigin := config.Getenv("CORS_ORIGIN", "*")
 
-	writeAuth := auth.Middleware("write", authCfg.WriteKeys, nil)
-	readAuth := auth.Middleware("read", authCfg.ReadKeys, sessionCheck)
-	agentAuth := auth.Middleware("agent", authCfg.AgentKeys, nil)
+	// Per-key rate limits run outermost (before auth) so floods of invalid
+	// credentials are throttled too. 0 disables; only prod limits by default.
+	defWriteRPS, defReadRPS, defAgentRPS := 0, 0, 0
+	if authCfg.Profile == auth.ProfileProd {
+		defWriteRPS, defReadRPS, defAgentRPS = 1000, 200, 50
+	}
+	writeLimit := ratelimit.Middleware(ratelimit.New(config.GetenvInt("WAYLOG_RATE_LIMIT_WRITE_RPS", defWriteRPS)), "write", m)
+	readLimit := ratelimit.Middleware(ratelimit.New(config.GetenvInt("WAYLOG_RATE_LIMIT_READ_RPS", defReadRPS)), "read", m)
+	agentLimit := ratelimit.Middleware(ratelimit.New(config.GetenvInt("WAYLOG_RATE_LIMIT_AGENT_RPS", defAgentRPS)), "agent", m)
+
+	writeKeyAuth := auth.Middleware("write", authCfg.WriteKeys, nil)
+	readKeyAuth := auth.Middleware("read", authCfg.ReadKeys, sessionCheck)
+	agentKeyAuth := auth.Middleware("agent", authCfg.AgentKeys, nil)
+	writeAuth := func(h http.Handler) http.Handler { return writeLimit(writeKeyAuth(h)) }
+	readAuth := func(h http.Handler) http.Handler { return readLimit(readKeyAuth(h)) }
+	agentAuth := func(h http.Handler) http.Handler { return agentLimit(agentKeyAuth(h)) }
 	dashGate := auth.DashboardGate(authCfg, sm)
 
 	mux := http.NewServeMux()
@@ -300,7 +315,13 @@ func main() {
 	// OTLP/HTTP traces reuse the same schema-2.0 WAL and projector as the SDK path.
 	var otlpGRPCServer *grpc.Server
 	if otlpEnabled {
-		otlpHandler := otelhttp.NewHandler(eventsV2, m, maxBody)
+		// A service.version change observed on OTLP spans auto-registers a
+		// deployment so deploy correlation works without the deploy webhook.
+		var deployTracker *otelhttp.DeployTracker
+		if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
+			deployTracker = otelhttp.NewDeployTracker(sqlite)
+		}
+		otlpHandler := otelhttp.NewHandler(eventsV2, m, maxBody, deployTracker)
 		mux.Handle("/v1/otlp/v1/traces", writeAuth(http.HandlerFunc(otlpHandler.ServeHTTP)))
 		slog.Info("otlp enabled", "endpoint", "/v1/otlp/v1/traces")
 		if otlpGRPCAddr != "" {
@@ -308,7 +329,7 @@ func main() {
 				grpc.UnaryInterceptor(otelhttp.AuthUnaryInterceptor(authCfg.WriteKeys)),
 				grpc.MaxRecvMsgSize(int(maxBody)),
 			)
-			coltracepb.RegisterTraceServiceServer(otlpGRPCServer, otelhttp.NewTraceServiceServer(eventsV2, m, maxBody))
+			coltracepb.RegisterTraceServiceServer(otlpGRPCServer, otelhttp.NewTraceServiceServer(eventsV2, m, maxBody, deployTracker))
 			ingestServer.SetOTLPGRPC(true, otlpGRPCAddr)
 		}
 	}
@@ -369,7 +390,9 @@ func main() {
 					rebuildMaxEvents = 250000
 				}
 				replayWindow := graphHotWindow
-				if minWindow := 2 * incidentCfg.Window; minWindow > replayWindow {
+				// 4× window: the spike baseline is the median of the 3 prior
+				// windows, so rebuild needs current + 3 baselines of history.
+				if minWindow := 4 * incidentCfg.Window; minWindow > replayWindow {
 					replayWindow = minWindow
 				}
 				replaySince := time.Now().UTC().Add(-replayWindow)
@@ -566,6 +589,10 @@ func main() {
 	}
 	if incidentRunning {
 		go incidentEngine.Run(ctx)
+		if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
+			incidentRetention := config.GetenvDuration("WAYLOG_INCIDENT_RETENTION", 168*time.Hour)
+			go incidents.RunRetention(ctx, coldstore.NewIncidentStore(sqlite), incidentRetention, 5*time.Minute, m, slog.Default())
+		}
 	}
 
 	go func() {

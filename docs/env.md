@@ -56,6 +56,9 @@ Scoped keys. See the Auth section of the [README](../README.md).
 | `IDLE_TIMEOUT` | `120s` | HTTP idle timeout |
 | `CORS_ORIGIN` | `*` | Allowed CORS origin for read APIs |
 | `ALERT_MATCH_WINDOW` | `15m` | Window for matching `/v1/alerts` to active incidents by `env + service + error_code`; capped at `24h` |
+| `WAYLOG_RATE_LIMIT_WRITE_RPS` | `0` (`1000` in prod) | Per-key requests/second for write endpoints (`/v1/events`, `/v1/signals`, `/v1/alerts`, OTLP HTTP). `0` disables. Keyed by presented credential, falling back to client IP; throttled requests get `429` + `Retry-After: 1` |
+| `WAYLOG_RATE_LIMIT_READ_RPS` | `0` (`200` in prod) | Per-key requests/second for read endpoints |
+| `WAYLOG_RATE_LIMIT_AGENT_RPS` | `0` (`50` in prod) | Per-key requests/second for agent endpoints (`/v1/tools/*`, `/v1/ask`, `/v1/plans/*`) |
 
 ## CLI
 
@@ -82,10 +85,12 @@ The `waylog` CLI calls the running ingest server's v2 read APIs.
 | `WAYLOG_INCIDENT_TICK_INTERVAL` | `30s` | Incident engine evaluation interval |
 | `WAYLOG_INCIDENT_WINDOW` | `10m` | Current error-family spike window |
 | `WAYLOG_INCIDENT_MIN_COUNT` | `5` | Minimum current-window failures needed to open an incident |
-| `WAYLOG_INCIDENT_MIN_LIFT` | `3.0` | Minimum current-vs-baseline lift when the family already exists in the baseline window |
+| `WAYLOG_INCIDENT_MIN_LIFT` | `3.0` | Minimum current-vs-baseline lift when the family already exists in the baseline. Baseline is the per-family median of the 3 prior windows (see `docs/internals.md`) |
+| `WAYLOG_INCIDENT_MIN_RATE` | `0` | Low-traffic guard in errors/minute: a family must sustain `rate × window-minutes` failures in the current window to open an incident. `0` disables |
 | `WAYLOG_INCIDENT_RESOLVE_AFTER` | `2m` | Time without renewed matching failures before a recovering incident resolves |
 | `WAYLOG_DEPLOY_CORRELATION_WINDOW` | `15m` | Window used to attach deploy signals and deployment records as incident evidence |
 | `WAYLOG_INCIDENT_SAMPLE_LIMIT` | `5` | Maximum persisted sample traces per incident |
+| `WAYLOG_INCIDENT_RETENTION` | `168h` | How long resolved incidents are kept before the retention janitor deletes them (checked every 5m). Active/recovering incidents are never pruned. `0` disables |
 | `WAYLOG_REBUILD_INCIDENTS_ON_START` | `false` | Rebuild non-resolved incident rows at startup from the schema-2.0 WAL hot window plus signals |
 | `WAYLOG_INCIDENT_REBUILD_MAX_EVENTS` | `250000` | Safety cap for startup incident rebuild replay |
 | `WAYLOG_V2_DEDUP_CAPACITY` | `65536` | Recent schema-2.0 `event_id` dedupe cache capacity |

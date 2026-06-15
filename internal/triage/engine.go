@@ -151,6 +151,7 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 		return nil, fmt.Errorf("triage: hash: %w", err)
 	}
 	r.ReportHash = hash
+	r.EvidenceFingerprint = r.CanonicalEvidenceFingerprint()
 	if err := r.Validate(); err != nil {
 		return nil, fmt.Errorf("triage: produced invalid report: %w", err)
 	}

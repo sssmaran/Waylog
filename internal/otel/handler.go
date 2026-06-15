@@ -33,6 +33,7 @@ type Handler struct {
 	v2Ingest     *ingestv2.Handler
 	metrics      *metrics.Metrics
 	maxBodyBytes int64
+	deploys      *DeployTracker
 }
 
 // ExportError is returned when decoded OTLP spans cannot be processed after
@@ -58,12 +59,14 @@ func (e *ExportError) Unwrap() error {
 	return e.Cause
 }
 
-// NewHandler constructs an OTLP traces handler.
-func NewHandler(v2Ingest *ingestv2.Handler, m *metrics.Metrics, maxBodyBytes int64) *Handler {
+// NewHandler constructs an OTLP traces handler. deploys may be nil to
+// disable deploy auto-registration (no cold store configured).
+func NewHandler(v2Ingest *ingestv2.Handler, m *metrics.Metrics, maxBodyBytes int64, deploys *DeployTracker) *Handler {
 	return &Handler{
 		v2Ingest:     v2Ingest,
 		metrics:      m,
 		maxBodyBytes: maxBodyBytes,
+		deploys:      deploys,
 	}
 }
 
@@ -213,6 +216,7 @@ func (h *Handler) Export(ctx context.Context, req *coltracepb.ExportTraceService
 		if h.metrics != nil && len(env.Rejected) > 0 {
 			h.metrics.OTLPValidationRejects.Add(float64(len(env.Rejected)))
 		}
+		h.deploys.Observe(ctx, convResult.Events)
 	}
 
 	resp := &coltracepb.ExportTraceServiceResponse{}

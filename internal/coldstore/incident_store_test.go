@@ -84,6 +84,44 @@ func TestIncidentStoreRoundtripAndPrune(t *testing.T) {
 	}
 }
 
+func TestPruneResolvedNeverTouchesActiveOrRecovering(t *testing.T) {
+	ctx := context.Background()
+	managed, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer managed.Close()
+	store := NewIncidentStore(managed.(*SQLiteStore))
+	old := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	for _, inc := range []incidents.Incident{
+		testColdIncident("inc_active", incidents.StatusActive, old),
+		testColdIncident("inc_recovering", incidents.StatusRecovering, old),
+		testColdIncident("inc_resolved", incidents.StatusResolved, old),
+	} {
+		if err := store.Upsert(ctx, inc); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Cutoff far in the future: everything resolved is eligible.
+	deleted, err := store.PruneResolvedOlderThan(ctx, old.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted=%d, want only the resolved row", deleted)
+	}
+	for _, id := range []string{"inc_active", "inc_recovering"} {
+		if _, err := store.Get(ctx, id); err != nil {
+			t.Fatalf("%s must survive pruning: %v", id, err)
+		}
+	}
+	if _, err := store.Get(ctx, "inc_resolved"); !errors.Is(err, incidents.ErrNotFound) {
+		t.Fatalf("resolved row must be pruned, got %v", err)
+	}
+}
+
 func TestIncidentStoreReplaceNonResolved(t *testing.T) {
 	ctx := context.Background()
 	managed, err := Open(":memory:")

@@ -257,7 +257,8 @@ func TestRebuildOrchestratorUsesRebuildApply(t *testing.T) {
 
 type fakeReader struct {
 	current     ErrorsResult
-	base        ErrorsResult
+	base        ErrorsResult   // default for every baseline window
+	baseSeq     []ErrorsResult // optional per-window baselines, newest prior window first
 	blast       apiv2.BlastRadiusResponse
 	events      []*eventv2.Event
 	calls       int
@@ -267,10 +268,16 @@ type fakeReader struct {
 	traceEvtsOK bool
 }
 
+// Errors mirrors derive's query order: one current-window call followed by
+// three baseline-window calls (newest prior window first), repeating per tick.
 func (r *fakeReader) Errors(_ SearchFilter, _ int) ErrorsResult {
+	pos := r.calls % 4
 	r.calls++
-	if r.calls%2 == 1 {
+	if pos == 0 {
 		return r.current
+	}
+	if len(r.baseSeq) >= pos {
+		return r.baseSeq[pos-1]
 	}
 	return r.base
 }
@@ -291,6 +298,73 @@ func (r *fakeReader) TraceStoryByTraceID(_ string) (apiv2.StoryResponse, bool) {
 
 func (r *fakeReader) TraceEvents(_ string) ([]*eventv2.Event, bool) {
 	return r.traceEvts, r.traceEvtsOK
+}
+
+func spikeReader(currentCount int, baselineCounts [3]int) *fakeReader {
+	row := func(n int) ErrorsResult {
+		if n == 0 {
+			return ErrorsResult{}
+		}
+		return ErrorsResult{Rows: []apiv2.ErrorRow{{
+			ErrorFamily: testFamily(), Count: n, AffectedTraces: n, SampleTraces: []string{"trace-a"},
+		}}}
+	}
+	return &fakeReader{
+		current: row(currentCount),
+		baseSeq: []ErrorsResult{row(baselineCounts[0]), row(baselineCounts[1]), row(baselineCounts[2])},
+		blast:   apiv2.BlastRadiusResponse{AffectedRequests: currentCount, AffectedServices: 1},
+	}
+}
+
+func activeAfterTick(t *testing.T, reader *fakeReader, cfg Config) []Incident {
+	t.Helper()
+	engine := NewEngine(reader, nil, nil, NewMemoryStore(), cfg, nil, nil)
+	engine.now = func() time.Time { return time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC) }
+	if err := engine.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := engine.Active(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+func TestBaselineMedianResistsOneSpikyPriorWindow(t *testing.T) {
+	// One anomalous prior window (12) must not suppress a real spike: the
+	// median of [12, 0, 0] is 0, so the family is treated as a fresh spike.
+	rows := activeAfterTick(t, spikeReader(12, [3]int{12, 0, 0}), Config{MinCount: 5, MinLift: 3, SampleLimit: 2})
+	if len(rows) != 1 {
+		t.Fatalf("spiky baseline window suppressed a real incident: %+v", rows)
+	}
+	if rows[0].BaselineCount != 0 {
+		t.Fatalf("baseline must be the median (0), got %d", rows[0].BaselineCount)
+	}
+}
+
+func TestBaselineMedianSuppressesSteadyNoise(t *testing.T) {
+	// A steadily failing family (~10/window) with current 12 has lift 1.2 < 3:
+	// no incident.
+	rows := activeAfterTick(t, spikeReader(12, [3]int{10, 9, 11}), Config{MinCount: 5, MinLift: 3, SampleLimit: 2})
+	if len(rows) != 0 {
+		t.Fatalf("steady error noise must not open an incident: %+v", rows)
+	}
+}
+
+func TestMinRateGuardSuppressesLowTraffic(t *testing.T) {
+	// 6 failures in a 10m window = 0.6/min. With MIN_RATE=1 the family must
+	// not open; with the guard disabled (0) it must.
+	cfg := Config{MinCount: 5, MinLift: 3, SampleLimit: 2, Window: 10 * time.Minute, MinRate: 1}
+	if rows := activeAfterTick(t, spikeReader(6, [3]int{0, 0, 0}), cfg); len(rows) != 0 {
+		t.Fatalf("min-rate guard must suppress low-traffic family: %+v", rows)
+	}
+	cfg.MinRate = 0
+	if rows := activeAfterTick(t, spikeReader(6, [3]int{0, 0, 0}), cfg); len(rows) != 1 {
+		t.Fatalf("disabled min-rate guard must preserve current behavior: %+v", rows)
+	}
 }
 
 type fakeSignalStore struct {

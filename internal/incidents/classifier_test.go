@@ -235,6 +235,122 @@ func TestClassifierRuntime(t *testing.T) {
 	})
 }
 
+func TestClassifierTemporalTiebreak(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	base := Incident{Service: "checkout", Env: "prod", StartedAt: now, ErrorFamily: testFamily()}
+	paymentEvent := testIncidentEvent("e1", "trace-a", now, "checkout", "payment.charge", "PMT_502", "payment")
+	depSig := func(ts time.Time) signals.Signal {
+		return signals.Signal{
+			SignalID: "sig_dep", Type: signals.TypeDependency, Service: "payment", Env: "prod",
+			Reason: "upstream_5xx", Severity: signals.SeverityCritical, Timestamp: ts,
+		}
+	}
+	deployAt := func(ts time.Time) Deployment {
+		return Deployment{ID: "dep_1", Service: "checkout", Version: "v1", Env: "prod", FirstSeen: ts}
+	}
+	hasEvidence := func(got Classification, match func(Evidence) bool) bool {
+		for _, ev := range got.Evidence {
+			if match(ev) {
+				return true
+			}
+		}
+		return false
+	}
+	hasCheck := func(got Classification, substr string) bool {
+		for _, line := range got.NextChecks {
+			if strings.Contains(line, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("deploy closer to onset wins over dependency signal", func(t *testing.T) {
+		got := Classify(ClassificationInput{
+			Incident:    base,
+			Events:      []*eventv2.Event{paymentEvent},
+			Signals:     []signals.Signal{depSig(now.Add(-10 * time.Minute))},
+			Deployments: []Deployment{deployAt(now.Add(-time.Minute))},
+		})
+		if got.Cause != CauseDeploy || got.Confidence != ConfidenceHigh {
+			t.Fatalf("classification=%+v", got)
+		}
+		if !hasEvidence(got, func(ev Evidence) bool { return ev.DeployID == "dep_1" }) {
+			t.Fatalf("deployment evidence missing: %+v", got.Evidence)
+		}
+		if !hasEvidence(got, func(ev Evidence) bool { return ev.SignalID == "sig_dep" }) {
+			t.Fatalf("losing dependency-signal evidence must still attach: %+v", got.Evidence)
+		}
+		if !hasCheck(got, "Also verify downstream `payment`") {
+			t.Fatalf("next checks must cross-reference the losing dependency cause: %v", got.NextChecks)
+		}
+	})
+
+	t.Run("dependency signal closer to onset wins over deploy", func(t *testing.T) {
+		got := Classify(ClassificationInput{
+			Incident:    base,
+			Events:      []*eventv2.Event{paymentEvent},
+			Signals:     []signals.Signal{depSig(now.Add(-time.Minute))},
+			Deployments: []Deployment{deployAt(now.Add(-10 * time.Minute))},
+		})
+		if got.Cause != CauseDependency || got.Confidence != ConfidenceHigh {
+			t.Fatalf("classification=%+v", got)
+		}
+		if !hasEvidence(got, func(ev Evidence) bool { return ev.DeployID == "dep_1" }) {
+			t.Fatalf("losing deployment evidence must still attach: %+v", got.Evidence)
+		}
+		if !hasCheck(got, "Also verify recent deploy `v1`") {
+			t.Fatalf("next checks must cross-reference the losing deploy cause: %v", got.NextChecks)
+		}
+	})
+
+	t.Run("equal distance keeps dependency priority", func(t *testing.T) {
+		got := Classify(ClassificationInput{
+			Incident:    base,
+			Events:      []*eventv2.Event{paymentEvent},
+			Signals:     []signals.Signal{depSig(now.Add(-time.Minute))},
+			Deployments: []Deployment{deployAt(now.Add(-time.Minute))},
+		})
+		if got.Cause != CauseDependency || got.Confidence != ConfidenceHigh {
+			t.Fatalf("classification=%+v", got)
+		}
+	})
+
+	t.Run("deploy after onset does not beat a dependency signal before onset", func(t *testing.T) {
+		// A routine/rollback deploy that lands during the incident must not be
+		// blamed over a dependency signal that preceded onset, even though the
+		// deploy's absolute distance to onset is smaller.
+		got := Classify(ClassificationInput{
+			Incident:    base,
+			Events:      []*eventv2.Event{paymentEvent},
+			Signals:     []signals.Signal{depSig(now.Add(-time.Minute))},
+			Deployments: []Deployment{deployAt(now.Add(30 * time.Second))},
+		})
+		if got.Cause != CauseDependency || got.Confidence != ConfidenceHigh {
+			t.Fatalf("post-onset deploy must not win over a pre-onset dependency signal: %+v", got)
+		}
+	})
+
+	t.Run("deploy beats trace-only downstream inference", func(t *testing.T) {
+		got := Classify(ClassificationInput{
+			Incident:    base,
+			Events:      []*eventv2.Event{paymentEvent},
+			Deployments: []Deployment{deployAt(now.Add(-time.Minute))},
+		})
+		if got.Cause != CauseDeploy || got.Confidence != ConfidenceHigh {
+			t.Fatalf("trace-only downstream must not beat a correlated deploy: %+v", got)
+		}
+		if !hasEvidence(got, func(ev Evidence) bool {
+			return ev.Kind == EvidenceTrace && strings.Contains(ev.Title, "First failing step calls `payment`")
+		}) {
+			t.Fatalf("downstream trace evidence must still attach: %+v", got.Evidence)
+		}
+		if !hasCheck(got, "Also verify downstream `payment`") {
+			t.Fatalf("next checks must cross-reference the downstream: %v", got.NextChecks)
+		}
+	})
+}
+
 func TestUnrelatedDependencySignalDoesNotAttachToLeafIncident(t *testing.T) {
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
 	base := Incident{Service: "db", Env: "prod", StartedAt: now, ErrorFamily: testFamily()}

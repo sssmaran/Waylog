@@ -413,6 +413,9 @@ func TestEventsWALFailureReturnsPlain503(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "durability unavailable") {
 		t.Fatalf("body=%q", rec.Body.String())
 	}
+	if rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("503 must signal backpressure with Retry-After: 1, got %q", rec.Header().Get("Retry-After"))
+	}
 	fm := gatherMap(t, reg)
 	if got := counterWithLabel(fm["waylog_events_rejected_total"], "reason", ReasonDurabilityUnavailable); got != 1 {
 		t.Fatalf("durability_unavailable=%v want 1", got)

@@ -144,6 +144,8 @@ func main() {
 
 Middleware adapters for `net/http`, chi, gin, and echo are in [`docs/sdk-examples.md`](docs/sdk-examples.md). The recommended path is framework middleware plus `waylog.From(ctx)` / `useLogger(...)` inside handlers — low-level `Begin` / `Finalize` / `setField` APIs are for adapter authors.
 
+The Go and TypeScript SDKs are kept in parity — wire format, config, signals, and public API. The audited matrix (and the documented idiomatic gaps) is in [`docs/sdk-parity.md`](docs/sdk-parity.md).
+
 ### OTLP / OpenTelemetry
 
 Point your existing OTel collector at Waylog. Both protocols, same conversion path, same downstream views.
@@ -161,6 +163,8 @@ exporters:
 ```
 
 Sample collector config: [`examples/otel-collector/`](examples/otel-collector/). Only traces are accepted; OTLP logs and metrics are not shipping. Bind `OTLP_GRPC_ADDR=127.0.0.1:4317` for single-host installs that don't need cross-host collectors.
+
+**Deploy correlation works OTel-only.** When spans carry `service.version` and the version changes for a `(service, env)` pair, Waylog auto-registers a deployment — no deploy webhook needed for incidents to classify `cause=deploy`.
 
 **Auth.** Both endpoints require `WAYLOG_WRITE_KEY` when `WAYLOG_PROFILE=prod`; the server refuses to boot with unauthenticated OTLP in prod. `make demo` runs unauthenticated by design.
 
@@ -291,10 +295,10 @@ curl -X POST http://localhost:8080/v1/alerts \
 - **Single binary** plus embedded SQLite. No Docker, no Kafka, no bridge.
 - **WAL is source of truth.** Crash → replay on next boot rebuilds the v2 reader's hot index.
 - **v2 reader is the only hot path.** Pruned every tick to enforce `GRAPH_HOT_WINDOW` (default 24h).
-- **`report_hash` excludes `generated_at`, `plan_run_id`, and itself.** Same upstream state → same bytes across every surface.
+- **`report_hash` excludes `generated_at`, `plan_run_id`, and itself.** Same upstream state → same bytes across every surface. **`evidence_fingerprint`** complements it: stable across ticks until the incident's evidence set changes, so operators and agents can cite a triage answer durably.
 - **OTLP path reuses the same WAL and projector** as the SDK path. No separate ingestion plane.
 
-Durability model, retention, merge semantics, readiness policy, and counter buffer details: [`docs/internals.md`](docs/internals.md). Full HTTP contract: [`docs/openapi.yaml`](docs/openapi.yaml).
+Durability model, retention, merge semantics, readiness policy, and counter buffer details: [`docs/internals.md`](docs/internals.md). Scale ceiling and how to tune within it: [`docs/scale-and-limits.md`](docs/scale-and-limits.md). Full HTTP contract: [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ---
 
@@ -398,7 +402,6 @@ Public alpha for single-node production-style incident triage. APIs may break be
 
 - OTLP logs and metrics
 - Python SDK
-- Resolved-incident retention janitor
 - Mintlify docs site
 
 ---
@@ -406,15 +409,11 @@ Public alpha for single-node production-style incident triage. APIs may break be
 ## Known limitations
 
 - **Public alpha.** APIs may break before 1.0. Not production-ready. Not HA.
-- **Triage report hash is stable per tick, not forever.** Hash changes when the underlying recent-index window changes (≈30 s default). Use as a short-window dedup key, not a long-term incident fingerprint.
+- **Triage report hash is stable per tick, not forever.** `report_hash` changes when the underlying recent-index window changes (≈30 s default) — use it as a short-window dedup key proving all four surfaces returned the same bytes. For citations that survive across ticks, use `evidence_fingerprint`: it hashes only the evidence identity set (incident + signal + alert + runtime + trace IDs) and changes exactly when evidence is attached (see `docs/adr/0002-evidence-fingerprint.md`).
 - **Alerts correlate; they do not create incidents.** Incidents are opened by the spike detector. The alert path is for routing context, not paging primitives.
-- **Resolved incidents are not pruned automatically.** Per the v2.1 plan, the retention janitor is deferred. Manual cleanup:
-  ```sql
-  DELETE FROM incidents WHERE status = 'resolved' AND resolved_at < datetime('now', '-7 days');
-  ```
 - **Stale `active` rows after long downtime.** If the WAL has rolled past an incident's `started_at` and `WAYLOG_REBUILD_INCIDENTS_ON_START=true`, the engine transitions only the stale rows to `recovering` on next start; they resolve after `WAYLOG_INCIDENT_RESOLVE_AFTER` without new evidence.
 - **Single-node only.** No HA, no clustering, no multi-tenant.
-- **SQLite cold store** fits demos and small deployments. Postgres is not shipping.
+- **SQLite cold store** fits demos and small deployments — see [Scale & limits](docs/scale-and-limits.md) for the ceiling and how to tune within it. Postgres is not shipping.
 - **OTLP supports traces only.** Logs and metrics are not shipping yet.
 - **Only Go and TypeScript SDKs today.** Python / Java / Ruby are not available.
 - **No outbound paging.** Waylog accepts external alerts and renders operator reports; it does not page.

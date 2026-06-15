@@ -21,6 +21,7 @@ type Config struct {
 	Window                  time.Duration
 	MinCount                int
 	MinLift                 float64
+	MinRate                 float64 // errors/minute low-traffic guard; 0 disables
 	ResolveAfter            time.Duration
 	DeployCorrelationWindow time.Duration
 	SampleLimit             int
@@ -150,13 +151,22 @@ type derivedRow struct {
 // touching e.active or the store. Used by both live Tick and startup Rebuild.
 func (e *Engine) derive(ctx context.Context, now time.Time, seed map[string]Incident, reader Reader) ([]derivedRow, error) {
 	currentStart := now.Add(-e.cfg.Window)
-	baselineStart := now.Add(-2 * e.cfg.Window)
 	statuses := failedStatuses()
 	current := reader.Errors(SearchFilter{Since: currentStart, Until: now, Statuses: statuses}, 200)
-	baseline := reader.Errors(SearchFilter{Since: baselineStart, Until: currentStart, Statuses: statuses}, 200)
-	baselineByFamily := map[string]int{}
-	for _, row := range baseline.Rows {
-		baselineByFamily[familyKey(row.ErrorFamily)] = row.Count
+	// Baseline = per-family median of the 3 prior windows (newest first); a
+	// family absent from a window counts 0. One anomalous prior window can
+	// neither suppress a spike nor fabricate lift (docs/internals.md).
+	baselineByFamily := map[string][3]int{}
+	for i := 0; i < 3; i++ {
+		until := now.Add(-time.Duration(i+1) * e.cfg.Window)
+		since := now.Add(-time.Duration(i+2) * e.cfg.Window)
+		res := reader.Errors(SearchFilter{Since: since, Until: until, Statuses: statuses}, 200)
+		for _, row := range res.Rows {
+			key := familyKey(row.ErrorFamily)
+			counts := baselineByFamily[key]
+			counts[i] = row.Count
+			baselineByFamily[key] = counts
+		}
 	}
 
 	seen := map[string]struct{}{}
@@ -165,7 +175,10 @@ func (e *Engine) derive(ctx context.Context, now time.Time, seed map[string]Inci
 		if row.Count < e.cfg.MinCount {
 			continue
 		}
-		baselineCount := baselineByFamily[familyKey(row.ErrorFamily)]
+		if e.cfg.MinRate > 0 && float64(row.Count) < e.cfg.MinRate*e.cfg.Window.Minutes() {
+			continue
+		}
+		baselineCount := median3(baselineByFamily[familyKey(row.ErrorFamily)])
 		lift := computeLift(row.Count, baselineCount)
 		if baselineCount > 0 && lift < e.cfg.MinLift {
 			continue
@@ -551,6 +564,12 @@ func computeLift(current, baseline int) float64 {
 		return float64(current)
 	}
 	return float64(current) / float64(baseline)
+}
+
+func median3(c [3]int) int {
+	s := []int{c[0], c[1], c[2]}
+	sort.Ints(s)
+	return s[1]
 }
 
 func severity(count, services int, lift float64) int {

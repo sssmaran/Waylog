@@ -83,6 +83,9 @@ func deployChecks(ctx NextCheckContext) []string {
 	if ctx.SampleTraceID != "" && service != "" {
 		out = append(out, fmt.Sprintf("Inspect sampled trace `%s` on %s for the deployed-version marker.", shortRef(ctx.SampleTraceID), service))
 	}
+	if ctx.Downstream != "" {
+		out = append(out, fmt.Sprintf("Also verify downstream %s — it was implicated in the same window.", backtick(ctx.Downstream, "")))
+	}
 	return out
 }
 
@@ -102,6 +105,13 @@ func dependencyChecks(ctx NextCheckContext) []string {
 	if ctx.DepSignalID != "" && ctx.DepSignalReason != "" && downstream != "" {
 		out = append(out, fmt.Sprintf("Review dependency signal `%s`: `%s` on %s.",
 			shortRef(ctx.DepSignalID), ctx.DepSignalReason, downstream))
+	}
+	if ctx.DeployVersion != "" {
+		line := fmt.Sprintf("Also verify recent deploy %s", backtick(ctx.DeployVersion, ""))
+		if ctx.Service != "" {
+			line += fmt.Sprintf(" on %s", backtick(ctx.Service, ""))
+		}
+		out = append(out, line+".")
 	}
 	if ctx.AlertSignalID != "" {
 		out = append(out, alertCheckLine(ctx))

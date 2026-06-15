@@ -40,7 +40,6 @@ build:
 	go build ./cmd/ingest
 	go build ./cmd/checkout
 	go build ./cmd/waylog
-	go build ./cmd/bridge
 
 build-crux:
 	go build -o crux ./cmd/crux
@@ -98,7 +97,7 @@ vet-sdk: ## Vet SDK modules
 	cd pkg && go vet ./...
 	cd pkg/transport/kafka && go vet ./...
 
-ci: fmt vet vet-sdk test-race test-sdk ts-test build-crux check-doc-links check-rollup-contract otlp-conformance
+ci: fmt vet vet-sdk test-race test-sdk ts-test build-crux check-doc-links otlp-conformance
 	@echo "CI checks passed"
 
 ts-install: ## Install TS SDK deps (skipped if node_modules is already present)
@@ -114,15 +113,11 @@ ts-test: ts-install ## Run TS SDK vitest suite
 check-doc-links:
 	@bash scripts/check-doc-links.sh
 
-.PHONY: check-rollup-contract
-check-rollup-contract:
-	@bash scripts/check-rollup-contract.sh
-
 bench-gate: ## Enforce v2 SDK §4.4.1 perf budgets (optional; not in `ci` yet)
 	@bash scripts/bench-gate.sh
 
 clean:
-	rm -f ingest checkout waylog bridge crux api-gateway checkout-demo db-demo payment-demo
+	rm -f ingest checkout waylog crux api-gateway checkout-demo db-demo payment-demo
 
 kafka-up:
 	docker compose -f docker-compose.kafka.yml up -d

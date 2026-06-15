@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/checkout"
-	"github.com/sssmaran/WaylogCLI/internal/config"
 	waylog "github.com/sssmaran/WaylogCLI/pkg"
 	wayloghttp "github.com/sssmaran/WaylogCLI/pkg/http"
-	kafkatransport "github.com/sssmaran/WaylogCLI/pkg/transport/kafka"
 )
 
 type coded interface {
@@ -35,18 +33,6 @@ func main() {
 			}
 			return ""
 		},
-	}
-
-	if brokers := config.SplitEnvList("KAFKA_BROKERS"); len(brokers) > 0 {
-		kt, err := kafkatransport.New(kafkatransport.Config{
-			Brokers: brokers,
-			Topic:   config.Getenv("KAFKA_TOPIC", "wide_events"),
-		})
-		if err != nil {
-			slog.Error("kafka transport init failed", "err", err)
-			os.Exit(1)
-		}
-		cfg.Transport = kt
 	}
 
 	err := waylog.Init(cfg)
