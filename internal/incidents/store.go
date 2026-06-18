@@ -115,5 +115,117 @@ func cloneIncident(in Incident) Incident {
 		v := *in.ResolvedAt
 		out.ResolvedAt = &v
 	}
+	out.Propagation = clonePropagationSnapshot(in.Propagation)
+	out.Blast = cloneBlastSnapshot(in.Blast)
+	out.Alerts = cloneAlertSnapshot(in.Alerts)
+	out.Runtime = cloneRuntimeSnapshot(in.Runtime)
+	return out
+}
+
+func clonePropagationEvidence(p *PropagationEvidence) *PropagationEvidence {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	if p.Path != nil {
+		out.Path = append([]PropagationStep(nil), p.Path...)
+	}
+	if p.FirstSeenAt != nil {
+		t := *p.FirstSeenAt
+		out.FirstSeenAt = &t
+	}
+	return &out
+}
+
+func clonePropagationSnapshot(s *PropagationSnapshot) *PropagationSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &PropagationSnapshot{
+		Opening: clonePropagationEvidence(s.Opening),
+		Latest:  clonePropagationEvidence(s.Latest),
+	}
+}
+
+func cloneBlastEvidence(b *BlastEvidence) *BlastEvidence {
+	if b == nil {
+		return nil
+	}
+	out := *b
+	if b.AffectedUsers != nil {
+		u := *b.AffectedUsers
+		out.AffectedUsers = &u
+	}
+	if b.TopServices != nil {
+		out.TopServices = append([]string(nil), b.TopServices...)
+	}
+	if b.SampledTraces != nil {
+		out.SampledTraces = append([]string(nil), b.SampledTraces...)
+	}
+	return &out
+}
+
+func cloneBlastSnapshot(s *BlastSnapshot) *BlastSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &BlastSnapshot{
+		Opening: cloneBlastEvidence(s.Opening),
+		Latest:  cloneBlastEvidence(s.Latest),
+	}
+}
+
+func cloneAlertEvidence(a *AlertEvidence) *AlertEvidence {
+	if a == nil {
+		return nil
+	}
+	out := *a
+	if a.Matches != nil {
+		out.Matches = append([]MatchedAlert(nil), a.Matches...)
+		for i := range out.Matches {
+			out.Matches[i].EvidenceIDs = append([]string(nil), a.Matches[i].EvidenceIDs...)
+		}
+	}
+	return &out
+}
+
+func cloneAlertSnapshot(s *AlertSnapshot) *AlertSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &AlertSnapshot{
+		Opening: cloneAlertEvidence(s.Opening),
+		Latest:  cloneAlertEvidence(s.Latest),
+	}
+}
+
+func cloneRuntimeEvidence(r *RuntimeEvidence) *RuntimeEvidence {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	if r.Metadata != nil {
+		out.Metadata = make(map[string]any, len(r.Metadata))
+		for k, v := range r.Metadata {
+			out.Metadata[k] = v
+		}
+	}
+	return &out
+}
+
+func cloneRuntimeSnapshot(s *RuntimeSnapshot) *RuntimeSnapshot {
+	if s == nil {
+		return nil
+	}
+	out := &RuntimeSnapshot{
+		Opening: cloneRuntimeEvidence(s.Opening),
+		Latest:  cloneRuntimeEvidence(s.Latest),
+	}
+	if s.Matches != nil {
+		out.Matches = make([]RuntimeEvidence, len(s.Matches))
+		for i := range s.Matches {
+			out.Matches[i] = *cloneRuntimeEvidence(&s.Matches[i])
+		}
+	}
 	return out
 }

@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 type Confidence string
@@ -24,11 +26,17 @@ type Report struct {
 	SampleTraces  []TraceSample   `json:"sample_traces,omitempty"`
 	Signals       []SignalRef     `json:"signals,omitempty"`
 	Alerts        []AlertRef      `json:"alerts,omitempty"`
+	Runtime       []RuntimeRef    `json:"runtime,omitempty"`
 	NextChecks    []NextCheck     `json:"next_checks,omitempty"`
 	Confidence    Confidence      `json:"confidence"`
 	GeneratedAt   string          `json:"generated_at"`
 	PlanRunID     string          `json:"plan_run_id,omitempty"`
 	ReportHash    string          `json:"report_hash"`
+	// EvidenceFingerprint identifies the evidence set grounding this report;
+	// unlike ReportHash it is stable across engine ticks until evidence is
+	// attached or removed (ADR 0002). omitempty keeps pre-fingerprint
+	// report_hash values unchanged.
+	EvidenceFingerprint string `json:"evidence_fingerprint,omitempty"`
 }
 
 type IncidentRef struct {
@@ -71,6 +79,20 @@ type AlertRef struct {
 	EvidenceIDs []string `json:"evidence_ids"`
 }
 
+// RuntimeRef is a runtime evidence row in the report — infra (k8s OOMKill,
+// crashloop) or app (panic, unhandled rejection). It deliberately omits the
+// capture timestamp: only stable signal fields participate in report_hash so
+// the hash does not churn as fresh captures update CapturedAt.
+type RuntimeRef struct {
+	SignalID   string `json:"signal_id"`
+	Subtype    string `json:"subtype"`
+	Service    string `json:"service"`
+	Source     string `json:"source"`
+	Severity   string `json:"severity"`
+	Reason     string `json:"reason"`
+	OccurredAt string `json:"occurred_at"`
+}
+
 type NextCheck struct {
 	ID     string `json:"id"`
 	Prompt string `json:"prompt"`
@@ -104,10 +126,46 @@ func (r *Report) CanonicalHash() (string, error) {
 	clone.GeneratedAt = ""
 	clone.PlanRunID = ""
 	clone.ReportHash = ""
+	clone.EvidenceFingerprint = ""
 	raw, err := json.Marshal(&clone)
 	if err != nil {
 		return "", fmt.Errorf("triage: canonical marshal: %w", err)
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// CanonicalEvidenceFingerprint returns sha256:<hex> over the report's
+// evidence identity set: sorted, deduplicated kind:id tuples for the
+// incident, signals, alerts, runtime events, and sample traces. Volatile
+// fields (counts, confidence, next checks, payloads, timestamps) are
+// excluded by construction, so the fingerprint is stable across engine
+// ticks until evidence is attached or removed (ADR 0002).
+func (r *Report) CanonicalEvidenceFingerprint() string {
+	set := map[string]struct{}{}
+	add := func(kind, id string) {
+		if id != "" {
+			set[kind+":"+id] = struct{}{}
+		}
+	}
+	add("incident", r.IncidentRef.ID)
+	for _, s := range r.Signals {
+		add("signal", s.ID)
+	}
+	for _, a := range r.Alerts {
+		add("alert", a.SignalID)
+	}
+	for _, rt := range r.Runtime {
+		add("runtime", rt.SignalID)
+	}
+	for _, t := range r.SampleTraces {
+		add("trace", t.TraceID)
+	}
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	sum := sha256.Sum256([]byte(strings.Join(keys, "\n")))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }

@@ -63,6 +63,22 @@ func (p *DemoSignalPoster) PostDemoSignals(ctx context.Context) []SignalResult {
 			Resource: map[string]any{"service": "payment", "endpoint": "POST /charge"},
 			Metadata: map[string]any{"error_code": "PMT_502", "downstream": "payment", "demo": "traffic_burst"},
 		},
+		{
+			// Infra runtime evidence. Targets checkout — the service the burst
+			// incident opens on (checkout:payment.charge:PMT_502) — so it
+			// correlates onto the same incident that already carries the alert,
+			// dependency, propagation and blast evidence (Critical Design
+			// Decision 3: runtime signals match by inc.Service). Source k8s-demo
+			// marks it as infrastructure-runtime in the dashboard.
+			Type:     "runtime",
+			Service:  "checkout",
+			Severity: "critical",
+			Reason:   "OOMKilled",
+			Message:  "Container checkout killed by OOM (limit: 256Mi, usage: 312Mi).",
+			Source:   "k8s-demo",
+			Resource: map[string]any{"service": "checkout", "container": "checkout"},
+			Metadata: map[string]any{"subtype": "oom_killed", "pod": "checkout-7f8b9c-x2k", "container": "checkout", "demo": "traffic_burst"},
+		},
 	}
 
 	results := make([]SignalResult, 0, len(specs))
@@ -133,14 +149,19 @@ type demoSignalSpec struct {
 	Severity string
 	Reason   string
 	Message  string
+	Source   string // signal source; defaults to "waylog-demo" when empty
 	Resource map[string]any
 	Metadata map[string]any
 }
 
 func (s demoSignalSpec) body(ts time.Time) map[string]any {
+	source := s.Source
+	if source == "" {
+		source = "waylog-demo"
+	}
 	return map[string]any{
 		"type":      s.Type,
-		"source":    "waylog-demo",
+		"source":    source,
 		"service":   s.Service,
 		"env":       "demo",
 		"severity":  s.Severity,

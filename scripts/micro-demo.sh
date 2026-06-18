@@ -4,7 +4,7 @@ set -euo pipefail
 GOCACHE_DIR="${GOCACHE:-/tmp/go-build}"
 export GOCACHE="$GOCACHE_DIR"
 
-# v2 demo path: Kafka and cmd/bridge are intentionally unused here.
+# v2 demo path: no Kafka or bridge process — HTTP/OTLP ingest only.
 unset KAFKA_BROKERS
 
 export INGEST_ADDR="${INGEST_ADDR:-:8080}"
@@ -12,7 +12,6 @@ export INGEST_URL="${INGEST_URL:-http://localhost:8080}"
 export WAYLOG_WRITE_KEY="${WAYLOG_WRITE_KEY:-demo}"
 export WAYLOG_READ_KEY="${WAYLOG_READ_KEY:-demo}"
 export DASHBOARD_AUTH="${DASHBOARD_AUTH:-key:demo}"
-export WAYLOG_V2_READS="${WAYLOG_V2_READS:-true}"
 export EVENT_LOG_V2_DIR="${EVENT_LOG_V2_DIR:-./data/eventlog-v2-demo}"
 
 pids=()

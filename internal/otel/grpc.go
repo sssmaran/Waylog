@@ -25,9 +25,9 @@ type TraceServiceServer struct {
 	metrics *metrics.Metrics
 }
 
-func NewTraceServiceServer(v2Ingest *ingestv2.Handler, m *metrics.Metrics, maxBodyBytes int64) *TraceServiceServer {
+func NewTraceServiceServer(v2Ingest *ingestv2.Handler, m *metrics.Metrics, maxBodyBytes int64, deploys *DeployTracker) *TraceServiceServer {
 	return &TraceServiceServer{
-		handler: NewHandler(v2Ingest, m, maxBodyBytes),
+		handler: NewHandler(v2Ingest, m, maxBodyBytes, deploys),
 		metrics: m,
 	}
 }

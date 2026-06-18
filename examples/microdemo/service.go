@@ -15,12 +15,13 @@ import (
 
 func InitService(service string) error {
 	return waylogv2.Init(waylogv2.Config{
-		Service:   service,
-		Env:       "demo",
-		Version:   "0.1.0",
-		IngestURL: config.Getenv("INGEST_URL", "http://localhost:8080"),
-		APIKey:    config.Getenv("WAYLOG_WRITE_KEY", ""),
-		DevMode:   config.GetenvBool("WAYLOG_DEV", false),
+		Service:            service,
+		Env:                "demo",
+		Version:            "0.1.0",
+		IngestURL:          config.Getenv("INGEST_URL", "http://localhost:8080"),
+		APIKey:             config.Getenv("WAYLOG_WRITE_KEY", ""),
+		DevMode:            config.GetenvBool("WAYLOG_DEV", false),
+		EnableRuntimeHooks: config.GetenvBool("WAYLOG_ENABLE_RUNTIME_HOOKS", true),
 	})
 }
 

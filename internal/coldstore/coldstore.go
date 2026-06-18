@@ -4,11 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 
 	_ "modernc.org/sqlite"
@@ -26,7 +27,6 @@ var migrationsFS embed.FS
 type Store interface {
 	EventSearcher
 	DeploymentStore
-	CausalStore
 }
 
 // ManagedStore adds lifecycle methods to Store.
@@ -52,12 +52,6 @@ type DeploymentStore interface {
 	DeploymentByID(ctx context.Context, id string) (*Deployment, error)
 	DeploymentsInWindow(ctx context.Context, start, end time.Time, serviceFilter string) ([]Deployment, error)
 	ServiceErrorRateInWindow(ctx context.Context, svc string, from, to time.Time) (ServiceErrorRate, error)
-}
-
-// CausalStore persists and queries causal inference claims.
-type CausalStore interface {
-	SaveClaims(ctx context.Context, claims []causal.Claim) error
-	ActiveClaims(ctx context.Context, q causal.ClaimQuery) ([]causal.Claim, error)
 }
 
 // SQLiteStore wraps a SQLite database for cold storage of events and deployments.
@@ -115,20 +109,83 @@ func Open(path string) (ManagedStore, error) {
 	return s, nil
 }
 
-// Migrate runs all embedded SQL migration files idempotently.
+// MigrationNames returns the embedded migration file names, sorted ascending.
+// It reads the same embedded FS that Migrate applies, so callers (e.g. doctor)
+// can compare applied-vs-expected without opening the database.
+func MigrationNames() ([]string, error) {
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return nil, fmt.Errorf("coldstore: read migrations dir: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// Migrate runs all embedded SQL migration files idempotently. Applied
+// migrations are tracked in the schema_migrations table; files already
+// recorded there are skipped on subsequent calls. This lets non-idempotent
+// statements (e.g. ALTER TABLE ADD COLUMN) live in a migration file and
+// still satisfy the Migrate-twice contract.
 func (s *SQLiteStore) Migrate() error {
+	if _, err := s.writer.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		name       TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("read migrations dir: %w", err)
 	}
 	for _, entry := range entries {
+		var applied string
+		err := s.writer.QueryRow(`SELECT applied_at FROM schema_migrations WHERE name = ?`, entry.Name()).Scan(&applied)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("check migration %s: %w", entry.Name(), err)
+		}
 		data, err := migrationsFS.ReadFile("migrations/" + entry.Name())
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
 		}
-		if _, err := s.writer.Exec(string(data)); err != nil {
-			return fmt.Errorf("exec migration %s: %w", entry.Name(), err)
+		if err := s.applyMigration(entry.Name(), data); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// applyMigration runs one migration file and records it in schema_migrations
+// inside a single transaction. If either statement fails, the entire change
+// is rolled back so a non-idempotent migration (e.g. ALTER TABLE ADD COLUMN)
+// is never left half-applied across a crash or partial failure.
+func (s *SQLiteStore) applyMigration(name string, data []byte) (err error) {
+	tx, err := s.writer.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration %s: %w", name, err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.Exec(string(data)); err != nil {
+		return fmt.Errorf("exec migration %s: %w", name, err)
+	}
+	if _, err = tx.Exec(
+		`INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`,
+		name, time.Now().UTC().Format(tsFormat),
+	); err != nil {
+		return fmt.Errorf("record migration %s: %w", name, err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %s: %w", name, err)
 	}
 	return nil
 }
@@ -154,5 +211,4 @@ var (
 	_ EventWriter     = (*SQLiteStore)(nil)
 	_ EventSearcher   = (*SQLiteStore)(nil)
 	_ DeploymentStore = (*SQLiteStore)(nil)
-	_ CausalStore     = (*SQLiteStore)(nil)
 )

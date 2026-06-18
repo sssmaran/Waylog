@@ -35,7 +35,7 @@ func RegisterTriageTool(reg *Registry, engine *triage.Engine) error {
 			`{"incident_id":"inc_01HX...","window":"15m"}`,
 			`{"incident_id":"inc_01HX...","snapshot":true}`,
 		},
-		Handler: func(ctx context.Context, _ Store, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
 			var p struct {
 				IncidentID string `json:"incident_id"`
 				Window     string `json:"window"`

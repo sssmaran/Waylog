@@ -100,14 +100,6 @@ func (s *Server) DeployWebhook(w http.ResponseWriter, r *http.Request) {
 		s.metrics.DeployUpsertsTotal.Inc()
 	}
 
-	// Publish SSE event so dashboard clients see the new deployment immediately.
-	if s.sseHub != nil {
-		data := s.ComputeSSETopic(TopicDeployments)
-		if data != nil {
-			s.sseHub.Publish(TopicDeployments, data)
-		}
-	}
-
 	if wantsEnvelope(r) {
 		writeJSON(w, http.StatusCreated, map[string]string{"id": req.ID}, meta, nil)
 	} else {

@@ -59,7 +59,7 @@ func ServeHTTP(w http.ResponseWriter, r *http.Request, route string, next func(h
 	sw := wrapResponseWriter(w, ctx)
 	var sealed atomic.Bool
 
-	deliver := func(kind lifecycleKind) {
+	deliver := func(kind lifecycleKind, recovered ...any) {
 		if !sealed.CompareAndSwap(false, true) {
 			_, _ = waylogv2.Finalize(ctx)
 			return
@@ -68,7 +68,7 @@ func ServeHTTP(w http.ResponseWriter, r *http.Request, route string, next func(h
 		case lifecycleTimeout:
 			_, _ = waylogv2.FinalizeTimeout(ctx)
 		case lifecyclePanic:
-			_, _ = waylogv2.FinalizePanic(ctx)
+			_, _ = waylogv2.FinalizePanic(ctx, recovered...)
 		case lifecycleAborted:
 			_, _ = waylogv2.FinalizeAborted(ctx)
 		default:
@@ -88,7 +88,7 @@ func ServeHTTP(w http.ResponseWriter, r *http.Request, route string, next func(h
 			if !sw.WroteHeader() {
 				sw.WriteHeader(http.StatusInternalServerError)
 			}
-			deliver(lifecyclePanic)
+			deliver(lifecyclePanic, rec)
 		}
 	}()
 

@@ -19,6 +19,15 @@ const (
 	ScenarioSuppressedPayment502 = "suppressed_payment_502"
 	ScenarioDBMiss               = "db_miss"
 	ScenarioCheckoutError        = "checkout_error"
+	// ScenarioInventory503 fails the inventory.reserve step with INV_503 so the
+	// demo's failing dependency rotates beyond payment/db — an alternate
+	// dependency failure, never a replacement for the seeded PMT_502 path.
+	ScenarioInventory503 = "inventory_503"
+	// ScenarioCheckoutPanic triggers a real recoverable panic inside the
+	// checkout handler. The Waylog HTTP middleware recovers it (emitting a failed
+	// WideEvent) and, with runtime hooks enabled, posts a go-sdk "runtime" panic
+	// signal that correlates onto the checkout incident as app-runtime evidence.
+	ScenarioCheckoutPanic = "checkout_panic"
 
 	demoUserID = "demo-user"
 )

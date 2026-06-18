@@ -26,6 +26,14 @@ profile.cov
 # Editor/IDE
 # .idea/
 .vscode/
+.claude/
+
+# Local databases and ad-hoc data dirs
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 
 /*.log
 /data/
@@ -37,6 +45,7 @@ data/demo-state/
 /checkout
 /waylog
 /bridge
+/crux
 /waylog-live
 /api-gateway
 /bin/
@@ -49,3 +58,9 @@ data/demo-state/
 !docs/env.md
 !docs/waylog-sdk-contract.md
 !docs/sdk-examples.md
+
+# Governance + community docs must be trackable despite the *.md rule above
+!CONTRIBUTING.md
+!CODE_OF_CONDUCT.md
+!SUPPORT.md
+!.github/**/*.md

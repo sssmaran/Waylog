@@ -9,20 +9,10 @@ import (
 
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
-	"github.com/sssmaran/WaylogCLI/internal/graph/build"
-	"github.com/sssmaran/WaylogCLI/internal/graph/core"
-	"github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/sampler"
-	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
-
-// Notifier is a narrow interface for post-batch notification.
-// Matches SSEHub.MarkDirty. nil-safe — Pipeline operates normally if nil.
-type Notifier interface {
-	MarkDirty(topics ...string)
-}
 
 // Validator is the per-event validation function the Pipeline applies before
 // any durable work. The default path uses event.WideEvent.Validate; specialized
@@ -33,9 +23,6 @@ type Validator func(ev *event.WideEvent) error
 // Most fields are optional — the pipeline degrades gracefully when a
 // dependency is nil (e.g., no EventLog means no WAL write).
 type PipelineConfig struct {
-	Store      *store.Store
-	TraceStore *tracestore.Store
-	Builder    *build.Builder
 	Sampler    *sampler.Sampler
 	EventLog   *eventlog.Writer
 	ColdWriter *coldstore.BatchWriter
@@ -43,19 +30,13 @@ type PipelineConfig struct {
 	Counters   *unsampledCounters
 	Accepted   *atomic.Uint64
 	Metrics    *metrics.Metrics
-	Notifier   Notifier
 	Validator  Validator
 }
 
-// Pipeline is the schema-1.x ingest core for old graph-derived APIs. Order of
-// operations per event:
+// Pipeline is the durable-write ingest core. Order of operations per event:
 //
-//	validate → WAL → counters → cold store → deployment upsert → sample →
-//	build → merge graph + tracestore → notify (once per batch)
+//	validate → WAL → counters → cold store → deployment upsert → sample
 type Pipeline struct {
-	store      *store.Store
-	traceStore *tracestore.Store
-	builder    *build.Builder
 	sampler    *sampler.Sampler
 	eventLog   *eventlog.Writer
 	coldWriter *coldstore.BatchWriter
@@ -63,7 +44,6 @@ type Pipeline struct {
 	counters   *unsampledCounters
 	accepted   *atomic.Uint64
 	metrics    *metrics.Metrics
-	notifier   Notifier
 	validator  Validator
 }
 
@@ -85,9 +65,6 @@ type EventError struct {
 // NewPipeline creates a Pipeline from the given configuration.
 func NewPipeline(cfg PipelineConfig) *Pipeline {
 	return &Pipeline{
-		store:      cfg.Store,
-		traceStore: cfg.TraceStore,
-		builder:    cfg.Builder,
 		sampler:    cfg.Sampler,
 		eventLog:   cfg.EventLog,
 		coldWriter: cfg.ColdWriter,
@@ -95,7 +72,6 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 		counters:   cfg.Counters,
 		accepted:   cfg.Accepted,
 		metrics:    cfg.Metrics,
-		notifier:   cfg.Notifier,
 		validator:  cfg.Validator,
 	}
 }
@@ -207,34 +183,11 @@ func (p *Pipeline) IngestBatch(ctx context.Context, events []*event.WideEvent) (
 			continue
 		}
 
-		// Build graph + span and merge into derived views.
-		if p.builder != nil {
-			mergeStart := time.Now()
-			br := p.builder.BuildResult(*ev)
-			if p.store != nil && br.Graph != nil {
-				p.store.Merge(br.Graph)
-			}
-			if p.traceStore != nil && br.Span != nil {
-				traceStart := time.Now()
-				p.traceStore.Upsert(ev.Request.TraceID, core.ID("request", ev.Request.TraceID), br.Span)
-				if p.metrics != nil {
-					p.metrics.TraceUpsertDuration.Observe(time.Since(traceStart).Seconds())
-				}
-			}
-			if p.metrics != nil {
-				p.metrics.MergeLatency.Observe(time.Since(mergeStart).Seconds())
-			}
-		}
-
 		if p.accepted != nil {
 			p.accepted.Add(1)
 		}
 
 		result.SampledInGraph++
-	}
-
-	if p.notifier != nil && result.SampledInGraph > 0 {
-		p.notifier.MarkDirty(TopicOverview, TopicRoutes, TopicTimeseries)
 	}
 
 	return result, nil

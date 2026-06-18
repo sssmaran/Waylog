@@ -12,10 +12,12 @@ func TestMarkdownReportCitesEvidence(t *testing.T) {
 	out := Markdown(testReport())
 	for _, want := range []string{
 		"# Waylog Operator Report",
-		"Evidence status: alert=present trace=present signal=present (report `sha256:test`)",
+		"Evidence status: alert=present trace=present signal=present runtime=present (report `sha256:test`)",
 		"Requests: 12 (incident `inc_abc`, report `sha256:test`)",
 		"trace `trace_1`: checkout payment failure (incident `inc_abc`, report `sha256:test`)",
 		"`critical` from `grafana`: PMT_502 spike; provider=https://grafana/alert/1 (signal `sig_alert`, alert `alert_1`, report `sha256:test`)",
+		"## Runtime Evidence",
+		"`critical` oom_killed on `checkout`: OOMKilled (source `k8s-demo`, signal `sig_oom`, report `sha256:test`)",
 		"Check payment health (check `check_0`, report `sha256:test`)",
 	} {
 		if !strings.Contains(out, want) {
@@ -36,7 +38,7 @@ func TestSlackReportIsJSONAndCitesEvidence(t *testing.T) {
 	if !json.Valid(raw) {
 		t.Fatalf("invalid json: %s", raw)
 	}
-	for _, want := range []string{"Waylog operator report", "12 requests, 2 users, 3 services", "trace_1", "sig_alert", "alert_1", "sha256:test"} {
+	for _, want := range []string{"Waylog operator report", "12 requests, 2 users, 3 services", "trace_1", "sig_alert", "alert_1", "sha256:test", "Runtime evidence", "oom_killed on checkout"} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("slack payload missing %q:\n%s", want, raw)
 		}
@@ -45,7 +47,7 @@ func TestSlackReportIsJSONAndCitesEvidence(t *testing.T) {
 
 func TestPagerDutyReportCitesEvidence(t *testing.T) {
 	out := PagerDuty(testReport())
-	for _, want := range []string{"Waylog operator report", "inc_abc", "12 requests, 2 users, 3 services", "trace_1", "sig_alert", "alert_1", "sha256:test"} {
+	for _, want := range []string{"Waylog operator report", "inc_abc", "12 requests, 2 users, 3 services", "trace_1", "sig_alert", "alert_1", "sha256:test", "runtime=", "oom_killed on checkout"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pagerduty missing %q:\n%s", want, out)
 		}
@@ -67,6 +69,7 @@ func testReport() *pkgtriage.Report {
 		SampleTraces: []pkgtriage.TraceSample{{TraceID: "trace_1", Summary: "checkout payment failure"}},
 		Signals:      []pkgtriage.SignalRef{{ID: "sig_alert", Type: "alert", EvidenceIDs: []string{"sig_alert"}}},
 		Alerts:       []pkgtriage.AlertRef{{SignalID: "sig_alert", AlertID: "alert_1", Source: "grafana", Severity: "critical", Reason: "PMT_502 spike", ProviderURL: "https://grafana/alert/1", EvidenceIDs: []string{"sig_alert"}}},
+		Runtime:      []pkgtriage.RuntimeRef{{SignalID: "sig_oom", Subtype: "oom_killed", Service: "checkout", Source: "k8s-demo", Severity: "critical", Reason: "OOMKilled", OccurredAt: "2026-05-10T11:59:00Z"}},
 		NextChecks:   []pkgtriage.NextCheck{{ID: "check_0", Prompt: "Check payment health"}},
 		Confidence:   pkgtriage.ConfidenceHigh,
 		GeneratedAt:  "2026-05-10T12:00:00Z",

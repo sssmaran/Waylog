@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/incidents"
 	pkgtriage "github.com/sssmaran/WaylogCLI/pkg/triage"
 )
 
@@ -15,16 +16,20 @@ var ErrUnknownIncident = errors.New("triage: unknown incident")
 // IncidentSummary is the minimal incident shape this package needs.
 // Adapter types in the wiring layer convert from internal/incidents.Incident.
 type IncidentSummary struct {
-	ID         string
-	Window     string
-	Env        string
-	StartedAt  time.Time
-	UpdatedAt  time.Time
-	Service    string
-	Step       string
-	ErrorCode  string
-	Confidence pkgtriage.Confidence
-	NextChecks []string
+	ID          string
+	Window      string
+	Env         string
+	StartedAt   time.Time
+	UpdatedAt   time.Time
+	Service     string
+	Step        string
+	ErrorCode   string
+	Confidence  pkgtriage.Confidence
+	NextChecks  []string
+	Propagation *incidents.PropagationSnapshot
+	Blast       *incidents.BlastSnapshot
+	Alerts      *incidents.AlertSnapshot
+	Runtime     *incidents.RuntimeSnapshot
 }
 
 type BlastSnapshotResult struct {
@@ -112,8 +117,8 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 	if err != nil {
 		return nil, fmt.Errorf("triage: signals: %w", err)
 	}
-	var alerts []pkgtriage.AlertRef
-	if e.deps.Alerts != nil {
+	alerts, fromSnapshot := alertsFromSnapshot(inc.Alerts)
+	if !fromSnapshot && e.deps.Alerts != nil {
 		alerts, err = e.deps.Alerts.AlertsFor(ctx, inc, opts)
 		if err != nil {
 			return nil, fmt.Errorf("triage: alerts: %w", err)
@@ -135,6 +140,7 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 		SampleTraces: story.SampleTraces,
 		Signals:      sigs,
 		Alerts:       alerts,
+		Runtime:      runtimeFromSnapshot(inc.Runtime),
 		NextChecks:   checks,
 		Confidence:   inc.Confidence,
 		GeneratedAt:  e.deps.Now().UTC().Format(time.RFC3339Nano),
@@ -145,8 +151,59 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 		return nil, fmt.Errorf("triage: hash: %w", err)
 	}
 	r.ReportHash = hash
+	r.EvidenceFingerprint = r.CanonicalEvidenceFingerprint()
 	if err := r.Validate(); err != nil {
 		return nil, fmt.Errorf("triage: produced invalid report: %w", err)
 	}
 	return r, nil
+}
+
+func alertsFromSnapshot(s *incidents.AlertSnapshot) ([]pkgtriage.AlertRef, bool) {
+	if s == nil || s.Latest == nil {
+		return nil, false
+	}
+	out := make([]pkgtriage.AlertRef, 0, len(s.Latest.Matches))
+	for _, m := range s.Latest.Matches {
+		evidenceIDs := append([]string(nil), m.EvidenceIDs...)
+		if len(evidenceIDs) == 0 && m.SignalID != "" {
+			evidenceIDs = []string{m.SignalID}
+		}
+		out = append(out, pkgtriage.AlertRef{
+			SignalID:    m.SignalID,
+			AlertID:     m.AlertID,
+			Source:      m.Source,
+			Severity:    m.Severity,
+			Reason:      m.Reason,
+			ProviderURL: m.ProviderURL,
+			EvidenceIDs: evidenceIDs,
+		})
+	}
+	return out, true
+}
+
+// runtimeFromSnapshot projects all matched runtime evidence (infra AND app)
+// into report RuntimeRefs. Uses RuntimeSnapshot.Matches (not Opening/Latest) so
+// both infra and app rows survive into the report. OccurredAt is stable, so the
+// rows participate in report_hash; CapturedAt is deliberately excluded.
+func runtimeFromSnapshot(s *incidents.RuntimeSnapshot) []pkgtriage.RuntimeRef {
+	if s == nil || len(s.Matches) == 0 {
+		return nil
+	}
+	out := make([]pkgtriage.RuntimeRef, 0, len(s.Matches))
+	for _, m := range s.Matches {
+		occurred := ""
+		if !m.OccurredAt.IsZero() {
+			occurred = m.OccurredAt.UTC().Format(time.RFC3339Nano)
+		}
+		out = append(out, pkgtriage.RuntimeRef{
+			SignalID:   m.SignalID,
+			Subtype:    m.Subtype,
+			Service:    m.Service,
+			Source:     m.Source,
+			Severity:   m.Severity,
+			Reason:     m.Reason,
+			OccurredAt: occurred,
+		})
+	}
+	return out
 }

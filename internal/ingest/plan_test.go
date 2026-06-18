@@ -8,11 +8,12 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 )
 
-// setupTestRegistry builds a registry with three mock tools for testing.
-//
-//	graph_insights  — requires window (string); outputs total_failures, schema_version
-//	graph_failures  — optional limit (integer); outputs failures array with trace_id, error_code
-//	explain_request — requires trace_id (string); outputs verdict
+// setupTestRegistry builds a registry of three mock tools that exercise
+// distinct plan-executor shapes: window-windowed, paginated-list, single-id.
+// The first two have mock_-prefixed names because their schemas don't
+// match any real surviving tool. The third reuses the real explain_request
+// name (its input schema does mirror the real v2 contract) so ref-chain
+// tests look natural.
 func setupTestRegistry(t *testing.T) *tools.Registry {
 	t.Helper()
 	reg := tools.NewRegistry()
@@ -25,7 +26,7 @@ func setupTestRegistry(t *testing.T) *tools.Registry {
 	}
 
 	mustRegister(tools.Tool{
-		Name:        "graph_insights",
+		Name:        "mock_window_tool",
 		Description: "Graph insights over a time window",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -42,13 +43,13 @@ func setupTestRegistry(t *testing.T) *tools.Registry {
 				"schema_version": {"type": "string"}
 			}
 		}`),
-		Handler: func(_ context.Context, _ tools.Store, _ json.RawMessage) (any, error) {
+		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			return map[string]any{"total_failures": 5, "schema_version": "1.0"}, nil
 		},
 	})
 
 	mustRegister(tools.Tool{
-		Name:        "graph_failures",
+		Name:        "mock_failures_tool",
 		Description: "List recent failures",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -72,7 +73,7 @@ func setupTestRegistry(t *testing.T) *tools.Registry {
 				}
 			}
 		}`),
-		Handler: func(_ context.Context, _ tools.Store, _ json.RawMessage) (any, error) {
+		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			return map[string]any{"failures": []any{}}, nil
 		},
 	})
@@ -94,7 +95,7 @@ func setupTestRegistry(t *testing.T) *tools.Registry {
 				"verdict": {"type": "string"}
 			}
 		}`),
-		Handler: func(_ context.Context, _ tools.Store, _ json.RawMessage) (any, error) {
+		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
 			return map[string]any{"verdict": "ok"}, nil
 		},
 	})
@@ -115,7 +116,7 @@ func TestValidatePlan_Structural(t *testing.T) {
 	t.Run("too many steps", func(t *testing.T) {
 		steps := make([]PlanStep, 11)
 		for i := range steps {
-			steps[i] = PlanStep{ID: string(rune('a' + i)), Tool: "graph_insights", Params: json.RawMessage(`{"window":"10m"}`)}
+			steps[i] = PlanStep{ID: string(rune('a' + i)), Tool: "mock_window_tool", Params: json.RawMessage(`{"window":"10m"}`)}
 		}
 		errs := ValidatePlan(steps, reg)
 		if len(errs) == 0 {
@@ -125,8 +126,8 @@ func TestValidatePlan_Structural(t *testing.T) {
 
 	t.Run("duplicate IDs", func(t *testing.T) {
 		steps := []PlanStep{
-			{ID: "a", Tool: "graph_insights", Params: json.RawMessage(`{"window":"10m"}`)},
-			{ID: "a", Tool: "graph_failures", Params: json.RawMessage(`{}`)},
+			{ID: "a", Tool: "mock_window_tool", Params: json.RawMessage(`{"window":"10m"}`)},
+			{ID: "a", Tool: "mock_failures_tool", Params: json.RawMessage(`{}`)},
 		}
 		errs := ValidatePlan(steps, reg)
 		if len(errs) == 0 {
@@ -146,7 +147,7 @@ func TestValidatePlan_Structural(t *testing.T) {
 
 	t.Run("empty ID", func(t *testing.T) {
 		steps := []PlanStep{
-			{ID: "", Tool: "graph_insights", Params: json.RawMessage(`{"window":"10m"}`)},
+			{ID: "", Tool: "mock_window_tool", Params: json.RawMessage(`{"window":"10m"}`)},
 		}
 		errs := ValidatePlan(steps, reg)
 		if len(errs) == 0 {
@@ -167,7 +168,7 @@ func TestValidatePlan_ForwardRef(t *testing.T) {
 		},
 		{
 			ID:     "b",
-			Tool:   "graph_failures",
+			Tool:   "mock_failures_tool",
 			Params: json.RawMessage(`{}`),
 		},
 	}
@@ -199,11 +200,11 @@ func TestValidatePlan_SelfRef(t *testing.T) {
 func TestValidatePlan_InvalidRefPath(t *testing.T) {
 	reg := setupTestRegistry(t)
 
-	// Step "b" refs step "a".nonexistent_field which doesn't exist in graph_insights output.
+	// Step "b" refs step "a".nonexistent_field which doesn't exist in mock_window_tool output.
 	steps := []PlanStep{
 		{
 			ID:     "a",
-			Tool:   "graph_insights",
+			Tool:   "mock_window_tool",
 			Params: json.RawMessage(`{"window": "10m"}`),
 		},
 		{
@@ -222,12 +223,12 @@ func TestValidatePlan_InvalidRefPath(t *testing.T) {
 func TestValidatePlan_NonRefParamValidation(t *testing.T) {
 	reg := setupTestRegistry(t)
 
-	// graph_insights has additionalProperties: false.
+	// mock_window_tool has additionalProperties: false.
 	// "unknown_param" is not in its properties — should be rejected.
 	steps := []PlanStep{
 		{
 			ID:     "a",
-			Tool:   "graph_insights",
+			Tool:   "mock_window_tool",
 			Params: json.RawMessage(`{"window": "10m", "unknown_param": "bad"}`),
 		},
 	}
@@ -248,7 +249,7 @@ func TestValidatePlan_RefFieldSkippedForInputValidation(t *testing.T) {
 	steps := []PlanStep{
 		{
 			ID:     "a",
-			Tool:   "graph_failures",
+			Tool:   "mock_failures_tool",
 			Params: json.RawMessage(`{}`),
 		},
 		{
@@ -270,12 +271,12 @@ func TestValidatePlan_Valid(t *testing.T) {
 	steps := []PlanStep{
 		{
 			ID:     "insights",
-			Tool:   "graph_insights",
+			Tool:   "mock_window_tool",
 			Params: json.RawMessage(`{"window": "10m"}`),
 		},
 		{
 			ID:     "failures",
-			Tool:   "graph_failures",
+			Tool:   "mock_failures_tool",
 			Params: json.RawMessage(`{"limit": 5}`),
 		},
 		{
@@ -323,7 +324,7 @@ func TestExpandPlanRequest_RejectsInvalidTemplateInput(t *testing.T) {
 	params := json.RawMessage(`{"incident_id":"inc_abc"}`)
 	cases := map[string]PlanExecuteRequest{
 		"both steps and template": {
-			Steps:    []PlanStep{{ID: "x", Tool: "graph_stats"}},
+			Steps:    []PlanStep{{ID: "x", Tool: "mock_stats_tool"}},
 			Template: "triage",
 			Params:   &params,
 		},

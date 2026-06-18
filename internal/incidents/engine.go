@@ -21,6 +21,7 @@ type Config struct {
 	Window                  time.Duration
 	MinCount                int
 	MinLift                 float64
+	MinRate                 float64 // errors/minute low-traffic guard; 0 disables
 	ResolveAfter            time.Duration
 	DeployCorrelationWindow time.Duration
 	SampleLimit             int
@@ -150,13 +151,22 @@ type derivedRow struct {
 // touching e.active or the store. Used by both live Tick and startup Rebuild.
 func (e *Engine) derive(ctx context.Context, now time.Time, seed map[string]Incident, reader Reader) ([]derivedRow, error) {
 	currentStart := now.Add(-e.cfg.Window)
-	baselineStart := now.Add(-2 * e.cfg.Window)
 	statuses := failedStatuses()
 	current := reader.Errors(SearchFilter{Since: currentStart, Until: now, Statuses: statuses}, 200)
-	baseline := reader.Errors(SearchFilter{Since: baselineStart, Until: currentStart, Statuses: statuses}, 200)
-	baselineByFamily := map[string]int{}
-	for _, row := range baseline.Rows {
-		baselineByFamily[familyKey(row.ErrorFamily)] = row.Count
+	// Baseline = per-family median of the 3 prior windows (newest first); a
+	// family absent from a window counts 0. One anomalous prior window can
+	// neither suppress a spike nor fabricate lift (docs/internals.md).
+	baselineByFamily := map[string][3]int{}
+	for i := 0; i < 3; i++ {
+		until := now.Add(-time.Duration(i+1) * e.cfg.Window)
+		since := now.Add(-time.Duration(i+2) * e.cfg.Window)
+		res := reader.Errors(SearchFilter{Since: since, Until: until, Statuses: statuses}, 200)
+		for _, row := range res.Rows {
+			key := familyKey(row.ErrorFamily)
+			counts := baselineByFamily[key]
+			counts[i] = row.Count
+			baselineByFamily[key] = counts
+		}
 	}
 
 	seen := map[string]struct{}{}
@@ -165,7 +175,10 @@ func (e *Engine) derive(ctx context.Context, now time.Time, seed map[string]Inci
 		if row.Count < e.cfg.MinCount {
 			continue
 		}
-		baselineCount := baselineByFamily[familyKey(row.ErrorFamily)]
+		if e.cfg.MinRate > 0 && float64(row.Count) < e.cfg.MinRate*e.cfg.Window.Minutes() {
+			continue
+		}
+		baselineCount := median3(baselineByFamily[familyKey(row.ErrorFamily)])
 		lift := computeLift(row.Count, baselineCount)
 		if baselineCount > 0 && lift < e.cfg.MinLift {
 			continue
@@ -311,6 +324,58 @@ func (e *Engine) TopActive(ctx context.Context) (*Incident, error) {
 	return &rows[0], nil
 }
 
+// safeBlastRadius wraps reader.BlastRadius with a panic recover so a reader
+// fault never propagates into the tick. ok=false means the reader call
+// faulted; callers should treat the returned response as zero-value and
+// record CaptureStatus=missing for downstream evidence.
+func safeBlastRadius(r Reader, f SearchFilter, k apiv2.BlastKey) (out apiv2.BlastRadiusResponse, ok bool) {
+	if r == nil {
+		return apiv2.BlastRadiusResponse{}, false
+	}
+	ok = true
+	defer func() {
+		if rec := recover(); rec != nil {
+			out, ok = apiv2.BlastRadiusResponse{}, false
+		}
+	}()
+	out = r.BlastRadius(f, k)
+	return out, ok
+}
+
+func safeTraceStory(r Reader, traceID string) (resp apiv2.StoryResponse, ok bool) {
+	if r == nil {
+		return apiv2.StoryResponse{}, false
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			resp, ok = apiv2.StoryResponse{}, false
+		}
+	}()
+	return r.TraceStoryByTraceID(traceID)
+}
+
+func safeTraceEvents(r Reader, traceID string) (events []*eventv2.Event, ok bool) {
+	if r == nil {
+		return nil, false
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			events, ok = nil, false
+		}
+	}()
+	return r.TraceEvents(traceID)
+}
+
+func filterEventsByTrace(events []*eventv2.Event, traceID string) []*eventv2.Event {
+	out := make([]*eventv2.Event, 0, 1)
+	for _, ev := range events {
+		if ev != nil && ev.TraceID == traceID {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Incident, reader Reader, row apiv2.ErrorRow, baselineCount int, lift float64, since, now time.Time) (Incident, bool, error) {
 	events := sampleEventsFromReader(reader, row.ErrorFamily, since, now, 200)
 	startedAt := earliestEventTime(events, now)
@@ -327,11 +392,15 @@ func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Inci
 			hadExisting = true
 		}
 	}
-	blast := reader.BlastRadius(
+	blast, blastOK := safeBlastRadius(reader,
 		SearchFilter{Since: since, Until: now},
 		apiv2.BlastKey{Service: row.ErrorFamily.Service, Step: row.ErrorFamily.Step, ErrorCode: row.ErrorFamily.ErrorCode},
 	)
-	sigs, err := e.querySignals(ctx, env, now.Add(-e.cfg.DeployCorrelationWindow), now)
+	signalSince := now.Add(-e.cfg.DeployCorrelationWindow)
+	if alertSince := startedAt.Add(-e.cfg.DeployCorrelationWindow); alertSince.Before(signalSince) {
+		signalSince = alertSince
+	}
+	sigs, err := e.querySignals(ctx, env, signalSince, now)
 	if err != nil && !errors.Is(err, signals.ErrUnavailable) {
 		return Incident{}, false, err
 	}
@@ -361,6 +430,40 @@ func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Inci
 	if hadExisting {
 		inc.StartedAt = existing.StartedAt
 		inc.RecoveringAt = nil
+	}
+	if reader != nil && inc.Status != StatusResolved {
+		blastStatus := CaptureOK
+		if !blastOK {
+			blastStatus = CaptureMissing
+		}
+		inc.Blast = updateBlastSnapshot(existing.Blast, newBlastEvidence(blast, now, blastStatus))
+
+		var story *apiv2.StoryResponse
+		var firstSeenAt *time.Time
+		var sampleTraceID string
+		if blastOK && len(blast.SampleTraces) > 0 {
+			sampleTraceID = blast.SampleTraces[0]
+			if s, ok := safeTraceStory(reader, sampleTraceID); ok {
+				story = &s
+			}
+			// Prefer events already loaded for this family scan; fall back to a
+			// dedicated TraceEvents read only if the sample trace had no
+			// anchor-matching event in that scan.
+			traceEvts := filterEventsByTrace(events, sampleTraceID)
+			if len(traceEvts) == 0 {
+				if evts, ok := safeTraceEvents(reader, sampleTraceID); ok {
+					traceEvts = evts
+				}
+			}
+			if ts, ok2 := pickAnchorTsStart(traceEvts, inc.ErrorFamily); ok2 {
+				firstSeenAt = &ts
+			}
+		}
+		inc.Propagation = updatePropagationSnapshot(existing.Propagation, newPropagationEvidence(story, sampleTraceID, firstSeenAt, now))
+	}
+	if inc.Status != StatusResolved {
+		inc.Alerts = updateAlertSnapshot(existing.Alerts, captureAlertEvidenceFromSignals(sigs, inc, now, e.cfg.DeployCorrelationWindow))
+		inc.Runtime = updateRuntimeSnapshot(existing.Runtime, captureRuntimeEvidence(sigs, inc, now, e.cfg.DeployCorrelationWindow))
 	}
 	class := Classify(ClassificationInput{Incident: inc, Events: events, Signals: sigs, Deployments: deploys, Now: now})
 	inc.Cause = class.Cause
@@ -461,6 +564,12 @@ func computeLift(current, baseline int) float64 {
 		return float64(current)
 	}
 	return float64(current) / float64(baseline)
+}
+
+func median3(c [3]int) int {
+	s := []int{c[0], c[1], c[2]}
+	sort.Ints(s)
+	return s[1]
 }
 
 func severity(count, services int, lift float64) int {

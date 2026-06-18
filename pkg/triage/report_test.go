@@ -157,3 +157,80 @@ func TestCanonicalHashFormat(t *testing.T) {
 		t.Fatalf("hash length wrong: got %d (%q)", len(h), h)
 	}
 }
+
+func fingerprintFixture() triage.Report {
+	return triage.Report{
+		SchemaVersion: "triage.v1",
+		IncidentRef:   triage.IncidentRef{ID: "inc_fp", Window: "15m"},
+		BlastSnapshot: triage.BlastSnapshot{Requests: 12, Users: 8, Services: 4},
+		SampleTraces:  []triage.TraceSample{{TraceID: "trace_a", Summary: "checkout 502"}},
+		Signals:       []triage.SignalRef{{ID: "sig_dep", Type: "dependency", EvidenceIDs: []string{"e1"}}},
+		Alerts:        []triage.AlertRef{{SignalID: "sig_alert", Source: "grafana", Severity: "critical", Reason: "spike"}},
+		Runtime:       []triage.RuntimeRef{{SignalID: "sig_rt", Subtype: "oom_killed", Service: "checkout"}},
+		NextChecks:    []triage.NextCheck{{ID: "check_0", Prompt: "verify x"}},
+		Confidence:    triage.ConfidenceHigh,
+		GeneratedAt:   "2026-06-12T00:00:00Z",
+	}
+}
+
+func TestEvidenceFingerprintStableAcrossVolatileChanges(t *testing.T) {
+	a := fingerprintFixture()
+	b := fingerprintFixture()
+	// Everything that legitimately drifts between engine ticks changes…
+	b.BlastSnapshot = triage.BlastSnapshot{Requests: 99, Users: 70, Services: 9}
+	b.Confidence = triage.ConfidenceLow
+	b.NextChecks = []triage.NextCheck{{ID: "check_9", Prompt: "different"}}
+	b.GeneratedAt = "2026-06-12T00:05:00Z"
+	b.PlanRunID = "plan_123"
+	b.SampleTraces[0].Summary = "different summary"
+	b.FirstFailure = []byte(`{"step":"other"}`)
+	// …but the evidence identity set is the same, so the fingerprint must match.
+	if a.CanonicalEvidenceFingerprint() != b.CanonicalEvidenceFingerprint() {
+		t.Fatalf("fingerprint must ignore volatile fields:\n a=%s\n b=%s",
+			a.CanonicalEvidenceFingerprint(), b.CanonicalEvidenceFingerprint())
+	}
+}
+
+func TestEvidenceFingerprintChangesWhenEvidenceChanges(t *testing.T) {
+	a := fingerprintFixture()
+	b := fingerprintFixture()
+	b.Signals = append(b.Signals, triage.SignalRef{ID: "sig_new", Type: "deploy"})
+	if a.CanonicalEvidenceFingerprint() == b.CanonicalEvidenceFingerprint() {
+		t.Fatal("attaching a new signal must change the fingerprint")
+	}
+	c := fingerprintFixture()
+	c.IncidentRef.ID = "inc_other"
+	if a.CanonicalEvidenceFingerprint() == c.CanonicalEvidenceFingerprint() {
+		t.Fatal("a different incident must have a different fingerprint")
+	}
+}
+
+func TestEvidenceFingerprintIsOrderIndependentAndDeduped(t *testing.T) {
+	a := fingerprintFixture()
+	a.Signals = []triage.SignalRef{{ID: "sig_1"}, {ID: "sig_2"}}
+	b := fingerprintFixture()
+	b.Signals = []triage.SignalRef{{ID: "sig_2"}, {ID: "sig_1"}, {ID: "sig_1"}}
+	if a.CanonicalEvidenceFingerprint() != b.CanonicalEvidenceFingerprint() {
+		t.Fatal("fingerprint must be order-independent and deduplicated")
+	}
+	if !strings.HasPrefix(a.CanonicalEvidenceFingerprint(), "sha256:") {
+		t.Fatalf("fingerprint format: %s", a.CanonicalEvidenceFingerprint())
+	}
+}
+
+func TestEvidenceFingerprintFieldExcludedFromReportHash(t *testing.T) {
+	a := fingerprintFixture()
+	b := fingerprintFixture()
+	b.EvidenceFingerprint = b.CanonicalEvidenceFingerprint()
+	ha, err := a.CanonicalHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb, err := b.CanonicalHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ha != hb {
+		t.Fatal("evidence_fingerprint is derived metadata and must not feed report_hash")
+	}
+}

@@ -15,12 +15,12 @@ func TestCall_PanicRecovery(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(Tool{
 		Name: "panicker",
-		Handler: func(ctx context.Context, store Store, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
 			panic("kaboom")
 		},
 	})
 
-	_, err := reg.Call(context.Background(), nil, "panicker", nil)
+	_, err := reg.Call(context.Background(), "panicker", nil)
 	te, ok := AsToolError(err)
 	if !ok {
 		t.Fatalf("expected ToolError, got %T: %v", err, err)
@@ -37,12 +37,12 @@ func TestCall_RawErrorWrapping(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(Tool{
 		Name: "raw",
-		Handler: func(ctx context.Context, store Store, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
 			return nil, errors.New("plain error")
 		},
 	})
 
-	_, err := reg.Call(context.Background(), nil, "raw", nil)
+	_, err := reg.Call(context.Background(), "raw", nil)
 	te, ok := AsToolError(err)
 	if !ok {
 		t.Fatalf("expected ToolError, got %T: %v", err, err)
@@ -56,12 +56,12 @@ func TestCall_ToolErrorPassthrough(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(Tool{
 		Name: "typed",
-		Handler: func(ctx context.Context, store Store, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
 			return nil, &ToolError{Code: CodeInvalidParams, Message: "bad"}
 		},
 	})
 
-	_, err := reg.Call(context.Background(), nil, "typed", nil)
+	_, err := reg.Call(context.Background(), "typed", nil)
 	te, ok := AsToolError(err)
 	if !ok {
 		t.Fatalf("expected ToolError, got %T: %v", err, err)
@@ -73,7 +73,7 @@ func TestCall_ToolErrorPassthrough(t *testing.T) {
 
 func TestCall_UnknownTool(t *testing.T) {
 	reg := NewRegistry()
-	_, err := reg.Call(context.Background(), nil, "nope", nil)
+	_, err := reg.Call(context.Background(), "nope", nil)
 	te, ok := AsToolError(err)
 	if !ok {
 		t.Fatalf("expected ToolError, got %T: %v", err, err)
@@ -87,12 +87,12 @@ func TestCall_Success(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(Tool{
 		Name: "ok",
-		Handler: func(ctx context.Context, store Store, params json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, params json.RawMessage) (any, error) {
 			return map[string]int{"x": 1}, nil
 		},
 	})
 
-	result, err := reg.Call(context.Background(), nil, "ok", nil)
+	result, err := reg.Call(context.Background(), "ok", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

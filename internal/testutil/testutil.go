@@ -3,7 +3,6 @@ package testutil
 import (
 	"time"
 
-	"github.com/sssmaran/WaylogCLI/internal/graph/core"
 	"github.com/sssmaran/WaylogCLI/pkg/event"
 )
 
@@ -186,26 +185,5 @@ func WithRetry(of int, previousAttemptID string) EventOption {
 func WithParentRequestID(id string) EventOption {
 	return func(ev *event.WideEvent) {
 		ev.ParentRequestID = id
-	}
-}
-
-// MakeGraph creates a graph with the given nodes and edges.
-func MakeGraph(nodes []core.Node, edges []core.Edge) *core.Graph {
-	g := core.New()
-	for _, n := range nodes {
-		g.AddNode(n)
-	}
-	for _, e := range edges {
-		g.AddEdge(e)
-	}
-	return g
-}
-
-// MakeNode creates a node with the given ID and type.
-func MakeNode(id string, nodeType core.NodeType, attr map[string]any) core.Node {
-	return core.Node{
-		ID:   id,
-		Type: nodeType,
-		Attr: attr,
 	}
 }

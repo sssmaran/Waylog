@@ -30,9 +30,25 @@ func Finalize(ctx context.Context) (*eventv2.Event, error) {
 	return finalize(ctx, lifecycleNormal)
 }
 
-// FinalizePanic seals the request as a panic-owned lifecycle emit.
-func FinalizePanic(ctx context.Context) (*eventv2.Event, error) {
-	return finalize(ctx, lifecyclePanic)
+// FinalizePanic seals the request as a panic-owned lifecycle emit. The optional
+// recovered value (the result of recover()) is used to enrich the runtime signal
+// when runtime hooks are enabled. The signal is posted asynchronously and even
+// if event delivery fails, so it never blocks the recovering request goroutine
+// (this runs in the HTTP middleware's recover path) and a transient /v1/events
+// error never suppresses the /v1/signals evidence; the original event/error are
+// still returned.
+func FinalizePanic(ctx context.Context, recovered ...any) (*eventv2.Event, error) {
+	ev, err := finalize(ctx, lifecyclePanic)
+	if ev != nil {
+		var rec any
+		if len(recovered) > 0 {
+			rec = recovered[0]
+		}
+		if s := getState(); s != nil && s.cfg.EnableRuntimeHooks {
+			go postPanicSignal(s.cfg, rec)
+		}
+	}
+	return ev, err
 }
 
 // FinalizeAborted seals the request as an aborted lifecycle emit unless the

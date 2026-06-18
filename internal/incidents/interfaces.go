@@ -13,6 +13,10 @@ type Reader interface {
 	Errors(f SearchFilter, limit int) ErrorsResult
 	BlastRadius(f SearchFilter, key apiv2.BlastKey) apiv2.BlastRadiusResponse
 	SearchEvents(f SearchFilter, limit int) []*eventv2.Event
+
+	// Added for incident evidence capture (v1.0):
+	TraceStoryByTraceID(traceID string) (apiv2.StoryResponse, bool)
+	TraceEvents(traceID string) ([]*eventv2.Event, bool)
 }
 
 type SearchFilter struct {

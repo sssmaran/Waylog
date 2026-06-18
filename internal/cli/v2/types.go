@@ -9,9 +9,6 @@ import (
 )
 
 type CapabilitiesResponse struct {
-	V2Reads struct {
-		Enabled bool `json:"enabled"`
-	} `json:"v2_reads"`
 	OTLP struct {
 		HTTPTraces bool   `json:"http_traces"`
 		GRPCTraces bool   `json:"grpc_traces"`

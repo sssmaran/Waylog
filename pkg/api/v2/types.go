@@ -16,6 +16,12 @@ const (
 
 	BlastViewSingleFamily = "single_family"
 	BlastViewCrossFamily  = "cross_family"
+
+	// Wire-level capture statuses for {Propagation,Blast,Alert}Evidence.CaptureStatus.
+	// Internal incidents.EvidenceCaptureStatus values cast to these strings.
+	CaptureStatusOK      = "ok"
+	CaptureStatusPartial = "partial"
+	CaptureStatusMissing = "missing"
 )
 
 type EventSearchResponse struct {
@@ -132,30 +138,115 @@ type IncidentEvidence struct {
 }
 
 type Incident struct {
-	IncidentID              string             `json:"incident_id"`
-	Env                     string             `json:"env"`
-	Service                 string             `json:"service"`
-	ErrorFamily             ErrorFamily        `json:"error_family"`
-	Status                  string             `json:"status"`
-	Cause                   string             `json:"cause"`
-	Confidence              string             `json:"confidence"`
-	Severity                int                `json:"severity"`
-	StartedAt               time.Time          `json:"started_at"`
-	UpdatedAt               time.Time          `json:"updated_at"`
-	LastSeenAt              time.Time          `json:"last_seen_at"`
-	RecoveringAt            *time.Time         `json:"recovering_at,omitempty"`
-	ResolvedAt              *time.Time         `json:"resolved_at,omitempty"`
-	AffectedRequests        int                `json:"affected_requests"`
-	AffectedUsers           *int               `json:"affected_users,omitempty"`
-	AffectedServices        int                `json:"affected_services"`
-	TopServices             []string           `json:"top_services"`
-	SampleTraces            []string           `json:"sample_traces"`
-	Evidence                []IncidentEvidence `json:"evidence"`
-	NextChecks              []string           `json:"next_checks"`
-	InstrumentationWarnings []string           `json:"instrumentation_warnings,omitempty"`
-	Lift                    float64            `json:"lift"`
-	BaselineCount           int                `json:"baseline_count"`
-	CurrentCount            int                `json:"current_count"`
+	IncidentID              string               `json:"incident_id"`
+	Env                     string               `json:"env"`
+	Service                 string               `json:"service"`
+	ErrorFamily             ErrorFamily          `json:"error_family"`
+	Status                  string               `json:"status"`
+	Cause                   string               `json:"cause"`
+	Confidence              string               `json:"confidence"`
+	Severity                int                  `json:"severity"`
+	StartedAt               time.Time            `json:"started_at"`
+	UpdatedAt               time.Time            `json:"updated_at"`
+	LastSeenAt              time.Time            `json:"last_seen_at"`
+	RecoveringAt            *time.Time           `json:"recovering_at,omitempty"`
+	ResolvedAt              *time.Time           `json:"resolved_at,omitempty"`
+	AffectedRequests        int                  `json:"affected_requests"`
+	AffectedUsers           *int                 `json:"affected_users,omitempty"`
+	AffectedServices        int                  `json:"affected_services"`
+	TopServices             []string             `json:"top_services"`
+	SampleTraces            []string             `json:"sample_traces"`
+	Evidence                []IncidentEvidence   `json:"evidence"`
+	NextChecks              []string             `json:"next_checks"`
+	InstrumentationWarnings []string             `json:"instrumentation_warnings,omitempty"`
+	Lift                    float64              `json:"lift"`
+	BaselineCount           int                  `json:"baseline_count"`
+	CurrentCount            int                  `json:"current_count"`
+	Propagation             *PropagationSnapshot `json:"propagation,omitempty"`
+	Blast                   *BlastSnapshot       `json:"blast,omitempty"`
+	Alerts                  *AlertSnapshot       `json:"alerts,omitempty"`
+	Runtime                 *RuntimeSnapshot     `json:"runtime,omitempty"`
+}
+
+type PropagationSnapshot struct {
+	Opening *PropagationEvidence `json:"opening,omitempty"`
+	Latest  *PropagationEvidence `json:"latest,omitempty"`
+}
+
+type PropagationEvidence struct {
+	OriginService string            `json:"origin_service"`
+	OriginStep    string            `json:"origin_step"`
+	Path          []PropagationStep `json:"path"`
+	SampleTraceID string            `json:"sample_trace_id"`
+	FirstSeenAt   *time.Time        `json:"first_seen_at,omitempty"`
+	CapturedAt    time.Time         `json:"captured_at"`
+	CaptureStatus string            `json:"capture_status"`
+}
+
+type PropagationStep struct {
+	Service    string `json:"service"`
+	Step       string `json:"step"`
+	StartMS    int64  `json:"start_ms"`
+	DurationMS int64  `json:"duration_ms"`
+	Status     string `json:"status"`
+	ErrorCode  string `json:"error_code,omitempty"`
+}
+
+type BlastSnapshot struct {
+	Opening *BlastEvidence `json:"opening,omitempty"`
+	Latest  *BlastEvidence `json:"latest,omitempty"`
+}
+
+type BlastEvidence struct {
+	AffectedRequests int       `json:"affected_requests"`
+	AffectedUsers    *int      `json:"affected_users,omitempty"`
+	AffectedServices int       `json:"affected_services"`
+	TopServices      []string  `json:"top_services"`
+	SampledTraces    []string  `json:"sampled_traces"`
+	CapturedAt       time.Time `json:"captured_at"`
+	CaptureStatus    string    `json:"capture_status"`
+}
+
+type AlertSnapshot struct {
+	Opening *AlertEvidence `json:"opening,omitempty"`
+	Latest  *AlertEvidence `json:"latest,omitempty"`
+}
+
+type AlertEvidence struct {
+	Matches       []MatchedAlert `json:"matches"`
+	CapturedAt    time.Time      `json:"captured_at"`
+	CaptureStatus string         `json:"capture_status"`
+}
+
+type MatchedAlert struct {
+	SignalID    string    `json:"signal_id"`
+	AlertID     string    `json:"alert_id,omitempty"`
+	Source      string    `json:"source"`
+	Severity    string    `json:"severity"`
+	Reason      string    `json:"reason"`
+	ProviderURL string    `json:"provider_url,omitempty"`
+	EvidenceIDs []string  `json:"evidence_ids,omitempty"`
+	MatchedAt   time.Time `json:"matched_at"`
+	Strategy    string    `json:"strategy"`
+}
+
+type RuntimeSnapshot struct {
+	Matches []RuntimeEvidence `json:"matches,omitempty"`
+	Opening *RuntimeEvidence  `json:"opening,omitempty"`
+	Latest  *RuntimeEvidence  `json:"latest,omitempty"`
+}
+
+type RuntimeEvidence struct {
+	Subtype       string         `json:"subtype"`
+	Service       string         `json:"service"`
+	Reason        string         `json:"reason"`
+	Severity      string         `json:"severity"`
+	Source        string         `json:"source"`
+	SignalID      string         `json:"signal_id"`
+	OccurredAt    time.Time      `json:"occurred_at"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+	CapturedAt    time.Time      `json:"captured_at"`
+	CaptureStatus string         `json:"capture_status"`
 }
 
 type IncidentListResponse struct {

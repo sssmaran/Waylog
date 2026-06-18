@@ -15,10 +15,10 @@ type Metrics struct {
 
 	IngestLatency          prometheus.Histogram
 	IngestBatchSize        prometheus.Histogram
-	MergeLatency           prometheus.Histogram
 	EventsAccepted         prometheus.Counter
 	EventsDuplicate        prometheus.Counter
 	EventsRejected         *prometheus.CounterVec
+	RateLimited            *prometheus.CounterVec
 	EventlogFails          prometheus.Counter
 	EventDedupCacheSize    prometheus.Gauge
 	EventDedupReplayLoaded prometheus.Counter
@@ -41,16 +41,6 @@ type Metrics struct {
 	ReplayFailuresTotal prometheus.Counter
 	Ready               prometheus.Gauge
 	InFlightRequests    prometheus.Gauge
-	SnapshotLastSuccess prometheus.Gauge
-	SnapshotLastError   prometheus.Gauge
-	GraphNodes          prometheus.Gauge
-	GraphEdges          prometheus.Gauge
-	GraphPrunedTotal    prometheus.Counter
-	TraceUpsertDuration prometheus.Histogram
-	TraceStoreRecords   prometheus.Gauge
-	TraceStoreSpans     prometheus.Gauge
-	TraceStoreCohorts   prometheus.Gauge
-	TraceStorePruned    prometheus.Counter
 
 	AskRequestsTotal     *prometheus.CounterVec
 	AskDuration          prometheus.Histogram
@@ -67,9 +57,10 @@ type Metrics struct {
 	DeployUpsertsTotal prometheus.Counter
 	DeployUpsertErrors prometheus.Counter
 
-	SignalsAccepted       prometheus.Counter
-	SignalsRejected       *prometheus.CounterVec
-	SignalRetentionPruned prometheus.Counter
+	SignalsAccepted         prometheus.Counter
+	SignalsRejected         *prometheus.CounterVec
+	SignalRetentionPruned   prometheus.Counter
+	IncidentRetentionPruned prometheus.Counter
 
 	IncidentOpened          prometheus.Counter
 	IncidentUpdated         prometheus.Counter
@@ -82,11 +73,6 @@ type Metrics struct {
 	IncidentRebuildRows     prometheus.Counter
 	IncidentRebuildFailures prometheus.Counter
 	IncidentRebuildReplayed prometheus.Counter
-
-	CausalRunsTotal   prometheus.Counter
-	CausalRunDuration prometheus.Histogram
-	CausalRunFailures prometheus.Counter
-	CausalClaimsTotal *prometheus.CounterVec // labels: type, tier
 
 	// OTLP ingestion metrics
 	OTLPRequestsTotal     *prometheus.CounterVec // labels: status
@@ -114,11 +100,6 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help:    "Number of events parsed from each ingest request.",
 		Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256},
 	})
-	m.MergeLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:    "waylog_merge_latency_seconds",
-		Help:    "Build + Merge time.",
-		Buckets: defaultBuckets,
-	})
 	m.EventsAccepted = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_events_accepted_total",
 		Help: "Events accepted after each ingest path's durability contract is satisfied.",
@@ -134,6 +115,10 @@ func New(reg *prometheus.Registry) *Metrics {
 	for _, reason := range []string{"validation", "sampling"} {
 		m.EventsRejected.WithLabelValues(reason).Add(0)
 	}
+	m.RateLimited = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "waylog_rate_limited_total",
+		Help: "Requests rejected with 429 by the per-key rate limiter.",
+	}, []string{"scope"})
 	m.EventlogFails = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_eventlog_write_failures_total",
 		Help: "Failed eventlog writes.",
@@ -234,48 +219,6 @@ func New(reg *prometheus.Registry) *Metrics {
 		Name: "waylog_inflight_requests",
 		Help: "Concurrent Events handler calls.",
 	})
-	m.SnapshotLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "waylog_snapshot_last_success_timestamp",
-		Help: "Unix epoch of last successful save.",
-	})
-	m.SnapshotLastError = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "waylog_snapshot_last_error_timestamp",
-		Help: "Unix epoch of last failed save.",
-	})
-	m.GraphNodes = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "waylog_graph_nodes",
-		Help: "Current node count.",
-	})
-	m.GraphEdges = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "waylog_graph_edges",
-		Help: "Current edge count.",
-	})
-	m.GraphPrunedTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "waylog_graph_pruned_total",
-		Help: "Number of retention prune cycles executed.",
-	})
-	m.TraceUpsertDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:    "waylog_trace_upsert_duration_seconds",
-		Help:    "Trace store upsert time.",
-		Buckets: defaultBuckets,
-	})
-	m.TraceStoreRecords = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "waylog_trace_store_records",
-		Help: "Current trace record count.",
-	})
-	m.TraceStoreSpans = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "waylog_trace_store_spans",
-		Help: "Current total span count in trace store.",
-	})
-	m.TraceStoreCohorts = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "waylog_trace_store_cohorts",
-		Help: "Current trace-store time cohort count.",
-	})
-	m.TraceStorePruned = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "waylog_trace_store_pruned_total",
-		Help: "Total trace records pruned from the trace store.",
-	})
-
 	m.AskRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "waylog_ask_requests_total",
 		Help: "Ask endpoint requests.",
@@ -351,6 +294,10 @@ func New(reg *prometheus.Registry) *Metrics {
 		Name: "waylog_signal_retention_pruned_total",
 		Help: "Production-context signals pruned by retention.",
 	})
+	m.IncidentRetentionPruned = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "waylog_incident_retention_pruned_total",
+		Help: "Resolved incidents pruned by retention.",
+	})
 
 	m.IncidentOpened = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "waylog_incidents_opened_total",
@@ -404,24 +351,6 @@ func New(reg *prometheus.Registry) *Metrics {
 		Help: "Schema-2.0 events replayed for startup hot-window incident rebuild.",
 	})
 
-	m.CausalRunsTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "waylog_causal_runs_total",
-		Help: "Total causal inference runs.",
-	})
-	m.CausalRunDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:    "waylog_causal_run_duration_seconds",
-		Help:    "Duration of causal inference runs.",
-		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
-	})
-	m.CausalRunFailures = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "waylog_causal_run_failures_total",
-		Help: "Total failed causal inference runs.",
-	})
-	m.CausalClaimsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "waylog_causal_claims_total",
-		Help: "Total causal claims produced.",
-	}, []string{"type", "tier"})
-
 	m.OTLPRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "waylog_otlp_requests_total",
 		Help: "Total OTLP trace ingestion requests.",
@@ -462,8 +391,8 @@ func New(reg *prometheus.Registry) *Metrics {
 	})
 
 	reg.MustRegister(
-		m.IngestLatency, m.IngestBatchSize, m.MergeLatency,
-		m.EventsAccepted, m.EventsDuplicate, m.EventsRejected, m.EventlogFails,
+		m.IngestLatency, m.IngestBatchSize,
+		m.EventsAccepted, m.EventsDuplicate, m.EventsRejected, m.RateLimited, m.EventlogFails,
 		m.EventDedupCacheSize, m.EventDedupReplayLoaded,
 		m.V2EventsProjected, m.V2IndexSize, m.V2IndexPruned, m.V2ReplayProjected,
 		m.V2ReplaySkipped,
@@ -472,19 +401,15 @@ func New(reg *prometheus.Registry) *Metrics {
 		m.V2ReadLatency, m.V2ReadEmpty, m.V2ReadNotFound,
 		m.ReplayLagSeconds, m.ReplayInProgress, m.ReplayFailuresTotal, m.Ready,
 		m.InFlightRequests,
-		m.SnapshotLastSuccess, m.SnapshotLastError,
-		m.GraphNodes, m.GraphEdges, m.GraphPrunedTotal,
-		m.TraceUpsertDuration, m.TraceStoreRecords, m.TraceStoreSpans, m.TraceStoreCohorts, m.TraceStorePruned,
 		m.AskRequestsTotal, m.AskDuration,
 		m.AskToolCallsTotal, m.AskToolDuration,
 		m.ToolDirectCallsTotal, m.DedupReplayTotal, m.DedupCacheSize,
 		m.ColdEventsWritten, m.ColdEventsDropped, m.ColdBatchLatency,
 		m.DeployUpsertsTotal, m.DeployUpsertErrors,
-		m.SignalsAccepted, m.SignalsRejected, m.SignalRetentionPruned,
+		m.SignalsAccepted, m.SignalsRejected, m.SignalRetentionPruned, m.IncidentRetentionPruned,
 		m.IncidentOpened, m.IncidentUpdated, m.IncidentRecovered, m.IncidentResolved,
 		m.IncidentTickLatency, m.IncidentActive, m.IncidentClassifications,
 		m.IncidentRebuildDuration, m.IncidentRebuildRows, m.IncidentRebuildFailures, m.IncidentRebuildReplayed,
-		m.CausalRunsTotal, m.CausalRunDuration, m.CausalRunFailures, m.CausalClaimsTotal,
 		m.OTLPRequestsTotal, m.OTLPSpansReceived, m.OTLPSpansConverted,
 		m.OTLPSpansDropped, m.OTLPValidationRejects, m.OTLPDecodeFailures,
 		m.OTLPInfraFailures, m.OTLPRequestDuration, m.OTLPRequestSizeBytes,

@@ -98,6 +98,34 @@ check_read "Trace story 404" "${INGEST_URL}/v1/traces/story?trace_id=00000000000
 # Test 10: Trace story 400 for missing param
 check_read "Trace story 400" "${INGEST_URL}/v1/traces/story" "400"
 
+# --- v1.0 incident evidence smoke ---
+# Every active incident must have non-nil propagation.latest and blast.latest
+# after the engine has run at least one tick. Latest captures even on
+# partial/missing status, so the only way these are nil is if the engine
+# never ran or the response shape is broken.
+if command -v jq &>/dev/null; then
+  echo ""
+  echo "=== Incident evidence: propagation.latest + blast.latest ==="
+  active_json=$(curl -fsS -H "Authorization: Bearer ${WAYLOG_READ_KEY}" "${INGEST_URL}/v1/incidents/active" 2>/dev/null || echo '{"incidents":[]}')
+  inc_count=$(echo "$active_json" | jq '.incidents | length' 2>/dev/null || echo 0)
+  if [[ "$inc_count" -eq 0 ]]; then
+    echo "WARN: no active incidents to check (demo may not have triggered failure scenarios yet)"
+  else
+    for inc_id in $(echo "$active_json" | jq -r '.incidents[].incident_id'); do
+      body=$(curl -fsS -H "Authorization: Bearer ${WAYLOG_READ_KEY}" "${INGEST_URL}/v1/incidents/${inc_id}")
+      ok=$(echo "$body" | jq '.incident.blast.latest != null and .incident.propagation.latest != null' 2>/dev/null || echo false)
+      if [[ "$ok" != "true" ]]; then
+        echo "FAIL: incident ${inc_id} missing latest snapshots"
+        echo "  body: $(echo "$body" | jq -c '{propagation:.incident.propagation,blast:.incident.blast}')"
+        failed=$((failed + 1))
+      else
+        echo "PASS: incident ${inc_id} has propagation.latest + blast.latest"
+        passed=$((passed + 1))
+      fi
+    done
+  fi
+fi
+
 echo ""
 echo "=== Results: $passed passed, $failed failed ==="
 

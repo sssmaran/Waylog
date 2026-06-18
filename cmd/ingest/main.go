@@ -4,13 +4,11 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -25,9 +23,6 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/detect"
 	"github.com/sssmaran/WaylogCLI/internal/eventlog"
 	eventlogv2 "github.com/sssmaran/WaylogCLI/internal/eventlog/v2"
-	"github.com/sssmaran/WaylogCLI/internal/graph/causal"
-	"github.com/sssmaran/WaylogCLI/internal/graph/core"
-	graphstore "github.com/sssmaran/WaylogCLI/internal/graph/store"
 	"github.com/sssmaran/WaylogCLI/internal/incidents"
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
@@ -35,10 +30,9 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	otelhttp "github.com/sssmaran/WaylogCLI/internal/otel"
-	"github.com/sssmaran/WaylogCLI/internal/persist"
+	"github.com/sssmaran/WaylogCLI/internal/ratelimit"
 	"github.com/sssmaran/WaylogCLI/internal/signals"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
-	"github.com/sssmaran/WaylogCLI/internal/tracestore"
 	"github.com/sssmaran/WaylogCLI/internal/triage"
 	"github.com/sssmaran/WaylogCLI/internal/triagehttp"
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
@@ -47,56 +41,21 @@ import (
 	"google.golang.org/grpc"
 )
 
-var graphStore *graphstore.Store
-
 func main() {
 	level := parseSlogLevel(config.Getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
 	addr := config.Getenv("INGEST_ADDR", ":8080")
 
-	// ---------------- Graph persistence config ----------------
+	// ---------------- Hot-window config ----------------
 
-	snapshotPath := config.Getenv("SNAPSHOT_PATH", "./data/graph_snapshot.json")
-	snapshotEvery := config.GetenvInt("SNAPSHOT_EVERY_SEC", 5)
-	snapshotLogEvery := config.GetenvInt("SNAPSHOT_LOG_EVERY", 1)
-	graphHotWindow := config.GetenvDuration("GRAPH_HOT_WINDOW", 0)
-	if graphHotWindow == 0 {
-		graphHotWindow = config.GetenvDuration("GRAPH_RETENTION", 24*time.Hour)
-	}
+	tickEvery := config.GetenvInt("PRUNE_TICK_SEC", 5)
+	graphHotWindow := config.GetenvDuration("GRAPH_HOT_WINDOW", 24*time.Hour)
 	if graphHotWindow <= 0 {
 		slog.Error("GRAPH_HOT_WINDOW must be positive", "value", graphHotWindow)
 		os.Exit(1)
 	}
 	mcpStdio := config.GetenvBool("MCP_STDIO", false)
-
-	graphStore = graphstore.NewStore()
-	traceStore := tracestore.NewStore()
-	var snapshotSavedAt time.Time
-
-	// Restore snapshot (non-fatal). On corrupt/missing snapshot the server
-	// starts with an empty graph and re-establishes persistence once it
-	// has data. persist.Save backs up the previous file as .bak before
-	// overwriting, so corrupt snapshots are never lost.
-	if snap, source, err := persist.LoadWithSource(snapshotPath); err == nil {
-		graphStore.Restore(snap.Graph)
-		snapshotSavedAt = snap.SavedAt
-		slog.Info("snapshot loaded",
-			"path", snapshotPath,
-			"nodes", snap.NodeCount,
-			"edges", snap.EdgeCount,
-			"saved_at", snap.SavedAt.Format(time.RFC3339),
-		)
-		if source == "backup" {
-			slog.Info("snapshot loaded from backup", "path", snapshotPath+".bak")
-		}
-	} else if errors.Is(err, persist.ErrSnapshotMissing) {
-		slog.Info("no snapshot found, starting fresh")
-	} else if errors.Is(err, persist.ErrSnapshotVersionMismatch) {
-		slog.Warn("snapshot version incompatible, replaying from event log", "path", snapshotPath, "err", err)
-	} else {
-		slog.Warn("snapshot load failed, starting with empty graph", "err", err)
-	}
 
 	authCfg, err := auth.ParseConfig(map[string]string{
 		"WAYLOG_API_KEY":           os.Getenv("WAYLOG_API_KEY"),
@@ -110,6 +69,9 @@ func main() {
 	if err != nil {
 		slog.Error("auth config error", "err", err)
 		os.Exit(1)
+	}
+	for _, w := range authCfg.WeakKeyWarnings() {
+		slog.Warn("insecure auth configuration", "detail", w)
 	}
 
 	var sm *auth.SessionManager
@@ -132,14 +94,12 @@ func main() {
 	dashboardRefreshSec := config.GetenvInt("DASHBOARD_REFRESH_SEC", 10)
 	prometheusURL := config.Getenv("PROMETHEUS_URL", "")
 	grafanaURL := config.Getenv("GRAFANA_URL", "")
-	graphUI := config.GetenvBool("GRAPH_UI", false)
 	otlpEnabled := config.GetenvBool("OTLP_ENABLED", true)
 	otlpGRPCAddr := config.Getenv("OTLP_GRPC_ADDR", ":4317")
 	if authCfg.Profile == auth.ProfileProd && otlpEnabled && len(authCfg.WriteKeys) == 0 {
 		slog.Error("WAYLOG_PROFILE=prod with OTLP enabled requires WAYLOG_WRITE_KEY — refusing to boot with unauthenticated OTLP")
 		os.Exit(1)
 	}
-	v2ReadsEnabled := config.GetenvBool("WAYLOG_V2_READS", true)
 	signalRetention := config.GetenvDuration("WAYLOG_SIGNAL_RETENTION", 72*time.Hour)
 	alertMatchWindow := config.GetenvDuration("ALERT_MATCH_WINDOW", 15*time.Minute)
 	if alertMatchWindow <= 0 {
@@ -154,6 +114,7 @@ func main() {
 		Window:                  config.GetenvDuration("WAYLOG_INCIDENT_WINDOW", 10*time.Minute),
 		MinCount:                config.GetenvInt("WAYLOG_INCIDENT_MIN_COUNT", 5),
 		MinLift:                 config.GetenvFloat("WAYLOG_INCIDENT_MIN_LIFT", 3.0),
+		MinRate:                 config.GetenvFloat("WAYLOG_INCIDENT_MIN_RATE", 0),
 		ResolveAfter:            config.GetenvDuration("WAYLOG_INCIDENT_RESOLVE_AFTER", 2*time.Minute),
 		DeployCorrelationWindow: config.GetenvDuration("WAYLOG_DEPLOY_CORRELATION_WINDOW", 15*time.Minute),
 		SampleLimit:             config.GetenvInt("WAYLOG_INCIDENT_SAMPLE_LIMIT", 5),
@@ -162,9 +123,6 @@ func main() {
 		slog.Error("WAYLOG_SIGNAL_RETENTION must be positive", "value", signalRetention)
 		os.Exit(1)
 	}
-
-	causalEnabled := config.GetenvBool("CAUSAL_ENABLED", false)
-	causalInterval := config.GetenvDuration("CAUSAL_INTERVAL", 30*time.Second)
 
 	trustProxy := config.GetenvBool("WAYLOG_TRUST_PROXY", false)
 	if _, err := llm.SelectFromEnv(); err != nil {
@@ -176,10 +134,6 @@ func main() {
 	planStore := ingest.NewPlanStore()
 
 	reg := tools.NewRegistry()
-	if err := tools.RegisterGraphTools(reg); err != nil {
-		slog.Error("mcp tools init failed", "err", err)
-		os.Exit(1)
-	}
 
 	// Prometheus metrics
 	promReg := prometheus.NewRegistry()
@@ -192,7 +146,7 @@ func main() {
 		slog.Error("EVENT_LOG_RETENTION must be positive", "value", eventLogRetention)
 		os.Exit(1)
 	}
-	eventLogV2Dir := config.Getenv("EVENT_LOG_V2_DIR", defaultEventLogV2Dir(eventLogDir))
+	eventLogV2Dir := eventlogv2.ResolveDir(os.Getenv("EVENT_LOG_V2_DIR"), eventLogDir)
 	v2Wal, err := eventlogv2.New(eventLogV2Dir,
 		eventlogv2.WithSync(eventLogSync),
 		eventlogv2.WithMaxBytes(eventLogMaxMB*1024*1024),
@@ -257,8 +211,6 @@ func main() {
 
 	// Create ingest server with the store
 	ingestServer := ingest.NewServer(ingest.ServerConfig{
-		Store:                    graphStore,
-		TraceStore:               traceStore,
 		MaxBodyBytes:             maxBody,
 		EventLogDir:              eventLogDir,
 		Metrics:                  m,
@@ -269,7 +221,6 @@ func main() {
 		DashboardRefreshSec:      dashboardRefreshSec,
 		PrometheusURL:            prometheusURL,
 		GrafanaURL:               grafanaURL,
-		GraphUI:                  graphUI,
 		DedupCache:               dedupCache,
 		AgentKey:                 agentKey,
 		TrustProxy:               trustProxy,
@@ -280,16 +231,11 @@ func main() {
 		OTLPEnabled:              otlpEnabled,
 		OTLPGRPCEnabled:          otlpEnabled && otlpGRPCAddr != "",
 		OTLPGRPCAddr:             otlpGRPCAddr,
-		V2ReadsEnabled:           v2ReadsEnabled,
-		IncidentsEnabled:         v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
-		IncidentsPersistent:      v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
-		IncidentRebuildSupported: v2ReadsEnabled && incidentsEnabled && sqlitePath != "",
+		IncidentsEnabled:         incidentsEnabled && sqlitePath != "",
+		IncidentsPersistent:      incidentsEnabled && sqlitePath != "",
+		IncidentRebuildSupported: incidentsEnabled && sqlitePath != "",
 		Profile:                  authCfg.Profile,
 	})
-
-	// SSE hub for real-time dashboard updates
-	sseHub := ingest.NewSSEHub(config.GetenvInt("SSE_MAX_CLIENTS", 100))
-	ingestServer.SetSSEHub(sseHub)
 
 	// Optional append-only v1 event log
 	var el *eventlog.Writer
@@ -311,63 +257,8 @@ func main() {
 			"max_file_mb", eventLogMaxMB,
 			"retention", eventLogRetention,
 		)
-
-		// Replay WAL to rebuild derived views.
-		//
-		// The graph snapshot covers nodes/edges, so the graph only needs
-		// entries newer than snapshotSavedAt. The trace store is NOT
-		// snapshotted, so it must be rebuilt from the full hot window
-		// to restore drill-down data (trace_summary, story, topology).
-		m.ReplayInProgress.Set(1)
-		traceReplayAfter := time.Now().Add(-graphHotWindow)
-		replayAfter := snapshotSavedAt
-		if traceReplayAfter.Before(replayAfter) {
-			replayAfter = traceReplayAfter
-		}
-		entries, replayErr := eventlog.ReadDir(eventLogDir, replayAfter)
-		if replayErr != nil {
-			slog.Warn("event log replay failed", "err", replayErr)
-			m.ReplayFailuresTotal.Inc()
-		} else if len(entries) > 0 {
-			replayedGraph, replayedTrace := 0, 0
-			for i := range entries {
-				m.ReplayLagSeconds.Set(time.Since(entries[i].LoggedAt).Seconds())
-				if !entries[i].SampledInGraph {
-					continue
-				}
-				result := ingestServer.Builder().BuildResult(entries[i].Event)
-
-				// Graph: only merge entries newer than the snapshot.
-				if entries[i].LoggedAt.After(snapshotSavedAt) {
-					graphStore.Merge(result.Graph)
-					replayedGraph++
-				}
-
-				// Trace store: merge everything in the hot window.
-				if result.Span != nil {
-					traceStore.Upsert(entries[i].Event.Request.TraceID, core.ID("request", entries[i].Event.Request.TraceID), result.Span)
-					replayedTrace++
-				}
-			}
-			m.TraceStoreRecords.Set(float64(traceStore.Count()))
-			m.TraceStoreSpans.Set(float64(traceStore.SpanCount()))
-			m.TraceStoreCohorts.Set(float64(traceStore.CohortCount()))
-			slog.Info("event log replay complete",
-				"total", len(entries),
-				"graph_replayed", replayedGraph,
-				"trace_replayed", replayedTrace,
-			)
-		}
-		m.ReplayLagSeconds.Set(0)
-		m.ReplayInProgress.Set(0)
-		ingestServer.SetReplayResult(replayErr)
-		ingestServer.SetReady()
-	} else {
-		ingestServer.SetReady()
 	}
-
-	// Set default store for CLI
-	cli.SetDefaultStore(graphStore)
+	ingestServer.SetReady()
 
 	// ---------------- HTTP server ----------------
 
@@ -378,9 +269,22 @@ func main() {
 
 	corsOrigin := config.Getenv("CORS_ORIGIN", "*")
 
-	writeAuth := auth.Middleware("write", authCfg.WriteKeys, nil)
-	readAuth := auth.Middleware("read", authCfg.ReadKeys, sessionCheck)
-	agentAuth := auth.Middleware("agent", authCfg.AgentKeys, nil)
+	// Per-key rate limits run outermost (before auth) so floods of invalid
+	// credentials are throttled too. 0 disables; only prod limits by default.
+	defWriteRPS, defReadRPS, defAgentRPS := 0, 0, 0
+	if authCfg.Profile == auth.ProfileProd {
+		defWriteRPS, defReadRPS, defAgentRPS = 1000, 200, 50
+	}
+	writeLimit := ratelimit.Middleware(ratelimit.New(config.GetenvInt("WAYLOG_RATE_LIMIT_WRITE_RPS", defWriteRPS)), "write", m)
+	readLimit := ratelimit.Middleware(ratelimit.New(config.GetenvInt("WAYLOG_RATE_LIMIT_READ_RPS", defReadRPS)), "read", m)
+	agentLimit := ratelimit.Middleware(ratelimit.New(config.GetenvInt("WAYLOG_RATE_LIMIT_AGENT_RPS", defAgentRPS)), "agent", m)
+
+	writeKeyAuth := auth.Middleware("write", authCfg.WriteKeys, nil)
+	readKeyAuth := auth.Middleware("read", authCfg.ReadKeys, sessionCheck)
+	agentKeyAuth := auth.Middleware("agent", authCfg.AgentKeys, nil)
+	writeAuth := func(h http.Handler) http.Handler { return writeLimit(writeKeyAuth(h)) }
+	readAuth := func(h http.Handler) http.Handler { return readLimit(readKeyAuth(h)) }
+	agentAuth := func(h http.Handler) http.Handler { return agentLimit(agentKeyAuth(h)) }
 	dashGate := auth.DashboardGate(authCfg, sm)
 
 	mux := http.NewServeMux()
@@ -411,7 +315,13 @@ func main() {
 	// OTLP/HTTP traces reuse the same schema-2.0 WAL and projector as the SDK path.
 	var otlpGRPCServer *grpc.Server
 	if otlpEnabled {
-		otlpHandler := otelhttp.NewHandler(eventsV2, m, maxBody)
+		// A service.version change observed on OTLP spans auto-registers a
+		// deployment so deploy correlation works without the deploy webhook.
+		var deployTracker *otelhttp.DeployTracker
+		if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
+			deployTracker = otelhttp.NewDeployTracker(sqlite)
+		}
+		otlpHandler := otelhttp.NewHandler(eventsV2, m, maxBody, deployTracker)
 		mux.Handle("/v1/otlp/v1/traces", writeAuth(http.HandlerFunc(otlpHandler.ServeHTTP)))
 		slog.Info("otlp enabled", "endpoint", "/v1/otlp/v1/traces")
 		if otlpGRPCAddr != "" {
@@ -419,7 +329,7 @@ func main() {
 				grpc.UnaryInterceptor(otelhttp.AuthUnaryInterceptor(authCfg.WriteKeys)),
 				grpc.MaxRecvMsgSize(int(maxBody)),
 			)
-			coltracepb.RegisterTraceServiceServer(otlpGRPCServer, otelhttp.NewTraceServiceServer(eventsV2, m, maxBody))
+			coltracepb.RegisterTraceServiceServer(otlpGRPCServer, otelhttp.NewTraceServiceServer(eventsV2, m, maxBody, deployTracker))
 			ingestServer.SetOTLPGRPC(true, otlpGRPCAddr)
 		}
 	}
@@ -430,192 +340,194 @@ func main() {
 		return http.HandlerFunc(ingest.CORSWrap(corsOrigin, "GET, OPTIONS",
 			func(w http.ResponseWriter, r *http.Request) { inner.ServeHTTP(w, r) }))
 	}
-	mux.Handle("/v1/overview", readCORS(ingestServer.Overview))
-	var v2Reader *ingestv2.Reader
 	var incidentEngine *incidents.Engine
 	incidentRunning := false
-	if v2ReadsEnabled {
-		v2Reader = ingestv2.NewReader(v2Index)
-		v2ReadHandler := ingestv2.NewReadHandler(v2Reader, m, graphHotWindow)
-		mux.Handle("/v1/events/search", readCORS(v2ReadHandler.EventSearch))
-		mux.Handle("/v1/errors", readCORS(v2ReadHandler.Errors))
-		mux.Handle("/v1/blast_radius", readCORS(v2ReadHandler.BlastRadius))
-		mux.Handle("/v1/traces/story", readCORS(v2ReadHandler.TraceStory))
-		mux.Handle("/v1/traces/recent", readCORS(v2ReadHandler.RecentTraces))
-		// ServeMux chooses the longest matching pattern, so these prefix handlers
-		// do not capture the concrete routes above or /v1/events/validate.
-		mux.Handle("/v1/events/", readCORS(v2ReadHandler.EventByID))
-		mux.Handle("/v1/traces/", readCORS(v2ReadHandler.TraceByID))
-		slog.Info("v2 read endpoints enabled")
-		if incidentsEnabled {
-			if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
-				incidentStore := coldstore.NewIncidentStore(sqlite)
-				incReader := incidentReaderAdapter{reader: v2Reader}
-				incidentEngine = incidents.NewEngine(
-					incReader,
-					signalStore,
-					coldDeployAdapter{store: sqlite},
-					incidentStore,
-					incidentCfg,
-					m,
-					slog.Default(),
-				)
-				if err := incidentEngine.Bootstrap(context.Background()); err != nil {
-					slog.Error("incident engine bootstrap failed", "err", err)
+	v2Reader := ingestv2.NewReader(v2Index)
+	v2ReadHandler := ingestv2.NewReadHandler(v2Reader, m, graphHotWindow)
+	mux.Handle("/v1/events/search", readCORS(v2ReadHandler.EventSearch))
+	mux.Handle("/v1/errors", readCORS(v2ReadHandler.Errors))
+	mux.Handle("/v1/blast_radius", readCORS(v2ReadHandler.BlastRadius))
+	mux.Handle("/v1/traces/story", readCORS(v2ReadHandler.TraceStory))
+	mux.Handle("/v1/traces/recent", readCORS(v2ReadHandler.RecentTraces))
+	// ServeMux chooses the longest matching pattern, so these prefix handlers
+	// do not capture the concrete routes above or /v1/events/validate.
+	mux.Handle("/v1/events/", readCORS(v2ReadHandler.EventByID))
+	mux.Handle("/v1/traces/", readCORS(v2ReadHandler.TraceByID))
+	// Register the reader-backed explain_request + blast_radius. The
+	// triage_incident + render_triage_report pair registers later once
+	// triage.Engine exists.
+	{
+		v2ToolReader := incidentReaderAdapter{reader: v2Reader}
+		if err := tools.RegisterExplainRequestTool(reg, v2ToolReader); err != nil {
+			slog.Error("register explain_request v2", "err", err)
+			os.Exit(1)
+		}
+		if err := tools.RegisterBlastRadiusTool(reg, v2ToolReader); err != nil {
+			slog.Error("register blast_radius v2", "err", err)
+			os.Exit(1)
+		}
+	}
+	if incidentsEnabled {
+		if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
+			incidentStore := coldstore.NewIncidentStore(sqlite)
+			incReader := incidentReaderAdapter{reader: v2Reader}
+			incidentEngine = incidents.NewEngine(
+				incReader,
+				signalStore,
+				coldDeployAdapter{store: sqlite},
+				incidentStore,
+				incidentCfg,
+				m,
+				slog.Default(),
+			)
+			if err := incidentEngine.Bootstrap(context.Background()); err != nil {
+				slog.Error("incident engine bootstrap failed", "err", err)
+				os.Exit(1)
+			}
+			if config.GetenvBool("WAYLOG_REBUILD_INCIDENTS_ON_START", false) {
+				rebuildMaxEvents := config.GetenvInt("WAYLOG_INCIDENT_REBUILD_MAX_EVENTS", 250000)
+				if rebuildMaxEvents <= 0 {
+					rebuildMaxEvents = 250000
+				}
+				replayWindow := graphHotWindow
+				// 4× window: the spike baseline is the median of the 3 prior
+				// windows, so rebuild needs current + 3 baselines of history.
+				if minWindow := 4 * incidentCfg.Window; minWindow > replayWindow {
+					replayWindow = minWindow
+				}
+				replaySince := time.Now().UTC().Add(-replayWindow)
+				seed := incidentEngine.SnapshotActive()
+				for _, inc := range seed {
+					if inc.StartedAt.Before(replaySince) {
+						slog.Info("incident continuity broken: started_at older than WAL retention",
+							"incident_id", inc.IncidentID,
+							"started_at", inc.StartedAt,
+							"replay_since", replaySince,
+						)
+						break
+					}
+				}
+				tempIndex := ingestv2.NewRecentIndex(nil)
+				tempDedup := ingestv2.NewDedup(dedupCapacity, nil)
+				tempProjector := ingestv2.NewProjector(tempIndex)
+				replay, err := ingestv2.ReplayWAL(eventLogV2Dir, tempDedup, tempProjector, replaySince, m)
+				if err != nil {
+					m.IncidentRebuildFailures.Inc()
+					slog.Error("incident rebuild WAL replay failed", "err", err)
 					os.Exit(1)
 				}
-				if config.GetenvBool("WAYLOG_REBUILD_INCIDENTS_ON_START", false) {
-					rebuildMaxEvents := config.GetenvInt("WAYLOG_INCIDENT_REBUILD_MAX_EVENTS", 250000)
-					if rebuildMaxEvents <= 0 {
-						rebuildMaxEvents = 250000
-					}
-					replayWindow := graphHotWindow
-					if minWindow := 2 * incidentCfg.Window; minWindow > replayWindow {
-						replayWindow = minWindow
-					}
-					replaySince := time.Now().UTC().Add(-replayWindow)
-					seed := incidentEngine.SnapshotActive()
-					for _, inc := range seed {
-						if inc.StartedAt.Before(replaySince) {
-							slog.Info("incident continuity broken: started_at older than WAL retention",
-								"incident_id", inc.IncidentID,
-								"started_at", inc.StartedAt,
-								"replay_since", replaySince,
-							)
-							break
+				m.IncidentRebuildReplayed.Add(float64(replay.Projected))
+				if replay.Projected > rebuildMaxEvents {
+					m.IncidentRebuildFailures.Inc()
+					slog.Error("incident rebuild replay exceeded max events", "projected", replay.Projected, "max_events", rebuildMaxEvents)
+					os.Exit(1)
+				}
+				if replay.Projected == 0 {
+					// Empty WAL replay while rebuild was explicitly requested.
+					// Transition only the seed rows whose StartedAt precedes
+					// replaySince — those are stale beyond the hot window and
+					// their continuing "active" status is no longer evidence-
+					// backed. Non-stale active rows in the same seed are left
+					// untouched and will be re-evaluated by the next live tick.
+					staleTransitioned := 0
+					if len(seed) > 0 {
+						incidentStoreRef := incidentStore
+						now := time.Now().UTC()
+						for _, inc := range seed {
+							if inc.Status != incidents.StatusActive {
+								continue
+							}
+							if !inc.StartedAt.Before(replaySince) {
+								continue
+							}
+							row := inc
+							row.Status = incidents.StatusRecovering
+							t := now
+							row.RecoveringAt = &t
+							row.UpdatedAt = now
+							if err := incidentStoreRef.Upsert(context.Background(), row); err != nil {
+								slog.Warn("stale-active rebuild transition failed",
+									"incident_id", row.IncidentID, "err", err)
+								continue
+							}
+							staleTransitioned++
+						}
+						if staleTransitioned > 0 {
+							if err := incidentEngine.Bootstrap(context.Background()); err != nil {
+								slog.Error("incident engine re-bootstrap after stale transition failed", "err", err)
+								os.Exit(1)
+							}
+							slog.Info("incidents rebuild: stale active rows transitioned to recovering",
+								"transitioned", staleTransitioned,
+								"replay_since", replaySince)
+						} else {
+							slog.Warn("incidents rebuild skipped: WAL replay returned no events; preserving SQLite as-is")
 						}
 					}
-					tempIndex := ingestv2.NewRecentIndex(nil)
-					tempDedup := ingestv2.NewDedup(dedupCapacity, nil)
-					tempProjector := ingestv2.NewProjector(tempIndex)
-					replay, err := ingestv2.ReplayWAL(eventLogV2Dir, tempDedup, tempProjector, replaySince, m)
+				} else {
+					result, err := incidents.Rebuild(context.Background(), incidents.RebuildDeps{
+						Engine: incidentEngine,
+						Reader: incidentReaderAdapter{reader: ingestv2.NewReader(tempIndex)},
+						Now:    time.Now,
+					})
 					if err != nil {
 						m.IncidentRebuildFailures.Inc()
-						slog.Error("incident rebuild WAL replay failed", "err", err)
+						slog.Error("incident rebuild failed", "err", err)
 						os.Exit(1)
 					}
-					m.IncidentRebuildReplayed.Add(float64(replay.Projected))
-					if replay.Projected > rebuildMaxEvents {
-						m.IncidentRebuildFailures.Inc()
-						slog.Error("incident rebuild replay exceeded max events", "projected", replay.Projected, "max_events", rebuildMaxEvents)
-						os.Exit(1)
-					}
-					if replay.Projected == 0 {
-						// Empty WAL replay while rebuild was explicitly requested.
-						// Transition only the seed rows whose StartedAt precedes
-						// replaySince — those are stale beyond the hot window and
-						// their continuing "active" status is no longer evidence-
-						// backed. Non-stale active rows in the same seed are left
-						// untouched and will be re-evaluated by the next live tick.
-						staleTransitioned := 0
-						if len(seed) > 0 {
-							incidentStoreRef := incidentStore
-							now := time.Now().UTC()
-							for _, inc := range seed {
-								if inc.Status != incidents.StatusActive {
-									continue
-								}
-								if !inc.StartedAt.Before(replaySince) {
-									continue
-								}
-								row := inc
-								row.Status = incidents.StatusRecovering
-								t := now
-								row.RecoveringAt = &t
-								row.UpdatedAt = now
-								if err := incidentStoreRef.Upsert(context.Background(), row); err != nil {
-									slog.Warn("stale-active rebuild transition failed",
-										"incident_id", row.IncidentID, "err", err)
-									continue
-								}
-								staleTransitioned++
-							}
-							if staleTransitioned > 0 {
-								if err := incidentEngine.Bootstrap(context.Background()); err != nil {
-									slog.Error("incident engine re-bootstrap after stale transition failed", "err", err)
-									os.Exit(1)
-								}
-								slog.Info("incidents rebuild: stale active rows transitioned to recovering",
-									"transitioned", staleTransitioned,
-									"replay_since", replaySince)
-							} else {
-								slog.Warn("incidents rebuild skipped: WAL replay returned no events; preserving SQLite as-is")
-							}
-						}
-					} else {
-						result, err := incidents.Rebuild(context.Background(), incidents.RebuildDeps{
-							Engine: incidentEngine,
-							Reader: incidentReaderAdapter{reader: ingestv2.NewReader(tempIndex)},
-							Now:    time.Now,
-						})
-						if err != nil {
-							m.IncidentRebuildFailures.Inc()
-							slog.Error("incident rebuild failed", "err", err)
-							os.Exit(1)
-						}
-						m.IncidentRebuildDuration.Observe(result.Duration.Seconds())
-						m.IncidentRebuildRows.Add(float64(result.RowsReplaced))
-						slog.Info("incident rebuild complete",
-							"replayed_events", replay.Projected,
-							"rows_replaced", result.RowsReplaced,
-							"duration", result.Duration,
-						)
-					}
+					m.IncidentRebuildDuration.Observe(result.Duration.Seconds())
+					m.IncidentRebuildRows.Add(float64(result.RowsReplaced))
+					slog.Info("incident rebuild complete",
+						"replayed_events", replay.Projected,
+						"rows_replaced", result.RowsReplaced,
+						"duration", result.Duration,
+					)
 				}
-				incidentHandler := incidents.NewHandler(incidentEngine)
-				mux.Handle("/v1/incidents/active", readCORS(incidentHandler.Active))
-				mux.Handle("/v1/incidents/", readCORS(incidentHandler.Incident))
-				ingestServer.SetDetector(incidentInsightAdapter{engine: incidentEngine})
-
-				// Triage engine: deterministic TriageReport build for a given
-				// incident. Reuses the same v2Reader-backed adapter for blast
-				// queries, the live graph + trace store for first-failure
-				// stories, and the configured signal store. Read-scope auth.
-				triageEng, err := triage.NewEngine(triage.Deps{
-					Incidents: triage.NewIncidentLookupAdapter(incidentEngine),
-					Blast:     triage.NewBlastQueryAdapter(incReader),
-					Story: triage.NewStoryBuilderAdapter(
-						incidentEngine,
-						func(traceID string) (apiv2.StoryResponse, bool) {
-							return v2Reader.TraceStoryByTraceID(traceID)
-						},
-					),
-					Signals:    triage.NewSignalQueryAdapter(signalStore),
-					Alerts:     triage.NewAlertQueryAdapter(signalStore, alertMatchWindow),
-					NextChecks: triage.NewNextChecksAdapter(),
-				})
-				if err != nil {
-					slog.Error("triage engine init failed", "err", err)
-					os.Exit(1)
-				}
-				if err := tools.RegisterTriageTool(reg, triageEng); err != nil {
-					slog.Error("triage tool register failed", "err", err)
-					os.Exit(1)
-				}
-				if err := tools.RegisterTriageReportTool(reg, triageEng); err != nil {
-					slog.Error("triage report tool register failed", "err", err)
-					os.Exit(1)
-				}
-				triageHandler := triagehttp.NewHandler(triageEng)
-				mux.Handle("/v1/triage/", readCORS(triageHandler.Triage))
-
-				incidentRunning = true
-				slog.Info("incident engine enabled", "interval", incidentCfg.TickInterval, "window", incidentCfg.Window)
-			} else {
-				slog.Warn("incidents requested but SQLite not configured; running without incidents")
 			}
+			incidentHandler := incidents.NewHandler(incidentEngine)
+			mux.Handle("/v1/incidents/active", readCORS(incidentHandler.Active))
+			mux.Handle("/v1/incidents/", readCORS(incidentHandler.Incident))
+			ingestServer.SetDetector(incidentInsightAdapter{engine: incidentEngine})
+
+			// Triage engine: deterministic TriageReport build for a given
+			// incident. Wires the incidents engine for lookups, the v2
+			// reader for blast queries and TraceStoryByTraceID, and the
+			// signal store + alert adapter for context. Read-scope auth.
+			triageEng, err := triage.NewEngine(triage.Deps{
+				Incidents: triage.NewIncidentLookupAdapter(incidentEngine),
+				Blast:     triage.NewBlastQueryAdapter(incReader),
+				Story: triage.NewStoryBuilderAdapter(
+					incidentEngine,
+					func(traceID string) (apiv2.StoryResponse, bool) {
+						return v2Reader.TraceStoryByTraceID(traceID)
+					},
+				),
+				Signals:    triage.NewSignalQueryAdapter(signalStore),
+				Alerts:     triage.NewAlertQueryAdapter(signalStore, alertMatchWindow),
+				NextChecks: triage.NewNextChecksAdapter(),
+			})
+			if err != nil {
+				slog.Error("triage engine init failed", "err", err)
+				os.Exit(1)
+			}
+			if err := tools.RegisterTriageTool(reg, triageEng); err != nil {
+				slog.Error("triage tool register failed", "err", err)
+				os.Exit(1)
+			}
+			if err := tools.RegisterTriageReportTool(reg, triageEng); err != nil {
+				slog.Error("triage report tool register failed", "err", err)
+				os.Exit(1)
+			}
+			triageHandler := triagehttp.NewHandler(triageEng)
+			mux.Handle("/v1/triage/", readCORS(triageHandler.Triage))
+
+			incidentRunning = true
+			slog.Info("incident engine enabled", "interval", incidentCfg.TickInterval, "window", incidentCfg.Window)
+		} else {
+			slog.Warn("incidents requested but SQLite not configured; running without incidents")
 		}
-	} else {
-		mux.Handle("/v1/traces/story", readCORS(ingestServer.TraceStory))
-		mux.Handle("/v1/blast_radius", readCORS(ingestServer.BlastRadius))
-		mux.Handle("/v1/traces/recent", readCORS(ingestServer.RecentTraces))
-		mux.Handle("/v1/events/search", readCORS(ingestServer.EventSearch))
 	}
-	mux.Handle("/v1/overview/timeseries", readCORS(ingestServer.OverviewTimeseries))
-	mux.Handle("/v1/routes", readCORS(ingestServer.Routes))
 	mux.Handle("/v1/capabilities", readCORS(ingestServer.Capabilities))
-	mux.Handle("/v1/topology", readCORS(ingestServer.Topology))
-	mux.Handle("/v1/stream/dashboard", readCORS(ingestServer.SSEStream))
 	mux.Handle("/v1/insight", readCORS(ingestServer.Insight))
 	alertHandler := alerts.NewHandler(signalStore, incidentEngine, v2Reader, alertMatchWindow)
 	mux.Handle("/v1/alerts", writeAuth(http.HandlerFunc(alertHandler.Alerts)))
@@ -648,11 +560,6 @@ func main() {
 	mux.Handle("/v1/plans/execute", agentCORS("POST, OPTIONS", ingestServer.PlanExecute))
 	mux.Handle("/v1/stream/plans/", agentCORS("GET, OPTIONS", ingestServer.PlanStream))
 
-	// Graph topology (feature-gated).
-	if graphUI {
-		mux.Handle("/v1/graph/topology", readCORS(ingestServer.GraphTopology))
-	}
-
 	// Dashboard.
 	mux.Handle("/ui/", dashGate(http.StripPrefix("/ui/", dashboard.Handler())))
 	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
@@ -682,6 +589,10 @@ func main() {
 	}
 	if incidentRunning {
 		go incidentEngine.Run(ctx)
+		if sqlite, ok := coldDB.(*coldstore.SQLiteStore); ok {
+			incidentRetention := config.GetenvDuration("WAYLOG_INCIDENT_RETENTION", 168*time.Hour)
+			go incidents.RunRetention(ctx, coldstore.NewIncidentStore(sqlite), incidentRetention, 5*time.Minute, m, slog.Default())
+		}
 	}
 
 	go func() {
@@ -712,7 +623,7 @@ func main() {
 	if mcpStdio {
 		go func() {
 			slog.Info("MCP stdio ready", "protocol", "2024-11-05")
-			if err := stdio.Serve(ctx, os.Stdin, os.Stdout, reg, graphStore, stdio.ServerInfo{
+			if err := stdio.Serve(ctx, os.Stdin, os.Stdout, reg, stdio.ServerInfo{
 				Name:    "waylog",
 				Version: "0.1.0",
 			}); err != nil && err != context.Canceled {
@@ -723,84 +634,20 @@ func main() {
 		go replLoop()
 	}
 
-	// ---------------- Periodic snapshotter ----------------
+	// ---------------- Periodic v2-index pruning ----------------
 
-	ticker := time.NewTicker(time.Duration(snapshotEvery) * time.Second)
-	defer ticker.Stop()
-	snapshotCount := 0
-
+	pruneTicker := time.NewTicker(time.Duration(tickEvery) * time.Second)
+	defer pruneTicker.Stop()
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				snapshotCount++
-
-				// Enforce retention: prune nodes older than the retention window.
+			case <-pruneTicker.C:
 				cutoff := time.Now().Add(-graphHotWindow)
-				graphStore.PruneOlderThan(cutoff)
 				v2Pruned := v2Index.PruneOlderThan(cutoff)
 				if v2Pruned.Events > 0 {
 					m.V2IndexPruned.Add(float64(v2Pruned.Events))
-				}
-				deletedTraces, _ := traceStore.PruneOlderThan(cutoff)
-				m.GraphPrunedTotal.Inc()
-				if deletedTraces > 0 {
-					m.TraceStorePruned.Add(float64(deletedTraces))
-				}
-
-				g := graphStore.Snapshot()
-
-				m.GraphNodes.Set(float64(len(g.Nodes)))
-				m.GraphEdges.Set(float64(len(g.Edges)))
-				m.TraceStoreRecords.Set(float64(traceStore.Count()))
-				m.TraceStoreSpans.Set(float64(traceStore.SpanCount()))
-				m.TraceStoreCohorts.Set(float64(traceStore.CohortCount()))
-
-				if len(g.Nodes) == 0 {
-					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
-						slog.Debug("snapshot skipped, graph empty")
-					}
-					continue
-				}
-
-				if err := persist.Save(snapshotPath, g); err != nil {
-					slog.Error("snapshot save failed", "err", err, "path", snapshotPath)
-					m.SnapshotLastError.Set(float64(time.Now().Unix()))
-				} else {
-					m.SnapshotLastSuccess.Set(float64(time.Now().Unix()))
-					if snapshotLogEvery > 0 && snapshotCount%snapshotLogEvery == 0 {
-						slog.Info("snapshot saved",
-							"nodes", len(g.Nodes),
-							"edges", len(g.Edges),
-							"path", snapshotPath,
-						)
-					}
-				}
-			}
-		}
-	}()
-
-	// ---------------- SSE recompute ticker ----------------
-
-	go func() {
-		sseTicker := time.NewTicker(1 * time.Second)
-		defer sseTicker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-sseTicker.C:
-				dirty := sseHub.DrainDirty()
-				if len(dirty) == 0 {
-					continue
-				}
-				for _, topic := range dirty {
-					data := ingestServer.ComputeSSETopic(topic)
-					if data != nil {
-						sseHub.Publish(topic, data)
-					}
 				}
 			}
 		}
@@ -840,108 +687,6 @@ func main() {
 
 	// ---------------- Anomaly detection ticker ----------------
 
-	detectCfg := detect.ParseConfig()
-	if detectCfg.Enabled && !incidentRunning {
-		var deploySrc detect.DeploySource
-		if coldDB != nil {
-			deploySrc = coldDB
-		}
-		detector := detect.NewDetector(detectCfg, graphStore, traceStore, deploySrc)
-		ingestServer.SetDetector(detector)
-		go detector.Run(ctx)
-	} else if incidentRunning {
-		slog.Info("legacy anomaly detector disabled because v2.1 incident engine is running")
-	}
-
-	// ---------------- Causal inference ticker ----------------
-
-	if causalEnabled && coldDB != nil {
-		ingestServer.SetCausalEnabled()
-		go func() {
-			causalTicker := time.NewTicker(causalInterval)
-			defer causalTicker.Stop()
-			slog.Info("causal engine started", "interval", causalInterval)
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-causalTicker.C:
-					func() {
-						defer func() {
-							if r := recover(); r != nil {
-								slog.Error("causal inference panicked", "recover", r)
-								m.CausalRunFailures.Inc()
-								ingestServer.SetCausalRunResult(fmt.Errorf("panic: %v", r))
-							}
-						}()
-
-						tickCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-						defer cancel()
-
-						now := time.Now().UTC()
-						m.CausalRunsTotal.Inc()
-
-						// Query deployments first — cheap; skip snapshot if none.
-						window := 1 * time.Hour
-						deps, err := coldDB.DeploymentsInWindow(tickCtx, now.Add(-window), now, "")
-						if err != nil {
-							slog.Warn("causal: deployment query failed", "err", err)
-							m.CausalRunFailures.Inc()
-							ingestServer.SetCausalRunResult(err)
-							return
-						}
-						if len(deps) == 0 {
-							ingestServer.SetCausalRunResult(nil)
-							return
-						}
-
-						snap := graphStore.Snapshot()
-						if len(snap.Nodes) == 0 {
-							ingestServer.SetCausalRunResult(nil)
-							return
-						}
-
-						// Convert coldstore.Deployment → causal.DeploymentInfo
-						infos := make([]causal.DeploymentInfo, len(deps))
-						for i, d := range deps {
-							infos[i] = causal.DeploymentInfo{ID: d.ID, Service: d.Service, FirstSeen: d.FirstSeen}
-						}
-
-						claims := causal.InferIntroducedBy(snap, infos, now.Add(-window), now)
-
-						if len(claims) > 0 {
-							if err := coldDB.SaveClaims(tickCtx, claims); err != nil {
-								slog.Warn("causal: save claims failed", "err", err)
-								m.CausalRunFailures.Inc()
-								ingestServer.SetCausalRunResult(err)
-								return
-							}
-							for _, c := range claims {
-								slog.Info("causal claim (shadow)",
-									"type", c.ClaimType,
-									"subject", c.Subject,
-									"target", c.Target,
-									"service", c.Service,
-									"confidence", c.Confidence,
-									"tier", c.Tier,
-								)
-								m.CausalClaimsTotal.With(prometheus.Labels{
-									"type": string(c.ClaimType),
-									"tier": string(c.Tier),
-								}).Inc()
-							}
-						}
-
-						m.CausalRunDuration.Observe(time.Since(now).Seconds())
-						ingestServer.SetCausalRunResult(nil)
-					}()
-				}
-			}
-		}()
-	} else if causalEnabled && coldDB == nil {
-		slog.Warn("CAUSAL_ENABLED=true but SQLITE_PATH not set — causal engine disabled")
-	}
-
 	// ---------------- Shutdown ----------------
 
 	<-ctx.Done()
@@ -976,19 +721,6 @@ func main() {
 		coldWriter.Stop()
 		slog.Info("coldstore writer drained")
 	}
-
-	// Final snapshot on shutdown
-	g := graphStore.Snapshot()
-	if len(g.Nodes) == 0 {
-		slog.Info("final snapshot skipped, graph empty")
-	} else if err := persist.Save(snapshotPath, g); err != nil {
-		slog.Error("final snapshot save failed", "err", err)
-	} else {
-		slog.Info("final snapshot saved",
-			"nodes", len(g.Nodes),
-			"edges", len(g.Edges),
-		)
-	}
 }
 
 func replLoop() {
@@ -1021,13 +753,6 @@ func replLoop() {
 		args := strings.Fields(line)
 		cli.Run(args)
 	}
-}
-
-func defaultEventLogV2Dir(eventLogDir string) string {
-	if eventLogDir != "" {
-		return filepath.Join(eventLogDir, "v2")
-	}
-	return "./data/eventlog-v2"
 }
 
 func printHelp() {
@@ -1082,6 +807,18 @@ func (a incidentReaderAdapter) BlastRadius(f incidents.SearchFilter, key apiv2.B
 func (a incidentReaderAdapter) SearchEvents(f incidents.SearchFilter, limit int) []*eventv2.Event {
 	res := a.reader.SearchEvents(toV2SearchFilter(f), nil, limit)
 	return res.Events
+}
+
+func (a incidentReaderAdapter) TraceStoryByTraceID(traceID string) (apiv2.StoryResponse, bool) {
+	return a.reader.TraceStoryByTraceID(traceID)
+}
+
+func (a incidentReaderAdapter) TraceEvents(traceID string) ([]*eventv2.Event, bool) {
+	result, ok := a.reader.GetTrace(traceID)
+	if !ok {
+		return nil, false
+	}
+	return result.Events, true
 }
 
 func toV2SearchFilter(f incidents.SearchFilter) ingestv2.SearchFilter {

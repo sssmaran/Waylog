@@ -17,6 +17,11 @@ type AuthConfig struct {
 	ReadKeys  []string
 	AgentKeys []string
 
+	// WriteKeyEnv records which env var populated WriteKeys ("WAYLOG_WRITE_KEY"
+	// or the legacy "WAYLOG_API_KEY") so a weak-key warning names the variable the
+	// operator actually set. Empty when no write key is configured.
+	WriteKeyEnv string
+
 	Profile string // "demo", "dev", or "prod". Defaults to "dev" when unset.
 
 	DashboardMode string // "off", "basic", "key"
@@ -48,8 +53,10 @@ func ParseConfig(env map[string]string) (AuthConfig, error) {
 
 	if writeKey != "" {
 		cfg.WriteKeys = splitKeys(writeKey)
+		cfg.WriteKeyEnv = "WAYLOG_WRITE_KEY"
 	} else if legacyKey != "" {
 		cfg.WriteKeys = []string{legacyKey}
+		cfg.WriteKeyEnv = "WAYLOG_API_KEY"
 	}
 
 	cfg.ReadKeys = splitKeys(env["WAYLOG_READ_KEY"])
@@ -110,6 +117,58 @@ func ParseConfig(env map[string]string) (AuthConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// weakKeyValues are common placeholder secrets that must never guard a real
+// deployment. Matched case-insensitively; the deploy/prod.env "changeme-*"
+// presets are caught by the prefix check in isWeakKey.
+var weakKeyValues = map[string]bool{
+	"demo": true, "changeme": true, "change-me": true, "password": true,
+	"secret": true, "test": true, "example": true, "key": true, "token": true,
+}
+
+func isWeakKey(k string) bool {
+	k = strings.ToLower(strings.TrimSpace(k))
+	if k == "" {
+		return false
+	}
+	return weakKeyValues[k] || strings.HasPrefix(k, "changeme") || strings.HasPrefix(k, "change-me")
+}
+
+// weakKeySuffix is appended to every weak-key warning. It is non-fatal and fires
+// in all profiles — including demo — because a placeholder key is only ever safe
+// on a local, unexposed server. The demo deliberately runs with a "demo" key, so
+// `make demo` surfaces this warning by design; it is the same nudge an operator
+// needs if they promote that config toward a real deployment.
+const weakKeySuffix = " is a weak/placeholder value — fine for a local demo, but never expose this server with it"
+
+// WeakKeyWarnings returns one human-readable warning per auth scope guarded by a
+// placeholder/demo secret. Callers should log these at startup so an operator who
+// ships with a default key is told before it becomes an incident.
+func (c AuthConfig) WeakKeyWarnings() []string {
+	var warns []string
+	check := func(envName string, keys []string) {
+		for _, k := range keys {
+			if isWeakKey(k) {
+				warns = append(warns, envName+weakKeySuffix)
+				return
+			}
+		}
+	}
+	writeEnv := c.WriteKeyEnv
+	if writeEnv == "" {
+		writeEnv = "WAYLOG_WRITE_KEY"
+	}
+	check(writeEnv, c.WriteKeys)
+	check("WAYLOG_READ_KEY", c.ReadKeys)
+	check("WAYLOG_AGENT_KEY", c.AgentKeys)
+	if c.DashboardMode == "basic" && isWeakKey(c.DashboardPass) {
+		warns = append(warns, "DASHBOARD_AUTH basic password"+weakKeySuffix)
+	}
+	if c.DashboardMode == "key" && isWeakKey(c.DashboardKey) {
+		warns = append(warns, "DASHBOARD_AUTH key"+weakKeySuffix)
+	}
+	return warns
 }
 
 func splitKeys(s string) []string {

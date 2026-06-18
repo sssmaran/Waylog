@@ -67,6 +67,8 @@ func RunCLI(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return runSearch(ctx, client, cfg, rest[1:], stdout, stderr)
 	case "triage":
 		return runTriage(ctx, client, cfg, rest[1:], stdout, stderr)
+	case "doctor":
+		return runDoctor(cfg, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", rest[0])
 		printUsage(stderr)
@@ -133,19 +135,6 @@ func setGlobalValue(cfg *cliConfig, key, value string) error {
 	return nil
 }
 
-func requireV2Reads(ctx context.Context, client *Client, stderr io.Writer) int {
-	caps, err := client.Capabilities(ctx)
-	if err != nil {
-		fmt.Fprintf(stderr, "capability check failed: %v\n", err)
-		return exitCodeForError(err)
-	}
-	if !caps.V2Reads.Enabled {
-		fmt.Fprintln(stderr, "server must run with WAYLOG_V2_READS=true for the v2 CLI")
-		return 3
-	}
-	return 0
-}
-
 func runCapabilities(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
 	if len(args) != 0 {
 		return usage(stderr, "usage: waylog capabilities [--json]")
@@ -163,9 +152,6 @@ func runErrors(ctx context.Context, client *Client, cfg cliConfig, args []string
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return usage(stderr, "usage: waylog errors [--window <dur>] [--service <svc>] [--limit <n>] [--cursor <c>] [--json]")
 	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
-	}
 	resp, err := client.Errors(ctx, ErrorsParams{Window: *window, Service: *service, Limit: *limit, Cursor: *cursor})
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderErrors)
 }
@@ -181,9 +167,6 @@ func runRecent(ctx context.Context, client *Client, cfg cliConfig, args []string
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return usage(stderr, "usage: waylog recent [--window <dur>] [--service <svc>] [--status <csv>] [--limit <n>] [--cursor <c>] [--include-suppressed] [--json]")
 	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
-	}
 	resp, err := client.Recent(ctx, RecentParams{Window: *window, Service: *service, Status: *status, Limit: *limit, Cursor: *cursor, IncludeSuppressed: *includeSuppressed})
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderRecent)
 }
@@ -191,9 +174,6 @@ func runRecent(ctx context.Context, client *Client, cfg cliConfig, args []string
 func runIncidents(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
 	if len(args) != 0 {
 		return usage(stderr, "usage: waylog incidents [--json]")
-	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
 	}
 	resp, err := client.Incidents(ctx)
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderIncidents)
@@ -203,9 +183,6 @@ func runIncident(ctx context.Context, client *Client, cfg cliConfig, args []stri
 	incidentID, snapshot, err := parseIncidentArgs(args)
 	if err != nil {
 		return usage(stderr, err.Error())
-	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
 	}
 	if snapshot {
 		if cfg.json {
@@ -250,9 +227,6 @@ func runTriage(ctx context.Context, client *Client, cfg cliConfig, args []string
 	id, window, snapshot, err := parseTriageArgs(args)
 	if err != nil {
 		return usage(stderr, err.Error())
-	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
 	}
 	rep, err := client.Triage(ctx, id, TriageParams{Window: window, Snapshot: snapshot})
 	if err != nil {
@@ -301,9 +275,6 @@ func runEvent(ctx context.Context, client *Client, cfg cliConfig, args []string,
 	if len(args) != 1 {
 		return usage(stderr, "usage: waylog event <event_id> [--json]")
 	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
-	}
 	resp, err := client.Event(ctx, args[0])
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderEvent)
 }
@@ -312,9 +283,6 @@ func runTrace(ctx context.Context, client *Client, cfg cliConfig, args []string,
 	if len(args) != 1 {
 		return usage(stderr, "usage: waylog trace <trace_id> [--json]")
 	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
-	}
 	resp, err := client.Trace(ctx, args[0])
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderTrace)
 }
@@ -322,9 +290,6 @@ func runTrace(ctx context.Context, client *Client, cfg cliConfig, args []string,
 func runExplain(ctx context.Context, client *Client, cfg cliConfig, args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		return usage(stderr, "usage: waylog explain <event_id|trace_id> [--json]")
-	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
 	}
 	id := args[0]
 	resp, err := client.Story(ctx, StoryQuery{EventID: id})
@@ -338,9 +303,6 @@ func runBlast(ctx context.Context, client *Client, cfg cliConfig, args []string,
 	p, err := parseBlastArgs(args)
 	if err != nil {
 		return usage(stderr, err.Error())
-	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
 	}
 	resp, err := client.Blast(ctx, p)
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderBlast)
@@ -421,9 +383,6 @@ func runSearch(ctx context.Context, client *Client, cfg cliConfig, args []string
 			return usage(stderr, "search requires <query>, --error-code, or --trace-id")
 		}
 		p.ErrorCode = query
-	}
-	if gate := requireV2Reads(ctx, client, stderr); gate != 0 {
-		return gate
 	}
 	resp, err := client.Search(ctx, p)
 	return renderOrError(stdout, stderr, cfg.json, resp, err, RenderSearch)
@@ -546,6 +505,7 @@ func printUsage(w io.Writer) {
   waylog explain <event_id|trace_id> [--json]
   waylog blast (--service <svc> --step <step> --code <code> | --code <code> | <service:step:code>) [--window <dur>] [--json]
   waylog search <query> [--service <svc>] [--status <csv>] [--window <dur>] [--limit <n>] [--cursor <c>] [--json]
+  waylog doctor [--server] [--json]
 
 Recommended loop:
   waylog incidents

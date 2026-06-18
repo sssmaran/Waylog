@@ -9,20 +9,13 @@ import (
 	"testing"
 )
 
-// allTools returns the full tool set matching what RegisterGraphTools creates.
+// allTools returns the v1.0 surviving tool ledger.
 func allTools() []ToolDefinition {
 	names := []string{
-		"graph_stats",
 		"explain_request",
-		"trace_graph",
-		"trace_summary",
-		"graph_failures",
-		"failure_patterns",
 		"blast_radius",
-		"failure_chain",
-		"graph_query",
-		"compare_windows",
-		"graph_insights",
+		"triage_incident",
+		"render_triage_report",
 	}
 	tools := make([]ToolDefinition, len(names))
 	for i, n := range names {
@@ -45,100 +38,60 @@ func TestFilterToolsForPrompt(t *testing.T) {
 		prompt   string
 		expected []string
 	}{
-		// --- Keyword matches ---
 		{
-			name:     "trace keyword selects trace tools",
+			name:     "trace keyword routes to explain_request",
 			prompt:   "show me the trace for abc123",
-			expected: []string{"trace_summary", "trace_graph", "explain_request"},
+			expected: []string{"explain_request"},
 		},
 		{
-			name:     "explain keyword selects explain_request",
+			name:     "explain keyword routes to explain_request",
 			prompt:   "explain why checkout failed",
 			expected: []string{"explain_request"},
 		},
 		{
-			name:     "info keyword selects explain_request",
-			prompt:   "info about request abc",
+			name:     "root cause routes to explain_request",
+			prompt:   "what is the root cause of the checkout failure",
 			expected: []string{"explain_request"},
 		},
 		{
-			name:     "blast keyword selects blast_radius",
+			name:     "why did routes to explain_request",
+			prompt:   "why did checkout return 502",
+			expected: []string{"explain_request"},
+		},
+		{
+			name:     "blast keyword routes to blast_radius",
 			prompt:   "what is the blast radius of PMT_502",
 			expected: []string{"blast_radius"},
 		},
 		{
-			name:     "pattern keyword selects failure_patterns",
-			prompt:   "show me failure pattern in the last hour",
-			expected: []string{"failure_patterns"},
+			name:     "impact keyword routes to blast_radius",
+			prompt:   "what is the impact of PMT_502",
+			expected: []string{"blast_radius"},
 		},
 		{
-			name:     "diff keyword selects compare_windows",
-			prompt:   "diff errors between now and 1h ago",
-			expected: []string{"compare_windows"},
+			name:     "affected keyword routes to blast_radius",
+			prompt:   "which users are affected",
+			expected: []string{"blast_radius"},
 		},
 		{
-			name:     "compare keyword selects compare_windows",
-			prompt:   "compare errors in last 10m vs 1h ago",
-			expected: []string{"compare_windows"},
+			name:     "triage keyword routes to triage_incident",
+			prompt:   "triage incident inc_42",
+			expected: []string{"triage_incident"},
 		},
 		{
-			name:     "query keyword selects graph_query",
-			prompt:   "query for error_code=PMT_502 in last 10m",
-			expected: []string{"graph_query"},
+			name:     "incident keyword routes to triage_incident",
+			prompt:   "show me the latest incident",
+			expected: []string{"triage_incident"},
 		},
 		{
-			name:     "insight keyword selects graph_insights",
-			prompt:   "show insights for the last hour",
-			expected: []string{"graph_insights"},
-		},
-		{
-			name:     "top keyword selects graph_insights",
-			prompt:   "top errors in the last 10 minutes",
-			expected: []string{"graph_insights"},
-		},
-		{
-			name:     "stats keyword selects graph_insights",
-			prompt:   "show me stats",
-			expected: []string{"graph_insights"},
-		},
-		{
-			name:     "failure keyword selects failures + insights",
-			prompt:   "list all failures",
-			expected: []string{"graph_failures", "graph_insights"},
-		},
-		{
-			name:     "error keyword selects failures + insights",
-			prompt:   "what errors happened recently",
-			expected: []string{"graph_failures", "graph_insights"},
-		},
-		{
-			name:     "service path selects trace_summary + failure_chain",
-			prompt:   "show the service path for this request",
-			expected: []string{"trace_summary", "failure_chain"},
-		},
-		{
-			name:     "path keyword selects trace_summary + failure_chain",
-			prompt:   "what is the path of the request",
-			expected: []string{"trace_summary", "failure_chain"},
-		},
-
-		// --- Case insensitivity ---
-		{
-			name:     "case insensitive TRACE",
-			prompt:   "Show TRACE for abc123",
-			expected: []string{"trace_summary", "trace_graph", "explain_request"},
+			name:     "report keyword routes to render_triage_report",
+			prompt:   "render the triage report",
+			expected: []string{"render_triage_report"},
 		},
 		{
 			name:     "case insensitive Blast Radius",
 			prompt:   "Blast Radius for PMT_502",
 			expected: []string{"blast_radius"},
-		},
-
-		// --- No match → empty (fallback to full list happens in caller) ---
-		{
-			name:     "why did checkout break routes to explain_request",
-			prompt:   "why did checkout break",
-			expected: []string{"explain_request", "failure_chain"},
 		},
 		{
 			name:     "empty prompt returns empty",
@@ -148,94 +101,6 @@ func TestFilterToolsForPrompt(t *testing.T) {
 		{
 			name:     "unrelated prompt returns empty",
 			prompt:   "hello how are you",
-			expected: nil,
-		},
-
-		// --- Priority: first matching case wins (switch statement) ---
-		{
-			name:     "trace wins over error when both present",
-			prompt:   "trace the error in payment service",
-			expected: []string{"trace_summary", "trace_graph", "explain_request"},
-		},
-		{
-			name:     "trace wins over explain when both present",
-			prompt:   "explain this trace abc123",
-			expected: []string{"trace_summary", "trace_graph", "explain_request"},
-		},
-		{
-			name:     "path wins over error",
-			prompt:   "show the path of the error",
-			expected: []string{"trace_summary", "failure_chain"},
-		},
-		{
-			name:     "explain wins over failure",
-			prompt:   "explain the failure",
-			expected: []string{"explain_request"},
-		},
-
-		// --- Previously known gaps, now fixed ---
-		{
-			name:     "impact keyword routes to blast_radius",
-			prompt:   "what is the impact of PMT_502",
-			expected: []string{"blast_radius"},
-		},
-		{
-			name:     "affected keyword routes to blast_radius",
-			prompt:   "which users are affected by the payment outage",
-			expected: []string{"blast_radius"},
-		},
-		{
-			name:     "what happened routes to graph_insights",
-			prompt:   "what happened in the last 10 minutes",
-			expected: []string{"graph_insights"},
-		},
-		{
-			name:     "root cause routes to explain_request",
-			prompt:   "what is the root cause of the checkout failure",
-			expected: []string{"explain_request", "failure_chain"},
-		},
-		{
-			name:     "overview routes to graph_insights",
-			prompt:   "give me an overview of the system health",
-			expected: []string{"graph_insights"},
-		},
-
-		// --- New synonym coverage ---
-		{
-			name:     "why did routes to explain_request",
-			prompt:   "why did checkout return 502",
-			expected: []string{"explain_request", "failure_chain"},
-		},
-		{
-			name:     "why is routes to explain_request",
-			prompt:   "why is the payment service failing",
-			expected: []string{"explain_request", "failure_chain"},
-		},
-		{
-			name:     "summary routes to graph_insights",
-			prompt:   "give me a summary of errors",
-			expected: []string{"graph_insights"},
-		},
-		{
-			name:     "health routes to graph_insights",
-			prompt:   "how is system health right now",
-			expected: []string{"graph_insights"},
-		},
-		{
-			name:     "radius keyword routes to blast_radius",
-			prompt:   "show the error radius for DB_TIMEOUT",
-			expected: []string{"blast_radius"},
-		},
-
-		// --- Remaining gaps (no keyword match) ---
-		{
-			name:     "GAP: vague question returns empty",
-			prompt:   "is anything wrong with my services",
-			expected: nil,
-		},
-		{
-			name:     "GAP: latency question returns empty",
-			prompt:   "which endpoints are slow right now",
 			expected: nil,
 		},
 	}
@@ -272,44 +137,26 @@ func TestFillToolArgsFromPrompt(t *testing.T) {
 		wantFilled bool
 	}{
 		{
-			name:       "extract trace_id for trace_graph",
-			tool:       "trace_graph",
-			rawArgs:    `{}`,
-			prompt:     "show trace abcdef1234567890abcdef1234567890",
-			wantKey:    "trace_id",
-			wantVal:    "abcdef1234567890abcdef1234567890",
-			wantFilled: true,
-		},
-		{
-			name:       "extract trace_id for trace_summary",
-			tool:       "trace_summary",
-			rawArgs:    `{}`,
-			prompt:     "trace summary for abcdef1234567890abcdef1234567890",
-			wantKey:    "trace_id",
-			wantVal:    "abcdef1234567890abcdef1234567890",
-			wantFilled: true,
-		},
-		{
-			name:       "extract request_id for explain_request",
+			name:       "extract trace_id for explain_request",
 			tool:       "explain_request",
 			rawArgs:    `{}`,
-			prompt:     "explain request abcdef1234567890abcdef1234567890aabbccdd",
-			wantKey:    "request_id",
-			wantVal:    "abcdef1234567890abcdef1234567890aabbccdd",
+			prompt:     "explain request abcdef1234567890abcdef1234567890",
+			wantKey:    "trace_id",
+			wantVal:    "abcdef1234567890abcdef1234567890",
 			wantFilled: true,
 		},
 		{
-			name:       "extract request_id for failure_chain",
-			tool:       "failure_chain",
+			name:       "UUID trace_id extracted",
+			tool:       "explain_request",
 			rawArgs:    `{}`,
-			prompt:     "failure chain for request abcdef1234567890abcdef1234567890aabbccdd",
-			wantKey:    "request_id",
-			wantVal:    "abcdef1234567890abcdef1234567890aabbccdd",
+			prompt:     "trace 550e8400-e29b-41d4-a716-446655440000",
+			wantKey:    "trace_id",
+			wantVal:    "550e8400-e29b-41d4-a716-446655440000",
 			wantFilled: true,
 		},
 		{
 			name:       "does not overwrite existing arg",
-			tool:       "trace_graph",
+			tool:       "explain_request",
 			rawArgs:    `{"trace_id":"existing_id_abcdef1234567890"}`,
 			prompt:     "show trace 0000000000000000aaaaaaaaaaaaaaaa",
 			wantKey:    "trace_id",
@@ -318,26 +165,17 @@ func TestFillToolArgsFromPrompt(t *testing.T) {
 		},
 		{
 			name:       "no hex ID in prompt returns unchanged",
-			tool:       "trace_graph",
+			tool:       "explain_request",
 			rawArgs:    `{}`,
 			prompt:     "show me the trace",
 			wantFilled: false,
 		},
 		{
 			name:       "unrelated tool returns unchanged",
-			tool:       "graph_stats",
+			tool:       "blast_radius",
 			rawArgs:    `{}`,
-			prompt:     "show stats for abcdef1234567890abcdef1234567890",
+			prompt:     "blast radius for abcdef1234567890abcdef1234567890",
 			wantFilled: false,
-		},
-		{
-			name:       "UUID trace_id extracted",
-			tool:       "trace_graph",
-			rawArgs:    `{}`,
-			prompt:     "trace 550e8400-e29b-41d4-a716-446655440000",
-			wantKey:    "trace_id",
-			wantVal:    "550e8400-e29b-41d4-a716-446655440000",
-			wantFilled: true,
 		},
 	}
 
@@ -385,27 +223,6 @@ func TestExtractTraceID(t *testing.T) {
 			got := extractTraceID(tt.prompt)
 			if got != tt.want {
 				t.Fatalf("extractTraceID(%q) = %q, want %q", tt.prompt, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestExtractRequestID(t *testing.T) {
-	tests := []struct {
-		name   string
-		prompt string
-		want   string
-	}{
-		{"hex after request keyword", "request abcdef1234567890abcdef1234567890aabbccdd", "abcdef1234567890abcdef1234567890aabbccdd"},
-		{"standalone hex", "explain abcdef1234567890abcdef1234567890aabbccdd", "abcdef1234567890abcdef1234567890aabbccdd"},
-		{"no ID", "explain the failure", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := extractRequestID(tt.prompt)
-			if got != tt.want {
-				t.Fatalf("extractRequestID(%q) = %q, want %q", tt.prompt, got, tt.want)
 			}
 		})
 	}

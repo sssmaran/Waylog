@@ -40,6 +40,13 @@ func (h *CheckoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	setDemoFields(ctx, "checkout", reqBody)
 
+	if reqBody.Scenario == ScenarioCheckoutPanic {
+		// Real recoverable panic inside the instrumented request. The Waylog
+		// HTTP middleware recovers it -> emits a failed checkout WideEvent and,
+		// with runtime hooks on, posts a go-sdk "runtime" panic signal.
+		panic("checkout: simulated panic charging payment (demo)")
+	}
+
 	if reqBody.Scenario == ScenarioSuppressedPayment502 {
 		h.serveSuppressedPayment(w, reqBody, ctx)
 		return
@@ -124,6 +131,9 @@ func (h *CheckoutHandler) loadCart(ctx context.Context, reqBody PurchaseRequest)
 
 func (h *CheckoutHandler) reserveInventory(ctx context.Context, reqBody PurchaseRequest) error {
 	return waylogv2.StepVoid(ctx, "inventory.reserve", func(ctx context.Context) error {
+		if reqBody.Scenario == ScenarioInventory503 {
+			return waylogv2.NewError("INV_503", waylogv2.WithReason("inventory service unavailable"))
+		}
 		waylogv2.From(ctx).Info("inventory reserved", waylogv2.F{
 			"sku":            reqBody.SKU,
 			"reservation_id": "res-" + reqBody.SKU,

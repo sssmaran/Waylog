@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 )
@@ -111,6 +112,161 @@ func toAPIIncident(inc Incident) apiv2.Incident {
 		Lift:                    inc.Lift,
 		BaselineCount:           inc.BaselineCount,
 		CurrentCount:            inc.CurrentCount,
+		Propagation:             toAPIPropagation(inc.Propagation),
+		Blast:                   toAPIBlast(inc.Blast),
+		Alerts:                  toAPIAlerts(inc.Alerts),
+		Runtime:                 toAPIRuntime(inc.Runtime),
+	}
+}
+
+func toAPIRuntime(s *RuntimeSnapshot) *apiv2.RuntimeSnapshot {
+	if s == nil {
+		return nil
+	}
+	matches := make([]apiv2.RuntimeEvidence, 0, len(s.Matches))
+	for i := range s.Matches {
+		matches = append(matches, toAPIRuntimeEvidenceVal(s.Matches[i]))
+	}
+	return &apiv2.RuntimeSnapshot{
+		Matches: matches,
+		Opening: toAPIRuntimeEvidence(s.Opening),
+		Latest:  toAPIRuntimeEvidence(s.Latest),
+	}
+}
+
+func toAPIRuntimeEvidence(r *RuntimeEvidence) *apiv2.RuntimeEvidence {
+	if r == nil {
+		return nil
+	}
+	out := toAPIRuntimeEvidenceVal(*r)
+	return &out
+}
+
+func toAPIRuntimeEvidenceVal(r RuntimeEvidence) apiv2.RuntimeEvidence {
+	var meta map[string]any
+	if len(r.Metadata) > 0 {
+		meta = make(map[string]any, len(r.Metadata))
+		for k, v := range r.Metadata {
+			meta[k] = v
+		}
+	}
+	return apiv2.RuntimeEvidence{
+		Subtype:       r.Subtype,
+		Service:       r.Service,
+		Reason:        r.Reason,
+		Severity:      r.Severity,
+		Source:        r.Source,
+		SignalID:      r.SignalID,
+		OccurredAt:    r.OccurredAt,
+		Metadata:      meta,
+		CapturedAt:    r.CapturedAt,
+		CaptureStatus: string(r.CaptureStatus),
+	}
+}
+
+func toAPIPropagation(s *PropagationSnapshot) *apiv2.PropagationSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &apiv2.PropagationSnapshot{
+		Opening: toAPIPropagationEvidence(s.Opening),
+		Latest:  toAPIPropagationEvidence(s.Latest),
+	}
+}
+
+func toAPIPropagationEvidence(p *PropagationEvidence) *apiv2.PropagationEvidence {
+	if p == nil {
+		return nil
+	}
+	path := make([]apiv2.PropagationStep, 0, len(p.Path))
+	for _, s := range p.Path {
+		path = append(path, apiv2.PropagationStep{
+			Service:    s.Service,
+			Step:       s.Step,
+			StartMS:    s.StartMS,
+			DurationMS: s.DurationMS,
+			Status:     s.Status,
+			ErrorCode:  s.ErrorCode,
+		})
+	}
+	var firstSeen *time.Time
+	if p.FirstSeenAt != nil {
+		t := *p.FirstSeenAt
+		firstSeen = &t
+	}
+	return &apiv2.PropagationEvidence{
+		OriginService: p.OriginService,
+		OriginStep:    p.OriginStep,
+		Path:          path,
+		SampleTraceID: p.SampleTraceID,
+		FirstSeenAt:   firstSeen,
+		CapturedAt:    p.CapturedAt,
+		CaptureStatus: string(p.CaptureStatus),
+	}
+}
+
+func toAPIBlast(s *BlastSnapshot) *apiv2.BlastSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &apiv2.BlastSnapshot{
+		Opening: toAPIBlastEvidence(s.Opening),
+		Latest:  toAPIBlastEvidence(s.Latest),
+	}
+}
+
+func toAPIBlastEvidence(b *BlastEvidence) *apiv2.BlastEvidence {
+	if b == nil {
+		return nil
+	}
+	var users *int
+	if b.AffectedUsers != nil {
+		u := *b.AffectedUsers
+		users = &u
+	}
+	return &apiv2.BlastEvidence{
+		AffectedRequests: b.AffectedRequests,
+		AffectedUsers:    users,
+		AffectedServices: b.AffectedServices,
+		TopServices:      append([]string(nil), b.TopServices...),
+		SampledTraces:    append([]string(nil), b.SampledTraces...),
+		CapturedAt:       b.CapturedAt,
+		CaptureStatus:    string(b.CaptureStatus),
+	}
+}
+
+func toAPIAlerts(s *AlertSnapshot) *apiv2.AlertSnapshot {
+	if s == nil {
+		return nil
+	}
+	return &apiv2.AlertSnapshot{
+		Opening: toAPIAlertEvidence(s.Opening),
+		Latest:  toAPIAlertEvidence(s.Latest),
+	}
+}
+
+func toAPIAlertEvidence(a *AlertEvidence) *apiv2.AlertEvidence {
+	if a == nil {
+		return nil
+	}
+	matches := make([]apiv2.MatchedAlert, 0, len(a.Matches))
+	for _, m := range a.Matches {
+		matches = append(matches, apiv2.MatchedAlert{
+			SignalID:    m.SignalID,
+			AlertID:     m.AlertID,
+			Source:      m.Source,
+			Severity:    m.Severity,
+			Reason:      m.Reason,
+			ProviderURL: m.ProviderURL,
+			EvidenceIDs: append([]string(nil), m.EvidenceIDs...),
+			MatchedAt:   m.MatchedAt,
+			Strategy:    m.Strategy,
+		})
+	}
+	return &apiv2.AlertEvidence{
+		Matches:       matches,
+		CapturedAt:    a.CapturedAt,
+		CaptureStatus: string(a.CaptureStatus),
 	}
 }
 

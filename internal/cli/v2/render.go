@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -123,6 +124,9 @@ func renderIncidentBody(w io.Writer, inc Incident) {
 	fmt.Fprintf(w, "lift: %.2f\n", inc.Lift)
 	fmt.Fprintf(w, "baseline_count: %d\n", inc.BaselineCount)
 	fmt.Fprintf(w, "current_count: %d\n", inc.CurrentCount)
+
+	renderPropagationBlock(w, inc.Propagation)
+	renderBlastBlock(w, inc.Blast)
 
 	fmt.Fprintln(w, "\nevidence:")
 	if len(inc.Evidence) == 0 {
@@ -284,7 +288,6 @@ func RenderSearch(w io.Writer, resp EventSearchResponse) {
 }
 
 func RenderCapabilities(w io.Writer, resp CapabilitiesResponse) {
-	fmt.Fprintf(w, "v2_reads: %s\n", enabledLabel(resp.V2Reads.Enabled))
 	fmt.Fprintf(w, "otlp_http_traces: %s\n", enabledLabel(resp.OTLP.HTTPTraces))
 	fmt.Fprintf(w, "otlp_grpc_traces: %s", enabledLabel(resp.OTLP.GRPCTraces))
 	if resp.OTLP.GRPCAddr != "" {
@@ -377,6 +380,106 @@ func formatTime(t time.Time) string {
 		return ""
 	}
 	return t.Format(time.RFC3339)
+}
+
+func renderPropagationBlock(w io.Writer, p *apiv2.PropagationSnapshot) {
+	if p == nil || p.Latest == nil {
+		fmt.Fprintln(w, "\nWhere did it start?")
+		fmt.Fprintln(w, "  Propagation evidence unavailable")
+		return
+	}
+	fmt.Fprintln(w, "\nWhere did it start?")
+	if p.Latest.CaptureStatus != apiv2.CaptureStatusOK {
+		fmt.Fprintf(w, "  Propagation evidence unavailable (%s) — retrying\n", p.Latest.CaptureStatus)
+		return
+	}
+	fmt.Fprintf(w, "  Origin: %s / %s\n", p.Latest.OriginService, p.Latest.OriginStep)
+	firstFailing, errCode := firstErrorStep(p.Latest)
+	if firstFailing != "" {
+		fmt.Fprintf(w, "  First failing step: %s  %s\n", firstFailing, errCode)
+	}
+	if len(p.Latest.Path) > 0 {
+		names := make([]string, 0, len(p.Latest.Path))
+		for _, s := range p.Latest.Path {
+			names = append(names, s.Step)
+		}
+		fmt.Fprintf(w, "  %s\n", strings.Join(names, " → "))
+	}
+	fmt.Fprintf(w, "  sample trace: %s · captured %s ago\n",
+		p.Latest.SampleTraceID, time.Since(p.Latest.CapturedAt).Round(time.Second))
+}
+
+func renderBlastBlock(w io.Writer, b *apiv2.BlastSnapshot) {
+	if b == nil || b.Latest == nil {
+		fmt.Fprintln(w, "\nHow bad is it?")
+		fmt.Fprintln(w, "  Blast evidence unavailable")
+		return
+	}
+	fmt.Fprintln(w, "\nHow bad is it?")
+	if b.Opening != nil && blastDelta(b.Opening, b.Latest) {
+		fmt.Fprintf(w, "  At open: %d req · %d svc · %s users\n",
+			b.Opening.AffectedRequests, b.Opening.AffectedServices, usersStr(b.Opening.AffectedUsers))
+		fmt.Fprintf(w, "  Now:     %d req · %d svc · %s users\n",
+			b.Latest.AffectedRequests, b.Latest.AffectedServices, usersStr(b.Latest.AffectedUsers))
+	} else {
+		fmt.Fprintf(w, "  Now: %d req · %d svc · %s users\n",
+			b.Latest.AffectedRequests, b.Latest.AffectedServices, usersStr(b.Latest.AffectedUsers))
+	}
+	if len(b.Latest.TopServices) > 0 {
+		fmt.Fprintf(w, "  Top services: %s\n", strings.Join(b.Latest.TopServices, ", "))
+	}
+	fmt.Fprintf(w, "  captured %s ago\n", time.Since(b.Latest.CapturedAt).Round(time.Second))
+}
+
+func firstErrorStep(p *apiv2.PropagationEvidence) (step, code string) {
+	if p == nil {
+		return "", ""
+	}
+	for _, s := range p.Path {
+		if s.Status == "error" {
+			return s.Step, s.ErrorCode
+		}
+	}
+	return "", ""
+}
+
+// blastDelta returns true if Opening and Latest differ on any user-visible
+// impact field. CapturedAt and CaptureStatus are excluded — they change every
+// tick and would force a permanent delta.
+func blastDelta(o, l *apiv2.BlastEvidence) bool {
+	if o == nil || l == nil {
+		return false
+	}
+	if o.AffectedRequests != l.AffectedRequests {
+		return true
+	}
+	if o.AffectedServices != l.AffectedServices {
+		return true
+	}
+	if usersInt(o.AffectedUsers) != usersInt(l.AffectedUsers) {
+		return true
+	}
+	if !slices.Equal(o.TopServices, l.TopServices) {
+		return true
+	}
+	if len(o.SampledTraces) != len(l.SampledTraces) {
+		return true
+	}
+	return false
+}
+
+func usersInt(u *int) int {
+	if u == nil {
+		return 0
+	}
+	return *u
+}
+
+func usersStr(u *int) string {
+	if u == nil {
+		return "?"
+	}
+	return fmt.Sprintf("%d", *u)
 }
 
 func RenderTriage(w io.Writer, rep *TriageReport) int {

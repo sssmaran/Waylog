@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sssmaran/WaylogCLI/internal/incidents"
+	apiv2 "github.com/sssmaran/WaylogCLI/pkg/api/v2"
 	pkgtriage "github.com/sssmaran/WaylogCLI/pkg/triage"
 )
 
@@ -314,4 +316,251 @@ func itoa(i int) string {
 	}
 	// Tests only exercise small indices.
 	return "n"
+}
+
+// --- snapshot-projection tests (Task 13) ---
+
+// fixedLookup returns a fixed IncidentSummary regardless of ID.
+type fixedLookup struct{ inc IncidentSummary }
+
+func (s fixedLookup) GetIncident(_ context.Context, _ string) (IncidentSummary, error) {
+	return s.inc, nil
+}
+
+// noOpBlastReader satisfies BlastReader with zero results. Both production
+// methods are exercised by blastQueryAdapter: when Blast.Latest is set, the
+// adapter still calls Errors() to compute TopErrorFamilies.
+type noOpBlastReader struct{}
+
+func (noOpBlastReader) BlastRadius(_ incidents.SearchFilter, _ apiv2.BlastKey) apiv2.BlastRadiusResponse {
+	return apiv2.BlastRadiusResponse{}
+}
+func (noOpBlastReader) Errors(_ incidents.SearchFilter, _ int) incidents.ErrorsResult {
+	return incidents.ErrorsResult{}
+}
+
+// noOpIncidentReader satisfies IncidentReader with ErrNotFound. The story
+// adapter's reader-driven path is gated behind Propagation.Latest == nil; when
+// the projection runs, this is never called.
+type noOpIncidentReader struct{}
+
+func (noOpIncidentReader) Get(_ context.Context, _ string) (incidents.Incident, error) {
+	return incidents.Incident{}, incidents.ErrNotFound
+}
+
+type stubAlertsResult struct{ out []pkgtriage.AlertRef }
+
+func (s stubAlertsResult) AlertsFor(_ context.Context, _ IncidentSummary, _ BuildOptions) ([]pkgtriage.AlertRef, error) {
+	return s.out, nil
+}
+
+func makeFixedSummary(t *testing.T, ts, firstSeen time.Time) IncidentSummary {
+	t.Helper()
+	users := 47
+	return IncidentSummary{
+		ID:         "inc_golden",
+		Window:     "15m",
+		Env:        "demo",
+		StartedAt:  ts,
+		UpdatedAt:  ts,
+		Service:    "payment-service",
+		Step:       "charge",
+		ErrorCode:  "DB_TIMEOUT",
+		Confidence: pkgtriage.ConfidenceMedium,
+		NextChecks: []string{"Verify payment-service health"},
+		Propagation: &incidents.PropagationSnapshot{
+			Latest: &incidents.PropagationEvidence{
+				OriginService: "payment-service",
+				OriginStep:    "charge",
+				Path: []incidents.PropagationStep{
+					{Service: "payment-service", Step: "validate", Status: "ok", StartMS: 0, DurationMS: 5},
+					{Service: "payment-service", Step: "charge", Status: "error", ErrorCode: "DB_TIMEOUT", StartMS: 5, DurationMS: 50},
+				},
+				SampleTraceID: "7a3fb2",
+				FirstSeenAt:   &firstSeen,
+				CapturedAt:    ts,
+				CaptureStatus: incidents.CaptureOK,
+			},
+		},
+		Blast: &incidents.BlastSnapshot{
+			Latest: &incidents.BlastEvidence{
+				AffectedRequests: 184,
+				AffectedUsers:    &users,
+				AffectedServices: 3,
+				TopServices:      []string{"checkout", "api-gateway", "mobile-api"},
+				SampledTraces:    []string{"7a3fb2", "1c4d5e", "9f8a7b"},
+				CapturedAt:       ts,
+				CaptureStatus:    incidents.CaptureOK,
+			},
+		},
+	}
+}
+
+func newSnapshotProjectionEngine(t *testing.T, inc IncidentSummary, now time.Time) *Engine {
+	t.Helper()
+	eng, err := NewEngine(Deps{
+		Incidents:  fixedLookup{inc: inc},
+		Blast:      NewBlastQueryAdapter(noOpBlastReader{}),
+		Story:      NewStoryBuilderAdapter(noOpIncidentReader{}, func(_ string) (apiv2.StoryResponse, bool) { return apiv2.StoryResponse{}, false }),
+		Signals:    stubSignalsResult{},
+		Alerts:     stubAlertsResult{},
+		NextChecks: stubNextChecksResult{},
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	return eng
+}
+
+func TestEngine_Build_GoldenHash_FromIncidentSnapshots(t *testing.T) {
+	ts := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	firstSeen := ts.Add(-30 * time.Second)
+	inc := makeFixedSummary(t, ts, firstSeen)
+	eng := newSnapshotProjectionEngine(t, inc, ts)
+
+	rpt, err := eng.Build(context.Background(), inc.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	const want = "sha256:857bb8f5682044d0cd80e8d26d79cf946a3ff9f355b85e122e78c77a0d7af572"
+	if rpt.ReportHash != want {
+		t.Fatalf("ReportHash = %s\nwant       = %s\n\n(If this is the first run, copy the actual hash above into the const.)", rpt.ReportHash, want)
+	}
+}
+
+func TestEngine_Build_GoldenHash_OpeningNotInHashSurface(t *testing.T) {
+	// Same Latest, different Opening — hash must not change. Opening is not
+	// projected into the Report; only Latest is.
+	ts := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	firstSeen := ts.Add(-30 * time.Second)
+	incA := makeFixedSummary(t, ts, firstSeen)
+	openUsers := 1
+	incB := makeFixedSummary(t, ts, firstSeen)
+	incB.Blast.Opening = &incidents.BlastEvidence{
+		AffectedRequests: 1,
+		AffectedUsers:    &openUsers,
+		AffectedServices: 1,
+		TopServices:      []string{"early"},
+		SampledTraces:    []string{"early_trace"},
+		CapturedAt:       ts.Add(-time.Minute),
+		CaptureStatus:    incidents.CaptureOK,
+	}
+
+	engA := newSnapshotProjectionEngine(t, incA, ts)
+	rptA, err := engA.Build(context.Background(), incA.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build A: %v", err)
+	}
+
+	engB := newSnapshotProjectionEngine(t, incB, ts)
+	rptB, err := engB.Build(context.Background(), incB.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build B: %v", err)
+	}
+	if rptA.ReportHash != rptB.ReportHash {
+		t.Fatalf("ReportHash differs but only Opening did:\nA: %s\nB: %s", rptA.ReportHash, rptB.ReportHash)
+	}
+}
+
+func TestEngine_Build_ProjectionIsByteStable(t *testing.T) {
+	ts := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	firstSeen := ts.Add(-30 * time.Second)
+	inc := makeFixedSummary(t, ts, firstSeen)
+	eng := newSnapshotProjectionEngine(t, inc, ts)
+
+	rpt1, err := eng.Build(context.Background(), inc.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build 1: %v", err)
+	}
+	rpt2, err := eng.Build(context.Background(), inc.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build 2: %v", err)
+	}
+	j1, _ := json.Marshal(rpt1)
+	j2, _ := json.Marshal(rpt2)
+	if string(j1) != string(j2) {
+		t.Fatalf("Report projection drifted between runs:\nfirst:  %s\nsecond: %s", j1, j2)
+	}
+	if rpt1.ReportHash != rpt2.ReportHash {
+		t.Fatalf("ReportHash drifted: %s vs %s", rpt1.ReportHash, rpt2.ReportHash)
+	}
+}
+
+func TestEngine_Build_UsesAlertSnapshotWhenPresent(t *testing.T) {
+	ts := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	firstSeen := ts.Add(-30 * time.Second)
+	inc := makeFixedSummary(t, ts, firstSeen)
+	inc.Alerts = &incidents.AlertSnapshot{
+		Latest: &incidents.AlertEvidence{
+			Matches: []incidents.MatchedAlert{{
+				SignalID:    "sig_snapshot",
+				AlertID:     "CheckoutPaymentFailure",
+				Source:      "alertmanager",
+				Severity:    "critical",
+				Reason:      "PMT_502 spike",
+				ProviderURL: "https://alerts.example/inc",
+				EvidenceIDs: []string{"sig_snapshot"},
+				MatchedAt:   ts,
+				Strategy:    "family",
+			}},
+			CapturedAt:    ts,
+			CaptureStatus: incidents.CaptureOK,
+		},
+	}
+	eng := newSnapshotProjectionEngine(t, inc, ts)
+
+	rpt, err := eng.Build(context.Background(), inc.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(rpt.Alerts) != 1 {
+		t.Fatalf("Alerts len = %d, want 1: %+v", len(rpt.Alerts), rpt.Alerts)
+	}
+	got := rpt.Alerts[0]
+	if got.SignalID != "sig_snapshot" || got.AlertID != "CheckoutPaymentFailure" || got.Source != "alertmanager" {
+		t.Fatalf("alert ref = %+v", got)
+	}
+}
+
+func TestEngine_Build_IncludesRuntimeFromSnapshot(t *testing.T) {
+	ts := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	firstSeen := ts.Add(-30 * time.Second)
+	inc := makeFixedSummary(t, ts, firstSeen)
+	inc.Runtime = &incidents.RuntimeSnapshot{
+		Matches: []incidents.RuntimeEvidence{
+			{SignalID: "sig_oom", Subtype: "oom_killed", Service: "checkout", Source: "k8s-demo",
+				Severity: "critical", Reason: "OOMKilled", OccurredAt: ts.Add(-2 * time.Minute), CapturedAt: ts},
+			{SignalID: "sig_panic", Subtype: "panic", Service: "checkout", Source: "go-sdk",
+				Severity: "warning", Reason: "runtime panic", OccurredAt: ts.Add(-time.Minute), CapturedAt: ts},
+		},
+	}
+	eng := newSnapshotProjectionEngine(t, inc, ts)
+
+	rpt, err := eng.Build(context.Background(), inc.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(rpt.Runtime) != 2 {
+		t.Fatalf("Runtime len = %d, want 2: %+v", len(rpt.Runtime), rpt.Runtime)
+	}
+	if rpt.Runtime[0].Subtype != "oom_killed" || rpt.Runtime[1].Subtype != "panic" {
+		t.Fatalf("runtime subtypes wrong: %+v", rpt.Runtime)
+	}
+	// CapturedAt must not leak into the report (and thus not into the hash).
+	rawA, _ := json.Marshal(rpt)
+	if strings.Contains(string(rawA), "captured_at") {
+		t.Fatalf("report leaked captured_at: %s", rawA)
+	}
+	// Changing CapturedAt only must not change report_hash.
+	inc.Runtime.Matches[0].CapturedAt = ts.Add(time.Hour)
+	eng2 := newSnapshotProjectionEngine(t, inc, ts)
+	rpt2, err := eng2.Build(context.Background(), inc.ID, BuildOptions{Window: 15 * time.Minute})
+	if err != nil {
+		t.Fatalf("Build 2: %v", err)
+	}
+	if rpt.ReportHash != rpt2.ReportHash {
+		t.Fatalf("report_hash changed when only CapturedAt differed: %s vs %s", rpt.ReportHash, rpt2.ReportHash)
+	}
 }

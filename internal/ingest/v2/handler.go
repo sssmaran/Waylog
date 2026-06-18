@@ -123,6 +123,9 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, durable bool) {
 	}
 	env, err := h.IngestRaw(r.Context(), parsed.events, durable)
 	if err != nil {
+		// Backpressure: tell well-behaved clients when to retry so a WAL
+		// outage doesn't turn into an immediate retry herd.
+		w.Header().Set("Retry-After", "1")
 		switch {
 		case errors.Is(err, errDurabilityUnavailable):
 			http.Error(w, "durability unavailable", http.StatusServiceUnavailable)

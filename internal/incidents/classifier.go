@@ -28,59 +28,184 @@ type Classification struct {
 
 func Classify(input ClassificationInput) Classification {
 	evidence := collectTraceEvidence(input.Events)
-	evidence = append(evidence, matchingAlertEvidence(input)...)
-	warnings := instrumentationWarnings(input.Events, input.Signals)
-
-	if dep := matchingDependencySignal(input); dep != nil {
-		evidence = append(evidence, signalEvidence(*dep, "Dependency signal overlaps first failing downstream"))
-		return classification(CauseDependency, ConfidenceHigh, evidence, warnings)
+	alerts := matchingAlerts(input)
+	for _, sig := range alerts {
+		evidence = append(evidence, signalEvidence(sig, alertLabel(sig)))
 	}
-	if downstream := firstFailingDownstream(input.Events); downstream != "" {
+	// Runtime signals are correlated evidence, not incident openers (Design
+	// Decision 2). Attach every matched runtime signal — infra AND app — as an
+	// evidence row regardless of the cause the classifier ultimately picks.
+	runtimeSigs := matchingRuntimeSignals(input)
+	for i := range runtimeSigs {
+		evidence = append(evidence, runtimeEvidence(runtimeSigs[i]))
+	}
+	warnings := instrumentationWarnings(input.Events, input.Signals)
+	ctx := NextCheckContext{
+		Service:                 input.Incident.Service,
+		ErrorCode:               input.Incident.ErrorFamily.ErrorCode,
+		Step:                    input.Incident.ErrorFamily.Step,
+		SampleTraceID:           sampleTraceID(input),
+		MissingServiceVersion:   containsString(warnings, "missing_service_version"),
+		MissingDependencySignal: containsString(warnings, "missing_dependency_signal"),
+		HasPartialTrace:         containsString(warnings, "partial_trace"),
+	}
+	if top := pickTopAlert(alerts); top != nil {
+		ctx.AlertSignalID = top.SignalID
+		ctx.AlertID = stringField(top.Metadata, "alert_id")
+		ctx.AlertSource = top.Source
+		ctx.AlertProviderURL = stringField(top.Metadata, "provider_url")
+	}
+
+	depSig := matchingDependencySignal(input)
+	downstream := firstFailingDownstream(input.Events)
+	deployment := matchingDeployment(input)
+	var deploySig *signals.Signal
+	if deployment == nil {
+		deploySig = matchingSignal(input, signals.TypeDeploy)
+	}
+	hasDeploy := deployment != nil || deploySig != nil
+
+	if depSig != nil {
+		ctx.Downstream = depSig.Service
+		ctx.DepSignalID = depSig.SignalID
+		ctx.DepSignalReason = depSig.Reason
+		evidence = append(evidence, signalEvidence(*depSig, dependencyLabel(*depSig)))
+	} else if downstream != "" {
+		ctx.Downstream = downstream
 		evidence = append(evidence, Evidence{
 			Kind:       EvidenceTrace,
-			Title:      "First failing step calls downstream service",
+			Title:      fmt.Sprintf("First failing step calls `%s`", downstream),
 			Detail:     downstream,
 			Service:    downstream,
 			OccurredAt: input.Incident.StartedAt,
 		})
-		return classification(CauseDependency, ConfidenceMedium, evidence, warnings)
 	}
-	if dep := matchingDeployment(input); dep != nil {
-		evidence = append(evidence, deploymentEvidence(*dep))
-		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings)
+
+	// deployAt anchors the temporal tiebreak; a deploy signal without a
+	// timestamp leaves it zero (and therefore loses any tiebreak).
+	var deployAt time.Time
+	switch {
+	case deployment != nil:
+		deployAt = deployment.FirstSeen
+		ctx.DeployVersion = deployment.Version
+		ctx.DeployFirstSeen = deployment.FirstSeen
+		evidence = append(evidence, deploymentEvidence(*deployment))
+	case deploySig != nil:
+		ctx.DeployVersion = stringField(deploySig.Metadata, "version")
+		ctx.DeploySignalID = deploySig.SignalID
+		if !deploySig.Timestamp.IsZero() {
+			ctx.DeployFirstSeen = deploySig.Timestamp
+			deployAt = deploySig.Timestamp
+		}
+		evidence = append(evidence, signalEvidence(*deploySig, deployLabel(*deploySig)))
 	}
-	if sig := matchingSignal(input, signals.TypeDeploy); sig != nil {
-		evidence = append(evidence, signalEvidence(*sig, "Deploy signal overlaps incident window"))
-		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings)
+
+	switch {
+	case depSig != nil && hasDeploy:
+		// Both causes are signal-backed: a cause anchored at/before onset beats
+		// one that lands after it (a change after the incident started cannot
+		// have caused it); among causes on the same side of onset, temporal
+		// proximity decides and an exact tie keeps the dependency (ADR 0001).
+		// Both evidence rows are already attached; the loser surfaces in next
+		// checks.
+		if deployBeatsDependency(deployAt, depSig.Timestamp, input.Incident.StartedAt) {
+			return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
+		}
+		return classification(CauseDependency, ConfidenceHigh, evidence, warnings, ctx)
+	case depSig != nil:
+		return classification(CauseDependency, ConfidenceHigh, evidence, warnings, ctx)
+	case hasDeploy:
+		// A correlated deploy beats the unconfirmed trace-only downstream
+		// inference (ADR 0001); the downstream stays as evidence + next check.
+		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
+	case downstream != "":
+		return classification(CauseDependency, ConfidenceMedium, evidence, warnings, ctx)
 	}
-	if sig := matchingRuntimeSignal(input); sig != nil {
-		evidence = append(evidence, signalEvidence(*sig, "Runtime signal overlaps incident window"))
-		return classification(CauseRuntime, ConfidenceHigh, evidence, warnings)
+	if len(runtimeSigs) > 0 {
+		top := runtimeSigs[0]
+		ctx.RuntimeSignalID = top.SignalID
+		ctx.RuntimeReason = top.Reason
+		ctx.RuntimeSubtype = stringField(top.Metadata, "subtype")
+		return classification(CauseRuntime, ConfidenceHigh, evidence, warnings, ctx)
 	}
 	if len(input.Events) > 0 && input.Incident.ErrorFamily.Step != "" && firstFailingDownstream(input.Events) == "" {
-		return classification(CauseApp, ConfidenceMedium, evidence, warnings)
+		return classification(CauseApp, ConfidenceMedium, evidence, warnings, ctx)
 	}
-	return classification(CauseUnknown, ConfidenceLow, evidence, warnings)
+	return classification(CauseUnknown, ConfidenceLow, evidence, warnings, ctx)
 }
 
-func classification(cause Cause, confidence Confidence, evidence []Evidence, warnings []string) Classification {
+func sampleTraceID(input ClassificationInput) string {
+	if len(input.Incident.SampleTraces) > 0 && input.Incident.SampleTraces[0] != "" {
+		return input.Incident.SampleTraces[0]
+	}
+	for _, ev := range input.Events {
+		if ev != nil && ev.TraceID != "" {
+			return ev.TraceID
+		}
+	}
+	return ""
+}
+
+// deployBeatsDependency decides, when both a deploy and a dependency signal
+// correlate with the incident, whether the deploy is the better cause. A
+// non-zero anchor at/before onset is preferred over one strictly after onset
+// (a change that lands after the incident started cannot have caused it); when
+// both anchors are on the same side of onset (or either is missing), the one
+// closer to onset wins, and an exact tie keeps the dependency.
+func deployBeatsDependency(deployAt, depAt, onset time.Time) bool {
+	if !deployAt.IsZero() && !depAt.IsZero() {
+		deployPrecedes := !deployAt.After(onset)
+		depPrecedes := !depAt.After(onset)
+		if deployPrecedes != depPrecedes {
+			return deployPrecedes
+		}
+	}
+	return closerToOnset(deployAt, depAt, onset)
+}
+
+// closerToOnset reports whether a is strictly closer to the incident onset
+// than b. A zero time loses: it means "no timestamp", never "at epoch".
+func closerToOnset(a, b, onset time.Time) bool {
+	return absDuration(onset.Sub(a)) < absDuration(onset.Sub(b))
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func classification(cause Cause, confidence Confidence, evidence []Evidence, warnings []string, ctx NextCheckContext) Classification {
 	return Classification{
 		Cause:                   cause,
 		Confidence:              confidence,
-		Evidence:                normalizeEvidence(evidence, 8),
-		NextChecks:              NextChecks(cause, confidence),
+		Evidence:                normalizeEvidence(evidence, 12),
+		NextChecks:              NextChecks(cause, confidence, ctx),
 		InstrumentationWarnings: uniqueStrings(warnings),
 	}
 }
 
 func matchingDependencySignal(input ClassificationInput) *signals.Signal {
 	downstream := firstFailingDownstream(input.Events)
+	if downstream == "" {
+		return nil
+	}
 	for i := range input.Signals {
 		sig := input.Signals[i]
 		if sig.Type != signals.TypeDependency {
 			continue
 		}
-		if downstream != "" && sig.Service != downstream {
+		if sig.Service != downstream {
 			continue
 		}
 		return &input.Signals[i]
@@ -106,24 +231,36 @@ func matchingDeployment(input ClassificationInput) *Deployment {
 	return nil
 }
 
-func matchingRuntimeSignal(input ClassificationInput) *signals.Signal {
+// matchingRuntimeSignals returns every runtime/healthcheck signal matching the
+// incident's service and env within [StartedAt-15m, Now], sorted by severity
+// priority, then timestamp, then signal_id. Returning all matches (not the
+// first) lets both infra (oom_killed) and app (panic) evidence coexist.
+func matchingRuntimeSignals(input ClassificationInput) []signals.Signal {
 	start := input.Incident.StartedAt
-	lo := start.Add(-5 * time.Minute)
-	hi := start.Add(time.Minute)
-	for i := range input.Signals {
-		sig := input.Signals[i]
-		if sig.Type != signals.TypeRuntime && sig.Type != signals.TypeHealthcheck {
-			continue
-		}
-		if sig.Service != input.Incident.Service {
-			continue
-		}
-		if sig.Timestamp.Before(lo) || sig.Timestamp.After(hi) {
-			continue
-		}
-		return &input.Signals[i]
+	lo := start.Add(-15 * time.Minute)
+	hi := input.Now
+	if hi.IsZero() {
+		hi = input.Incident.UpdatedAt
 	}
-	return nil
+	if hi.Before(start) {
+		hi = start.Add(time.Minute)
+	}
+	var out []signals.Signal
+	for i := range input.Signals {
+		if matchRuntimeSignalToIncident(input.Signals[i], input.Incident, lo, hi) {
+			out = append(out, input.Signals[i])
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if ri, rj := severityRank(out[i].Severity), severityRank(out[j].Severity); ri != rj {
+			return ri > rj
+		}
+		if !out[i].Timestamp.Equal(out[j].Timestamp) {
+			return out[i].Timestamp.Before(out[j].Timestamp)
+		}
+		return out[i].SignalID < out[j].SignalID
+	})
+	return out
 }
 
 func matchingSignal(input ClassificationInput, typ signals.Type) *signals.Signal {
@@ -143,14 +280,14 @@ func matchingSignal(input ClassificationInput, typ signals.Type) *signals.Signal
 	return nil
 }
 
-func matchingAlertEvidence(input ClassificationInput) []Evidence {
+func matchingAlerts(input ClassificationInput) []signals.Signal {
 	start := input.Incident.StartedAt
 	lo := start.Add(-15 * time.Minute)
 	hi := input.Now
 	if hi.IsZero() {
 		hi = input.Incident.UpdatedAt
 	}
-	out := []Evidence{}
+	var out []signals.Signal
 	for _, sig := range input.Signals {
 		if sig.Type != signals.TypeAlert {
 			continue
@@ -164,9 +301,38 @@ func matchingAlertEvidence(input ClassificationInput) []Evidence {
 		if sig.Timestamp.Before(lo) || sig.Timestamp.After(hi) {
 			continue
 		}
-		out = append(out, signalEvidence(sig, "External alert overlaps incident window"))
+		out = append(out, sig)
 	}
 	return out
+}
+
+func pickTopAlert(alerts []signals.Signal) *signals.Signal {
+	if len(alerts) == 0 {
+		return nil
+	}
+	best := &alerts[0]
+	bestRank := severityRank(best.Severity)
+	for i := 1; i < len(alerts); i++ {
+		cand := &alerts[i]
+		rank := severityRank(cand.Severity)
+		if rank > bestRank || (rank == bestRank && cand.Timestamp.After(best.Timestamp)) {
+			best = cand
+			bestRank = rank
+		}
+	}
+	return best
+}
+
+func severityRank(s signals.Severity) int {
+	switch s {
+	case signals.SeverityCritical:
+		return 3
+	case signals.SeverityWarning:
+		return 2
+	case signals.SeverityInfo:
+		return 1
+	}
+	return 0
 }
 
 func collectTraceEvidence(events []*eventv2.Event) []Evidence {
@@ -191,11 +357,104 @@ func collectTraceEvidence(events []*eventv2.Event) []Evidence {
 func deploymentEvidence(dep Deployment) Evidence {
 	return Evidence{
 		Kind:       EvidenceDeployment,
-		Title:      "Deployment overlaps incident window",
+		Title:      deploymentLabel(dep),
 		Detail:     dep.Version,
 		Service:    dep.Service,
 		DeployID:   dep.ID,
 		OccurredAt: dep.FirstSeen,
+	}
+}
+
+func alertLabel(sig signals.Signal) string {
+	sev := string(sig.Severity)
+	if sev == "" {
+		sev = "info"
+	}
+	reason := sig.Reason
+	if reason == "" {
+		reason = "external alert"
+	}
+	source := sig.Source
+	if source == "" {
+		source = "alert"
+	}
+	return fmt.Sprintf("%s: %s (%s)", sev, reason, source)
+}
+
+func dependencyLabel(sig signals.Signal) string {
+	service := sig.Service
+	if service == "" {
+		service = "downstream"
+	}
+	reason := sig.Reason
+	if reason == "" {
+		reason = "dependency signal"
+	}
+	return fmt.Sprintf("Dependency %s: %s", service, reason)
+}
+
+func deployLabel(sig signals.Signal) string {
+	service := sig.Service
+	if service == "" {
+		service = "service"
+	}
+	detail := stringField(sig.Metadata, "version")
+	if detail == "" {
+		detail = sig.Reason
+	}
+	if detail == "" {
+		detail = "deploy event"
+	}
+	return fmt.Sprintf("Deploy %s: %s", service, detail)
+}
+
+func deploymentLabel(dep Deployment) string {
+	service := dep.Service
+	if service == "" {
+		service = "service"
+	}
+	version := dep.Version
+	if version == "" {
+		version = "new revision"
+	}
+	return fmt.Sprintf("Deploy %s: %s", service, version)
+}
+
+func runtimeLabel(sig signals.Signal) string {
+	service := sig.Service
+	if service == "" {
+		service = "service"
+	}
+	reason := sig.Reason
+	if reason == "" {
+		reason = "runtime event"
+	}
+	if sig.Source != "" {
+		return fmt.Sprintf("Runtime %s: %s (%s)", service, reason, sig.Source)
+	}
+	return fmt.Sprintf("Runtime %s: %s", service, reason)
+}
+
+// runtimeEvidence builds a flat EvidenceRuntime row. subtype/source/severity
+// live in Fields so the generic Evidence struct stays unchanged while
+// acceptance assertions can query subtypes (Design Decision 4).
+func runtimeEvidence(sig signals.Signal) Evidence {
+	occurred := sig.Timestamp
+	if occurred.IsZero() {
+		occurred = sig.ReceivedAt
+	}
+	return Evidence{
+		Kind:       EvidenceRuntime,
+		Title:      runtimeLabel(sig),
+		Detail:     sig.Reason,
+		Service:    sig.Service,
+		SignalID:   sig.SignalID,
+		OccurredAt: occurred,
+		Fields: map[string]any{
+			"subtype":  stringField(sig.Metadata, "subtype"),
+			"source":   sig.Source,
+			"severity": string(sig.Severity),
+		},
 	}
 }
 
@@ -233,16 +492,38 @@ func normalizeEvidence(evidence []Evidence, limit int) []Evidence {
 		return evidence[i].Title < evidence[j].Title
 	})
 	seen := map[string]struct{}{}
-	out := make([]Evidence, 0, len(evidence))
+	deduped := make([]Evidence, 0, len(evidence))
 	for _, ev := range evidence {
 		key := string(ev.Kind) + "|" + ev.Title + "|" + ev.SignalID + "|" + ev.DeployID + "|" + ev.TraceID
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		out = append(out, ev)
-		if limit > 0 && len(out) == limit {
-			break
+		deduped = append(deduped, ev)
+	}
+	if limit <= 0 || len(deduped) <= limit {
+		return deduped
+	}
+	// Runtime evidence must never be truncated by the cap: the acceptance gate
+	// and the dashboard Runtime panel both rely on every matched runtime signal
+	// being present. Keep all EvidenceRuntime rows, then fill remaining slots
+	// with the earliest non-runtime rows. Chronological order is preserved
+	// because deduped is already sorted and we append in order.
+	budget := limit
+	for _, ev := range deduped {
+		if ev.Kind == EvidenceRuntime {
+			budget--
+		}
+	}
+	out := make([]Evidence, 0, limit)
+	for _, ev := range deduped {
+		if ev.Kind == EvidenceRuntime {
+			out = append(out, ev)
+			continue
+		}
+		if budget > 0 {
+			out = append(out, ev)
+			budget--
 		}
 	}
 	return out

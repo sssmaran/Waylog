@@ -144,6 +144,8 @@ func main() {
 
 Middleware adapters for `net/http`, chi, gin, and echo are in [`docs/sdk-examples.md`](docs/sdk-examples.md). The recommended path is framework middleware plus `waylog.From(ctx)` / `useLogger(...)` inside handlers — low-level `Begin` / `Finalize` / `setField` APIs are for adapter authors.
 
+The Go and TypeScript SDKs are kept in parity — wire format, config, signals, and public API. The audited matrix (and the documented idiomatic gaps) is in [`docs/sdk-parity.md`](docs/sdk-parity.md).
+
 ### OTLP / OpenTelemetry
 
 Point your existing OTel collector at Waylog. Both protocols, same conversion path, same downstream views.
@@ -161,6 +163,8 @@ exporters:
 ```
 
 Sample collector config: [`examples/otel-collector/`](examples/otel-collector/). Only traces are accepted; OTLP logs and metrics are not shipping. Bind `OTLP_GRPC_ADDR=127.0.0.1:4317` for single-host installs that don't need cross-host collectors.
+
+**Deploy correlation works OTel-only.** When spans carry `service.version` and the version changes for a `(service, env)` pair, Waylog auto-registers a deployment — no deploy webhook needed for incidents to classify `cause=deploy`.
 
 **Auth.** Both endpoints require `WAYLOG_WRITE_KEY` when `WAYLOG_PROFILE=prod`; the server refuses to boot with unauthenticated OTLP in prod. `make demo` runs unauthenticated by design.
 
@@ -196,9 +200,18 @@ waylog search   PMT_502 --window 1h
 
 `waylog capabilities` is intentionally ungated so it can diagnose server setup; other verbs require `v2_reads.enabled=true` (the default). Defaults: `INGEST_ADDR`, `WAYLOG_READ_KEY`, `WAYLOG_CLI_TIMEOUT`. Add `--json` to any verb for machine-readable output.
 
+### Interactive shell
+
+```bash
+make build-crux
+./crux
+```
+
+`crux` opens a lightweight incident-triage shell with `help`, `status`, `incidents`, `open <id>`, `triage <id>`, `blast <service>:<step>:<code>`, `explain <trace_id>`, and `exit`. With arguments, it delegates to the same command library as `waylog`, so `crux incidents` and `waylog incidents` share behavior.
+
 ### Dashboard
 
-Embedded Geist UI at <http://localhost:8080/ui/>. Uses the dashboard session cookie for read-scope auth and runs against the default `WAYLOG_V2_READS=true` reader.
+Embedded Geist UI at <http://localhost:8080/ui/>. Uses the dashboard session cookie for read-scope auth and runs against the v2 reader.
 
 - `#/errors` — top error families over `/v1/errors`
 - `#/incident/<id>` — incident evidence and next checks over `/v1/incidents/{id}`
@@ -210,28 +223,20 @@ No Chart.js, Cytoscape, topology-first UI, Ask panel, deploy diff, or large dash
 
 ### Agent surface
 
-Twelve deterministic tools, exposed identically through CLI, REST `/v1/tools/{name}`, MCP stdio, and plan execution. Same idempotency keys, same structured envelopes, same bytes.
+Four deterministic tools, exposed identically through CLI, REST `/v1/tools/{name}`, MCP stdio, and plan execution. Same idempotency keys, same structured envelopes, same bytes.
 
 | Tool                   | Answers                                                                                      |
 | ---------------------- | -------------------------------------------------------------------------------------------- |
 | `triage_incident`      | Structured TriageReport for an open incident (blast + first failure + signals + next checks) |
 | `render_triage_report` | Markdown, Slack Block Kit JSON, or PagerDuty note from a TriageReport                        |
-| `explain_request`      | Why did this specific trace fail?                                                            |
-| `trace_summary`        | Span tree and timing for a trace                                                             |
-| `graph_failures`       | Which requests are currently failing?                                                        |
-| `failure_patterns`     | What error codes dominate this window?                                                       |
-| `blast_radius`         | How many requests, users, and services does this error touch?                                |
-| `failure_chain`        | How did this failure propagate through services?                                             |
-| `graph_query`          | DSL query over the graph (`expr` + `window`)                                                 |
-| `compare_windows`      | Diff error rates between two windows                                                         |
-| `graph_insights`       | Windowed rollup of top errors and patterns                                                   |
-| `graph_stats`          | Overall shape of the graph right now                                                         |
+| `explain_request`      | Trace story (per-step path, anchor, downstream) for a given `trace_id`                       |
+| `blast_radius`         | How many requests, users, and services does this error family touch in the window?           |
 
 ```bash
 # Direct tool call
 curl -X POST http://localhost:8080/v1/tools/blast_radius \
   -H "Authorization: Bearer $WAYLOG_AGENT_KEY" \
-  -d '{"error_code":"PMT_502","window":"10m","include_services":true}'
+  -d '{"service":"payment-service","step":"charge","error_code":"PMT_502","window":"10m"}'
 
 # Built-in triage plan template — same hash as the CLI/read/tool surfaces
 curl -X POST http://localhost:8080/v1/plans/execute \
@@ -274,25 +279,26 @@ curl -X POST http://localhost:8080/v1/alerts \
               │                              │
    event log (append-only WAL,       SQLite cold store
        source of truth)              (events · deployments ·
-              │                       signals · incidents ·
-              ▼                       causal claims)
-   derived read models
-   (errors · explain · blast ·
-    recent · incidents · triage)
+              │                       signals · incidents)
+              ▼
+   v2 reader (in-memory hot
+   index over schema-2.0 WAL)
               │
-              ├──▶ /ui dashboard           (Geist, no vendored chart/topology)
-              ├──▶ /v1/tools/*             (deterministic agent surface)
-              ├──▶ /v1/plans/execute       (server-side plan execution + SSE)
-              └──▶ waylog CLI · TUI · MCP
+              ├──▶ /v1/errors · /v1/blast_radius · /v1/traces/* · /v1/events/*
+              ├──▶ incidents engine → /v1/incidents/* · /v1/triage/*
+              ├──▶ /ui dashboard          (Geist, no vendored chart/topology)
+              ├──▶ /v1/tools/*            (four v1.0 agent tools)
+              ├──▶ /v1/plans/execute      (server-side plan execution + SSE)
+              └──▶ waylog CLI · MCP
 ```
 
 - **Single binary** plus embedded SQLite. No Docker, no Kafka, no bridge.
-- **WAL is source of truth.** Crash → replay on next boot rebuilds the derived read models.
-- **Hot graph + dedicated trace store.** Pruned per snapshot tick to bound memory.
-- **`report_hash` excludes `generated_at`, `plan_run_id`, and itself.** Same upstream state → same bytes across every surface.
+- **WAL is source of truth.** Crash → replay on next boot rebuilds the v2 reader's hot index.
+- **v2 reader is the only hot path.** Pruned every tick to enforce `GRAPH_HOT_WINDOW` (default 24h).
+- **`report_hash` excludes `generated_at`, `plan_run_id`, and itself.** Same upstream state → same bytes across every surface. **`evidence_fingerprint`** complements it: stable across ticks until the incident's evidence set changes, so operators and agents can cite a triage answer durably.
 - **OTLP path reuses the same WAL and projector** as the SDK path. No separate ingestion plane.
 
-Durability model, retention, merge semantics, readiness policy, and counter buffer details: [`docs/internals.md`](docs/internals.md). Full HTTP contract: [`docs/openapi.yaml`](docs/openapi.yaml).
+Durability model, retention, merge semantics, readiness policy, and counter buffer details: [`docs/internals.md`](docs/internals.md). Scale ceiling and how to tune within it: [`docs/scale-and-limits.md`](docs/scale-and-limits.md). Full HTTP contract: [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ---
 
@@ -368,7 +374,6 @@ Full env-var reference: [`docs/env.md`](docs/env.md). Reproducible demo gate: `m
 - **OTLP/gRPC trace receiver** on `OTLP_GRPC_ADDR` (default `:4317`).
 - **Provider-neutral Ask** configuration: `gemini`, `anthropic`, `openai`, or `none`. All deterministic surfaces work with no LLM configured.
 - **`WAYLOG_PROFILE=demo|dev|prod`** gates auth defaults; `prod` hard-fails on unsafe configs.
-- **`WAYLOG_V2_READS` defaults to `true`.** Set `false` only for legacy v1-only stacks.
 - **`/v1/insight`** retained as a compat shim returning the top active incident. New clients should use `/v1/incidents/*`.
 
 ---
@@ -382,23 +387,21 @@ Public alpha for single-node production-style incident triage. APIs may break be
 - Go SDK v2 (`net/http`, chi, gin, echo) and TypeScript SDK v2 (`@waylog/sdk`, ESM, Node 18+, standalone core, Express, Hono, Next.js, NestJS)
 - OTLP HTTP at `/v1/otlp/v1/traces` and OTLP/gRPC at `OTLP_GRPC_ADDR` (traces only)
 - Durable ingest with WAL + replay
-- Hot graph with flattened 3-node model + dedicated trace store
-- Schema-2.0 recent-index read APIs (default)
-- SQLite cold store (events, deployments, signals, incidents, causal claims)
+- Schema-2.0 v2 reader powering all hot read APIs (`/v1/errors`, `/v1/blast_radius`, `/v1/traces/*`, `/v1/events/*`)
+- SQLite cold store (events, deployments, signals, incidents)
 - Signal-correlated incident engine with stable IDs, deterministic classification, and startup hot-window rebuild from the schema-2.0 WAL
 - Alert intake from four webhook formats, stored as signals and correlated with active incidents
 - Deterministic triage report with stable hash across CLI / read endpoint / direct tool / plan template within a single engine tick
 - Provider-neutral Ask configuration; deterministic CLI, tools, plans, triage, and MCP work with no LLM configured
-- Twelve deterministic analysis tools, rollup-correct root-cause attribution
+- Four deterministic v1.0 agent tools (`explain_request`, `blast_radius`, `triage_incident`, `render_triage_report`)
 - Agent-native REST with idempotency and structured envelopes
-- MCP stdio, live TUI (`waylog-live --dev` streams via SSE), embedded Geist dashboard
+- MCP stdio, embedded Geist dashboard
 - Scoped auth (write / read / agent) with startup validation and `WAYLOG_PROFILE=prod` hard-fail
 
 **Planned**
 
 - OTLP logs and metrics
 - Python SDK
-- Resolved-incident retention janitor
 - Mintlify docs site
 
 ---
@@ -406,15 +409,11 @@ Public alpha for single-node production-style incident triage. APIs may break be
 ## Known limitations
 
 - **Public alpha.** APIs may break before 1.0. Not production-ready. Not HA.
-- **Triage report hash is stable per tick, not forever.** Hash changes when the underlying recent-index window changes (≈30 s default). Use as a short-window dedup key, not a long-term incident fingerprint.
+- **Triage report hash is stable per tick, not forever.** `report_hash` changes when the underlying recent-index window changes (≈30 s default) — use it as a short-window dedup key proving all four surfaces returned the same bytes. For citations that survive across ticks, use `evidence_fingerprint`: it hashes only the evidence identity set (incident + signal + alert + runtime + trace IDs) and changes exactly when evidence is attached (see `docs/adr/0002-evidence-fingerprint.md`).
 - **Alerts correlate; they do not create incidents.** Incidents are opened by the spike detector. The alert path is for routing context, not paging primitives.
-- **Resolved incidents are not pruned automatically.** Per the v2.1 plan, the retention janitor is deferred. Manual cleanup:
-  ```sql
-  DELETE FROM incidents WHERE status = 'resolved' AND resolved_at < datetime('now', '-7 days');
-  ```
 - **Stale `active` rows after long downtime.** If the WAL has rolled past an incident's `started_at` and `WAYLOG_REBUILD_INCIDENTS_ON_START=true`, the engine transitions only the stale rows to `recovering` on next start; they resolve after `WAYLOG_INCIDENT_RESOLVE_AFTER` without new evidence.
 - **Single-node only.** No HA, no clustering, no multi-tenant.
-- **SQLite cold store** fits demos and small deployments. Postgres is not shipping.
+- **SQLite cold store** fits demos and small deployments — see [Scale & limits](docs/scale-and-limits.md) for the ceiling and how to tune within it. Postgres is not shipping.
 - **OTLP supports traces only.** Logs and metrics are not shipping yet.
 - **Only Go and TypeScript SDKs today.** Python / Java / Ruby are not available.
 - **No outbound paging.** Waylog accepts external alerts and renders operator reports; it does not page.
@@ -439,7 +438,7 @@ Public alpha for single-node production-style incident triage. APIs may break be
 ## Project layout
 
 ```
-cmd/         executable binaries (ingest, waylog, waylog-live, ...)
+cmd/         executable binaries (ingest, waylog, ...)
 pkg/         public SDK importable by external services
 internal/    private implementation (auth, incidents, triage, ingest, ...)
 examples/    demo services + collector config + microdemo

@@ -11,9 +11,6 @@ COPY . .
 FROM builder AS build-ingest
 RUN CGO_ENABLED=0 go build -o /bin/ingest ./cmd/ingest
 
-FROM builder AS build-bridge
-RUN CGO_ENABLED=0 go build -o /bin/bridge ./cmd/bridge
-
 FROM builder AS build-api-gateway
 RUN CGO_ENABLED=0 go build -o /bin/api-gateway ./examples/cmd/api-gateway
 
@@ -32,11 +29,6 @@ RUN apk add --no-cache ca-certificates
 COPY --from=build-ingest /bin/ingest /bin/ingest
 EXPOSE 8080
 ENTRYPOINT ["/bin/ingest"]
-
-FROM alpine:3.21 AS bridge
-RUN apk add --no-cache ca-certificates
-COPY --from=build-bridge /bin/bridge /bin/bridge
-ENTRYPOINT ["/bin/bridge"]
 
 FROM alpine:3.21 AS api-gateway
 RUN apk add --no-cache ca-certificates

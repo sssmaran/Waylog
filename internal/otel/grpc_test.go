@@ -20,7 +20,7 @@ func newBufconnClient(t *testing.T, keys []string) (coltracepb.TraceServiceClien
 	t.Helper()
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer(grpc.UnaryInterceptor(AuthUnaryInterceptor(keys)))
-	coltracepb.RegisterTraceServiceServer(srv, NewTraceServiceServer(testV2Ingest(t), nil, 1<<20))
+	coltracepb.RegisterTraceServiceServer(srv, NewTraceServiceServer(testV2Ingest(t), nil, 1<<20, nil))
 	go func() {
 		_ = srv.Serve(lis)
 	}()

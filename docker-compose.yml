@@ -73,31 +73,6 @@ services:
       timeout: 3s
       retries: 10
 
-  bridge:
-    profiles: ["legacy-kafka"]
-    build:
-      context: .
-      target: bridge
-    depends_on:
-      kafka:
-        condition: service_healthy
-      ingest:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKERS: kafka:29092
-      KAFKA_TOPIC: wide_events
-      INGEST_URL: http://ingest:8080/v1/events
-      WAYLOG_API_KEY: ${WAYLOG_API_KEY:-}
-      WAYLOG_WRITE_KEY: ${WAYLOG_WRITE_KEY:-}
-      WAYLOG_READ_KEY: ${WAYLOG_READ_KEY:-}
-      WAYLOG_AGENT_KEY: ${WAYLOG_AGENT_KEY:-}
-      DASHBOARD_AUTH: ${DASHBOARD_AUTH:-off}
-      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-}
-      DLQ_DIR: /data/dlq
-      LOG_LEVEL: info
-    volumes:
-      - bridge-data:/data
-
   api-gateway:
     build:
       context: .
@@ -183,6 +158,5 @@ services:
 
 volumes:
   waylog-data:
-  bridge-data:
   prometheus-data:
   grafana-data:

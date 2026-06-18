@@ -114,6 +114,33 @@ func TestCheckoutInternalErrorEmitsCHK500WithoutDownstream(t *testing.T) {
 	requireNoStep(t, ev, "order.commit")
 }
 
+func TestCheckoutInventory503EmitsINV503AfterDBLoad(t *testing.T) {
+	out := initSDK(t, "checkout")
+	db := httptest.NewServer(okJSON())
+	defer db.Close()
+	payment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("payment should not be called for inventory_503 scenario")
+	}))
+	defer payment.Close()
+
+	resp := postPurchase(t, wayloghttp.HTTP(microdemo.NewCheckoutHandler(payment.URL, db.URL)), "/checkout", microdemo.ScenarioInventory503)
+	if resp.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusBadGateway)
+	}
+	ev := oneEvent(t, out)
+	if ev.Status != eventv2.StatusError {
+		t.Fatalf("status = %s, want error", ev.Status)
+	}
+	if ev.Anchor == nil || ev.Anchor.Step != "inventory.reserve" || ev.Anchor.ErrorCode != "INV_503" {
+		t.Fatalf("anchor = %#v, want inventory.reserve/INV_503", ev.Anchor)
+	}
+	requireStep(t, ev, "cart.validate", eventv2.StepStatusOK, "")
+	requireStep(t, ev, "db.load_cart", eventv2.StepStatusOK, "db")
+	requireStep(t, ev, "inventory.reserve", eventv2.StepStatusError, "")
+	requireNoStep(t, ev, "payment.charge")
+	requireNoStep(t, ev, "order.commit")
+}
+
 func TestCheckoutHappyEmitsOKWithoutAnchor(t *testing.T) {
 	out := initSDK(t, "checkout")
 	db := httptest.NewServer(okJSON())

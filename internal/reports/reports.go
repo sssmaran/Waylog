@@ -45,8 +45,9 @@ func Markdown(rep *pkgtriage.Report) string {
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "## Summary\n\n")
 	fmt.Fprintf(&b, "- Incident: `%s` (report `%s`)\n", nz(rep.IncidentRef.ID), nz(rep.ReportHash))
+	fmt.Fprintf(&b, "- Evidence fingerprint: `%s` (stable across ticks until evidence changes)\n", nz(rep.EvidenceFingerprint))
 	fmt.Fprintf(&b, "- Confidence: `%s` (incident `%s`, report `%s`)\n", nz(string(rep.Confidence)), nz(rep.IncidentRef.ID), nz(rep.ReportHash))
-	fmt.Fprintf(&b, "- Evidence status: alert=%s trace=%s signal=%s (report `%s`)\n", availability(len(rep.Alerts) > 0), availability(len(rep.SampleTraces) > 0), availability(len(rep.Signals) > 0), nz(rep.ReportHash))
+	fmt.Fprintf(&b, "- Evidence status: alert=%s trace=%s signal=%s runtime=%s (report `%s`)\n", availability(len(rep.Alerts) > 0), availability(len(rep.SampleTraces) > 0), availability(len(rep.Signals) > 0), availability(len(rep.Runtime) > 0), nz(rep.ReportHash))
 	fmt.Fprintf(&b, "- Window: `%s` (incident `%s`)\n\n", nz(rep.IncidentRef.Window), nz(rep.IncidentRef.ID))
 
 	fmt.Fprintf(&b, "## Impact\n\n")
@@ -78,6 +79,15 @@ func Markdown(rep *pkgtriage.Report) string {
 		}
 	}
 
+	fmt.Fprintf(&b, "\n## Runtime Evidence\n\n")
+	if len(rep.Runtime) == 0 {
+		fmt.Fprintf(&b, "- not available (report `%s`)\n", nz(rep.ReportHash))
+	} else {
+		for _, r := range rep.Runtime {
+			fmt.Fprintf(&b, "- `%s` %s on `%s`: %s (source `%s`, signal `%s`, report `%s`)\n", nz(r.Severity), nz(r.Subtype), nz(r.Service), nz(r.Reason), nz(r.Source), nz(r.SignalID), nz(rep.ReportHash))
+		}
+	}
+
 	fmt.Fprintf(&b, "\n## Signals\n\n")
 	if len(rep.Signals) == 0 {
 		fmt.Fprintf(&b, "- not available (report `%s`)\n", nz(rep.ReportHash))
@@ -105,6 +115,7 @@ func Slack(rep *pkgtriage.Report) map[string]any {
 		{"type": "mrkdwn", "text": "*Impact*\n" + impactSummary(rep)},
 		{"type": "mrkdwn", "text": "*Trace*\n" + firstTrace(rep)},
 		{"type": "mrkdwn", "text": "*Report hash*\n`" + nz(rep.ReportHash) + "`"},
+		{"type": "mrkdwn", "text": "*Evidence fingerprint*\n`" + nz(rep.EvidenceFingerprint) + "`"},
 	}
 	alertText := "not available"
 	if len(rep.Alerts) > 0 {
@@ -116,6 +127,7 @@ func Slack(rep *pkgtriage.Report) map[string]any {
 			{"type": "header", "text": map[string]string{"type": "plain_text", "text": "Waylog operator report"}},
 			{"type": "section", "fields": fields},
 			{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": "*Alert evidence*\n" + alertText}},
+			{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": "*Runtime evidence*\n" + runtimeSummary(rep)}},
 			{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": "*Next check*\n" + firstCheck(rep)}},
 		},
 	}
@@ -127,8 +139,8 @@ func PagerDuty(rep *pkgtriage.Report) string {
 		a := rep.Alerts[0]
 		alert = fmt.Sprintf("%s alert %s via signal %s provider=%s", nz(a.Source), nz(a.AlertID), nz(a.SignalID), nz(a.ProviderURL))
 	}
-	return fmt.Sprintf("Waylog operator report: incident=%s confidence=%s impact=%s trace=%s report_hash=%s alert=%s next_check=%s",
-		nz(rep.IncidentRef.ID), nz(string(rep.Confidence)), impactSummary(rep), firstTrace(rep), nz(rep.ReportHash), alert, firstCheck(rep))
+	return fmt.Sprintf("Waylog operator report: incident=%s confidence=%s impact=%s trace=%s report_hash=%s evidence_fingerprint=%s alert=%s runtime=%s next_check=%s",
+		nz(rep.IncidentRef.ID), nz(string(rep.Confidence)), impactSummary(rep), firstTrace(rep), nz(rep.ReportHash), nz(rep.EvidenceFingerprint), alert, runtimeSummary(rep), firstCheck(rep))
 }
 
 func EncodeBody(r Rendered) ([]byte, error) {
@@ -153,6 +165,19 @@ func firstTrace(rep *pkgtriage.Report) string {
 		return "not available (report `" + nz(rep.ReportHash) + "`)"
 	}
 	return "`" + nz(rep.SampleTraces[0].TraceID) + "` (incident `" + nz(rep.IncidentRef.ID) + "`, report `" + nz(rep.ReportHash) + "`)"
+}
+
+// runtimeSummary renders matched runtime evidence as a compact list: infra and
+// app rows count toward the same incident. Used by Slack and PagerDuty.
+func runtimeSummary(rep *pkgtriage.Report) string {
+	if len(rep.Runtime) == 0 {
+		return "not available (report `" + nz(rep.ReportHash) + "`)"
+	}
+	parts := make([]string, 0, len(rep.Runtime))
+	for _, r := range rep.Runtime {
+		parts = append(parts, fmt.Sprintf("`%s` %s on %s (%s)", nz(r.Severity), nz(r.Subtype), nz(r.Service), nz(r.Source)))
+	}
+	return strings.Join(parts, "; ") + " (report `" + nz(rep.ReportHash) + "`)"
 }
 
 func impactSummary(rep *pkgtriage.Report) string {
