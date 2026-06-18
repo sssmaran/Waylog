@@ -6,6 +6,7 @@
 package ratelimit
 
 import (
+	"container/list"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,24 +18,32 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// maxKeys bounds the bucket map. When exceeded, the map is reset: a brief
-// over-admit window after reset is preferable to unbounded memory growth
-// from attacker-generated keys.
+// maxKeys bounds the bucket map. When it is full, the least-recently-used key
+// is evicted to make room — so a flood of attacker-generated keys drops the
+// cold attacker entries rather than wiping the rate state of hot legitimate
+// keys.
 const maxKeys = 10000
 
-// Limiter is a per-key token bucket at rps requests/second with burst = rps.
-// A nil Limiter or rps <= 0 disables limiting (Allow always true).
+type bucket struct {
+	key string
+	lim *rate.Limiter
+}
+
+// Limiter is a per-key token bucket at rps requests/second with burst = rps,
+// backed by a bounded LRU. A nil Limiter or rps <= 0 disables limiting (Allow
+// always true).
 type Limiter struct {
 	rps     int
 	mu      sync.Mutex
-	buckets map[string]*rate.Limiter
+	lru     *list.List               // *bucket, most-recently-used at front
+	buckets map[string]*list.Element // key -> its element in lru
 }
 
 func New(rps int) *Limiter {
 	if rps <= 0 {
 		return nil
 	}
-	return &Limiter{rps: rps, buckets: map[string]*rate.Limiter{}}
+	return &Limiter{rps: rps, lru: list.New(), buckets: map[string]*list.Element{}}
 }
 
 func (l *Limiter) Allow(key string, now time.Time) bool {
@@ -42,16 +51,23 @@ func (l *Limiter) Allow(key string, now time.Time) bool {
 		return true
 	}
 	l.mu.Lock()
-	b, ok := l.buckets[key]
-	if !ok {
-		if len(l.buckets) >= maxKeys {
-			l.buckets = map[string]*rate.Limiter{}
+	var lim *rate.Limiter
+	if el, ok := l.buckets[key]; ok {
+		l.lru.MoveToFront(el)
+		lim = el.Value.(*bucket).lim
+	} else {
+		if l.lru.Len() >= maxKeys {
+			if oldest := l.lru.Back(); oldest != nil {
+				l.lru.Remove(oldest)
+				delete(l.buckets, oldest.Value.(*bucket).key)
+			}
 		}
-		b = rate.NewLimiter(rate.Limit(l.rps), l.rps)
-		l.buckets[key] = b
+		lim = rate.NewLimiter(rate.Limit(l.rps), l.rps)
+		l.buckets[key] = l.lru.PushFront(&bucket{key: key, lim: lim})
 	}
 	l.mu.Unlock()
-	return b.AllowN(now, 1)
+	// lim stays valid even if another goroutine evicts it before AllowN runs.
+	return lim.AllowN(now, 1)
 }
 
 // Middleware throttles requests through l. On rejection it responds

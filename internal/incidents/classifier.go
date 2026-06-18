@@ -63,6 +63,7 @@ func Classify(input ClassificationInput) Classification {
 	if deployment == nil {
 		deploySig = matchingSignal(input, signals.TypeDeploy)
 	}
+	hasDeploy := deployment != nil || deploySig != nil
 
 	if depSig != nil {
 		ctx.Downstream = depSig.Service
@@ -79,16 +80,17 @@ func Classify(input ClassificationInput) Classification {
 			OccurredAt: input.Incident.StartedAt,
 		})
 	}
+
+	// deployAt anchors the temporal tiebreak; a deploy signal without a
+	// timestamp leaves it zero (and therefore loses any tiebreak).
 	var deployAt time.Time
-	hasDeploy := false
-	if deployment != nil {
-		hasDeploy = true
+	switch {
+	case deployment != nil:
 		deployAt = deployment.FirstSeen
 		ctx.DeployVersion = deployment.Version
 		ctx.DeployFirstSeen = deployment.FirstSeen
 		evidence = append(evidence, deploymentEvidence(*deployment))
-	} else if deploySig != nil {
-		hasDeploy = true
+	case deploySig != nil:
 		ctx.DeployVersion = stringField(deploySig.Metadata, "version")
 		ctx.DeploySignalID = deploySig.SignalID
 		if !deploySig.Timestamp.IsZero() {

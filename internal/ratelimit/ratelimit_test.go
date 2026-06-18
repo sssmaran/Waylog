@@ -60,6 +60,31 @@ func TestBucketCountIsBounded(t *testing.T) {
 	}
 }
 
+func TestEvictionKeepsRecentlyUsedKeyThrottled(t *testing.T) {
+	l := New(1) // 1 rps, burst 1
+	now := time.Now()
+
+	// Exhaust a legitimate hot key.
+	if !l.Allow("real", now) {
+		t.Fatal("first request for hot key should pass")
+	}
+	if l.Allow("real", now) {
+		t.Fatal("hot key should be throttled after consuming its single token")
+	}
+
+	// An attacker churns far more than maxKeys distinct fake credentials while
+	// the legitimate key keeps receiving traffic. LRU eviction must drop the
+	// cold attacker keys, never the hot one — so the hot key stays throttled.
+	for i := 0; i < maxKeys*2; i++ {
+		l.Allow(fmt.Sprintf("fake-%d", i), now)
+		if i%10 == 0 {
+			if l.Allow("real", now) {
+				t.Fatalf("hot key's bucket was reset by eviction churn at i=%d", i)
+			}
+		}
+	}
+}
+
 func TestMiddlewareReturns429WithRetryAfter(t *testing.T) {
 	l := New(1)
 	var hits int
