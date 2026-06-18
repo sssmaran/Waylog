@@ -18,6 +18,7 @@
 > **Public alpha for single-node production-style incident triage.** APIs may break before 1.0.
 
 ---
+  <img width="1440" height="402" alt="crux-1 (2)" src="https://github.com/user-attachments/assets/4f68cdc0-16ed-4069-acd2-b547cfabe8e8" />
 
 ## Try it in 60 seconds
 
