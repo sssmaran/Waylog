@@ -2,6 +2,7 @@
   "name": "@waylog/sdk",
   "version": "0.1.0",
   "description": "Waylog SDK for TypeScript — structured wide-event capture with Express and Hono middleware.",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

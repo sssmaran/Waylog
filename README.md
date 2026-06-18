@@ -11,7 +11,7 @@
   </p>
 
   <p>
-    <code>alpha</code> · <code>go 1.24+</code> · <code>single-node</code> · <code>OTLP-compatible</code> · <code>MCP-native</code> · <code>LLM-optional</code>
+    <code>alpha</code> · <code>Apache-2.0</code> · <code>go 1.24+</code> · <code>single-node</code> · <code>OTLP-compatible</code> · <code>MCP-native</code> · <code>LLM-optional</code>
   </p>
 </div>
 
@@ -200,6 +200,19 @@ waylog search   PMT_502 --window 1h
 
 `waylog capabilities` is intentionally ungated so it can diagnose server setup; other verbs require `v2_reads.enabled=true` (the default). Defaults: `INGEST_ADDR`, `WAYLOG_READ_KEY`, `WAYLOG_CLI_TIMEOUT`. Add `--json` to any verb for machine-readable output.
 
+### Self-contained first-run
+
+```bash
+make first-run        # or, with crux on PATH: crux first-run
+```
+
+`crux first-run` launches a throwaway ingest server, drives a real
+checkout→payment failure burst through the SDK so the spike detector opens a
+**real** incident, then prints the deterministic triage report with its
+`report_hash` and `evidence_fingerprint`. No Docker, no Kafka — SQLite plus a
+single binary against a temp data dir. The server stays up afterward so you can
+open `/ui/` and run `crux incidents`.
+
 ### Interactive shell
 
 ```bash
@@ -369,9 +382,14 @@ Full env-var reference: [`docs/env.md`](docs/env.md). Reproducible demo gate: `m
 
 - **Signal-correlated incident engine** at `/v1/incidents/*` with deterministic cause classification (`deploy | app | dependency | runtime | unknown`).
 - **Deterministic TriageReport** (`triage.v1`) with stable per-tick `report_hash` across CLI, read endpoint, direct tool, and plan template.
+- **Cross-tick `evidence_fingerprint`** on every triage report — hashes the evidence identity set (incident + signal + alert + runtime + trace IDs), stable across engine ticks until the evidence changes, so a triage answer can be cited durably even as `report_hash` rolls with the window.
 - **Alert intake** at `POST /v1/alerts` for Waylog-native, Alertmanager, Grafana, and PagerDuty webhooks. Alerts correlate with active incidents; they do not create incidents.
 - **Cited operator reports** rendered as Markdown, Slack Block Kit, or PagerDuty notes via `GET /v1/triage/{id}/report`.
 - **OTLP/gRPC trace receiver** on `OTLP_GRPC_ADDR` (default `:4317`).
+- **OTLP deploy correlation** — a `service.version` change on incoming spans auto-registers a deployment, so incidents classify `cause=deploy` with no SDK and no deploy webhook.
+- **Per-key rate limiting + backpressure** — token-bucket throttling on write/read/agent scopes (`WAYLOG_RATE_LIMIT_*_RPS`, off by default, on in the `prod` profile) returning `429` + `Retry-After`; WAL-failure 503s also send `Retry-After`.
+- **Automatic resolved-incident retention** — a janitor prunes resolved incidents older than `WAYLOG_INCIDENT_RETENTION` (default 168h); active and recovering incidents are never touched.
+- **`crux first-run`** — one command spins up ingest, drives a real failure burst, opens a real incident, and prints the cited deterministic report.
 - **Provider-neutral Ask** configuration: `gemini`, `anthropic`, `openai`, or `none`. All deterministic surfaces work with no LLM configured.
 - **`WAYLOG_PROFILE=demo|dev|prod`** gates auth defaults; `prod` hard-fails on unsafe configs.
 - **`/v1/insight`** retained as a compat shim returning the top active incident. New clients should use `/v1/incidents/*`.
@@ -385,18 +403,19 @@ Public alpha for single-node production-style incident triage. APIs may break be
 **Shipped**
 
 - Go SDK v2 (`net/http`, chi, gin, echo) and TypeScript SDK v2 (`@waylog/sdk`, ESM, Node 18+, standalone core, Express, Hono, Next.js, NestJS)
-- OTLP HTTP at `/v1/otlp/v1/traces` and OTLP/gRPC at `OTLP_GRPC_ADDR` (traces only)
+- OTLP HTTP at `/v1/otlp/v1/traces` and OTLP/gRPC at `OTLP_GRPC_ADDR` (traces only), with `service.version`-change deploy auto-registration for OTel-only deploy correlation
 - Durable ingest with WAL + replay
 - Schema-2.0 v2 reader powering all hot read APIs (`/v1/errors`, `/v1/blast_radius`, `/v1/traces/*`, `/v1/events/*`)
 - SQLite cold store (events, deployments, signals, incidents)
-- Signal-correlated incident engine with stable IDs, deterministic classification, and startup hot-window rebuild from the schema-2.0 WAL
+- Signal-correlated incident engine with stable IDs, deterministic classification, startup hot-window rebuild from the schema-2.0 WAL, and an automatic resolved-incident retention janitor (`WAYLOG_INCIDENT_RETENTION`)
 - Alert intake from four webhook formats, stored as signals and correlated with active incidents
-- Deterministic triage report with stable hash across CLI / read endpoint / direct tool / plan template within a single engine tick
+- Deterministic triage report with a per-tick `report_hash` across CLI / read endpoint / direct tool / plan template, plus a cross-tick `evidence_fingerprint` for durable citation
 - Provider-neutral Ask configuration; deterministic CLI, tools, plans, triage, and MCP work with no LLM configured
 - Four deterministic v1.0 agent tools (`explain_request`, `blast_radius`, `triage_incident`, `render_triage_report`)
 - Agent-native REST with idempotency and structured envelopes
+- `crux first-run` self-contained demo (launch → real failure burst → real incident → cited deterministic report)
 - MCP stdio, embedded Geist dashboard
-- Scoped auth (write / read / agent) with startup validation and `WAYLOG_PROFILE=prod` hard-fail
+- Scoped auth (write / read / agent) with startup validation and `WAYLOG_PROFILE=prod` hard-fail, plus per-key rate limiting with `429` + `Retry-After` backpressure
 
 **Planned**
 
@@ -450,4 +469,4 @@ docs/        reference and contracts
 
 ## License
 
-Not yet declared. The project is in public alpha; a license will be added before tagging 1.0. Until then, contact the maintainers if you'd like to use Waylog in a context where licensing matters to you.
+[Apache License 2.0](LICENSE). You may use, modify, and distribute this software under its terms, which include an explicit patent grant.
