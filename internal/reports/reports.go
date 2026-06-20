@@ -61,6 +61,13 @@ func Markdown(rep *pkgtriage.Report) string {
 		fmt.Fprintf(&b, "- Error family: not available (incident `%s`)\n", nz(rep.IncidentRef.ID))
 	}
 
+	fmt.Fprintf(&b, "\n## Suspect Change\n\n")
+	if rep.SuspectChange == nil {
+		fmt.Fprintf(&b, "- not available (incident `%s`, report `%s`)\n", nz(rep.IncidentRef.ID), nz(rep.ReportHash))
+	} else {
+		fmt.Fprintf(&b, "- %s (deploy `%s`, incident `%s`, report `%s`)\n", suspectSummary(rep.SuspectChange), nz(rep.SuspectChange.DeployID), nz(rep.IncidentRef.ID), nz(rep.ReportHash))
+	}
+
 	fmt.Fprintf(&b, "\n## First Failure And Traces\n\n")
 	if len(rep.SampleTraces) == 0 {
 		fmt.Fprintf(&b, "- not available (incident `%s`, report `%s`)\n", nz(rep.IncidentRef.ID), nz(rep.ReportHash))
@@ -126,6 +133,7 @@ func Slack(rep *pkgtriage.Report) map[string]any {
 		"blocks": []map[string]any{
 			{"type": "header", "text": map[string]string{"type": "plain_text", "text": "Waylog operator report"}},
 			{"type": "section", "fields": fields},
+			{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": "*Suspect change*\n" + suspectSummary(rep.SuspectChange)}},
 			{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": "*Alert evidence*\n" + alertText}},
 			{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": "*Runtime evidence*\n" + runtimeSummary(rep)}},
 			{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": "*Next check*\n" + firstCheck(rep)}},
@@ -139,8 +147,8 @@ func PagerDuty(rep *pkgtriage.Report) string {
 		a := rep.Alerts[0]
 		alert = fmt.Sprintf("%s alert %s via signal %s provider=%s", nz(a.Source), nz(a.AlertID), nz(a.SignalID), nz(a.ProviderURL))
 	}
-	return fmt.Sprintf("Waylog operator report: incident=%s confidence=%s impact=%s trace=%s report_hash=%s evidence_fingerprint=%s alert=%s runtime=%s next_check=%s",
-		nz(rep.IncidentRef.ID), nz(string(rep.Confidence)), impactSummary(rep), firstTrace(rep), nz(rep.ReportHash), nz(rep.EvidenceFingerprint), alert, runtimeSummary(rep), firstCheck(rep))
+	return fmt.Sprintf("Waylog operator report: incident=%s confidence=%s impact=%s trace=%s report_hash=%s evidence_fingerprint=%s suspect_change=%s alert=%s runtime=%s next_check=%s",
+		nz(rep.IncidentRef.ID), nz(string(rep.Confidence)), impactSummary(rep), firstTrace(rep), nz(rep.ReportHash), nz(rep.EvidenceFingerprint), suspectSummary(rep.SuspectChange), alert, runtimeSummary(rep), firstCheck(rep))
 }
 
 func EncodeBody(r Rendered) ([]byte, error) {
@@ -178,6 +186,35 @@ func runtimeSummary(rep *pkgtriage.Report) string {
 		parts = append(parts, fmt.Sprintf("`%s` %s on %s (%s)", nz(r.Severity), nz(r.Subtype), nz(r.Service), nz(r.Source)))
 	}
 	return strings.Join(parts, "; ") + " (report `" + nz(rep.ReportHash) + "`)"
+}
+
+// suspectSummary renders the correlated deploy/PR as a one-line, vendor-neutral
+// summary. Used by Markdown, Slack, and PagerDuty.
+func suspectSummary(sc *pkgtriage.SuspectChange) string {
+	if sc == nil {
+		return "not available"
+	}
+	s := nz(sc.Service)
+	if sc.Version != "" {
+		s += " " + sc.Version
+	}
+	attrs := make([]string, 0, 3)
+	if sc.PRURL != "" {
+		attrs = append(attrs, "PR "+sc.PRURL)
+	}
+	if sc.CommitAuthor != "" {
+		attrs = append(attrs, "by "+sc.CommitAuthor)
+	}
+	if sc.CommitSHA != "" {
+		attrs = append(attrs, "commit "+sc.CommitSHA)
+	}
+	if len(attrs) > 0 {
+		s += " (" + strings.Join(attrs, ", ") + ")"
+	}
+	if sc.ErrorRateBefore != nil && sc.ErrorRateAfter != nil {
+		s += fmt.Sprintf("; err %.1f%% -> %.1f%%", *sc.ErrorRateBefore*100, *sc.ErrorRateAfter*100)
+	}
+	return s
 }
 
 func impactSummary(rep *pkgtriage.Report) string {

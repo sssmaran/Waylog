@@ -505,6 +505,7 @@ func main() {
 				Signals:    triage.NewSignalQueryAdapter(signalStore),
 				Alerts:     triage.NewAlertQueryAdapter(signalStore, alertMatchWindow),
 				NextChecks: triage.NewNextChecksAdapter(),
+				Deploy:     triage.NewSuspectChangeAdapter(coldDeployAdapter{store: sqlite}),
 			})
 			if err != nil {
 				slog.Error("triage engine init failed", "err", err)
@@ -516,6 +517,10 @@ func main() {
 			}
 			if err := tools.RegisterTriageReportTool(reg, triageEng); err != nil {
 				slog.Error("triage report tool register failed", "err", err)
+				os.Exit(1)
+			}
+			if err := tools.RegisterSuspectChangeTool(reg, triageEng); err != nil {
+				slog.Error("suspect_change tool register failed", "err", err)
 				os.Exit(1)
 			}
 			triageHandler := triagehttp.NewHandler(triageEng)
@@ -779,16 +784,45 @@ func (a coldDeployAdapter) DeploymentsInWindow(ctx context.Context, start, end t
 	out := make([]incidents.Deployment, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, incidents.Deployment{
-			ID:        row.ID,
-			Service:   row.Service,
-			Version:   row.Version,
-			Env:       row.Env,
-			FirstSeen: row.FirstSeen,
-			LastSeen:  row.LastSeen,
-			Metadata:  row.Metadata,
+			ID:           row.ID,
+			Service:      row.Service,
+			Version:      row.Version,
+			Env:          row.Env,
+			FirstSeen:    row.FirstSeen,
+			LastSeen:     row.LastSeen,
+			Metadata:     row.Metadata,
+			CommitSHA:    row.CommitSHA,
+			PRURL:        row.PRURL,
+			CommitAuthor: row.CommitAuthor,
 		})
 	}
 	return out, nil
+}
+
+// DeploymentByID satisfies triage.DeployStore: hydrates suspect-change provenance.
+func (a coldDeployAdapter) DeploymentByID(ctx context.Context, id string) (*triage.DeployRecord, error) {
+	d, err := a.store.DeploymentByID(ctx, id)
+	if err != nil || d == nil {
+		return nil, err
+	}
+	return &triage.DeployRecord{
+		ID:           d.ID,
+		Service:      d.Service,
+		Version:      d.Version,
+		CommitSHA:    d.CommitSHA,
+		PRURL:        d.PRURL,
+		CommitAuthor: d.CommitAuthor,
+		FirstSeen:    d.FirstSeen,
+	}, nil
+}
+
+// DeployErrorRate satisfies triage.DeployStore via the shared rate-delta helper.
+func (a coldDeployAdapter) DeployErrorRate(ctx context.Context, service string, firstSeen time.Time) (*float64, *float64, error) {
+	delta, err := a.store.DeployErrorRateDelta(ctx, service, firstSeen)
+	if err != nil {
+		return nil, nil, err
+	}
+	return delta.BeforeRate, delta.AfterRate, nil
 }
 
 type incidentReaderAdapter struct {

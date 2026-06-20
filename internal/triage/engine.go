@@ -30,6 +30,10 @@ type IncidentSummary struct {
 	Blast       *incidents.BlastSnapshot
 	Alerts      *incidents.AlertSnapshot
 	Runtime     *incidents.RuntimeSnapshot
+	// SuspectDeployID is the deployment the incident classifier already
+	// correlated (via EvidenceDeployment). Triage reuses that decision rather
+	// than re-matching; empty means the classifier found no suspect deploy.
+	SuspectDeployID string
 }
 
 type BlastSnapshotResult struct {
@@ -72,6 +76,12 @@ type NextChecksProvider interface {
 	NextChecks(ctx context.Context, inc IncidentSummary) ([]NextCheckSpec, error)
 }
 
+// SuspectChangeQuery returns the deployment/PR correlated to the incident, or nil
+// when there is none. Optional dependency.
+type SuspectChangeQuery interface {
+	SuspectChange(ctx context.Context, inc IncidentSummary, opts BuildOptions) (*pkgtriage.SuspectChange, error)
+}
+
 type Deps struct {
 	Incidents  IncidentLookup
 	Blast      BlastQuery
@@ -79,6 +89,7 @@ type Deps struct {
 	Signals    SignalQuery
 	Alerts     AlertQuery
 	NextChecks NextChecksProvider
+	Deploy     SuspectChangeQuery
 	Now        func() time.Time
 }
 
@@ -128,6 +139,13 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 	if err != nil {
 		return nil, fmt.Errorf("triage: next_checks: %w", err)
 	}
+	var suspect *pkgtriage.SuspectChange
+	if e.deps.Deploy != nil {
+		suspect, err = e.deps.Deploy.SuspectChange(ctx, inc, opts)
+		if err != nil {
+			return nil, fmt.Errorf("triage: suspect_change: %w", err)
+		}
+	}
 
 	r := &pkgtriage.Report{
 		SchemaVersion: pkgtriage.SchemaVersionV1,
@@ -136,14 +154,15 @@ func (e *Engine) Build(ctx context.Context, incidentID string, opts BuildOptions
 			Requests: blast.Requests, Users: blast.Users, Services: blast.Services,
 			TopErrorFamilies: blast.TopErrorFamilies,
 		},
-		FirstFailure: story.Payload,
-		SampleTraces: story.SampleTraces,
-		Signals:      sigs,
-		Alerts:       alerts,
-		Runtime:      runtimeFromSnapshot(inc.Runtime),
-		NextChecks:   checks,
-		Confidence:   inc.Confidence,
-		GeneratedAt:  e.deps.Now().UTC().Format(time.RFC3339Nano),
+		FirstFailure:  story.Payload,
+		SuspectChange: suspect,
+		SampleTraces:  story.SampleTraces,
+		Signals:       sigs,
+		Alerts:        alerts,
+		Runtime:       runtimeFromSnapshot(inc.Runtime),
+		NextChecks:    checks,
+		Confidence:    inc.Confidence,
+		GeneratedAt:   e.deps.Now().UTC().Format(time.RFC3339Nano),
 	}
 
 	hash, err := r.CanonicalHash()

@@ -55,6 +55,27 @@ func TestDeployWebhook_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDeployWebhook_Provenance(t *testing.T) {
+	srv, cs := makeTestServerWithColdStore(t)
+
+	body := `{"id":"d-prov","service":"payment","env":"prod","version":"v1.4.2",` +
+		`"commit_sha":"a1b2c3d","pr_url":"https://example/pr/482","commit_author":"alice"}`
+	if w := postDeploy(t, srv, body); w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	dep, err := cs.DeploymentByID(context.Background(), "d-prov")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dep == nil {
+		t.Fatal("deployment not found")
+	}
+	if dep.CommitSHA != "a1b2c3d" || dep.PRURL != "https://example/pr/482" || dep.CommitAuthor != "alice" {
+		t.Fatalf("provenance not stored: %+v", dep)
+	}
+}
+
 func TestDeployWebhook_MissingFields(t *testing.T) {
 	srv, _ := makeTestServerWithColdStore(t)
 

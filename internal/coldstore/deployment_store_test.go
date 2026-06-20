@@ -343,6 +343,109 @@ func TestMalformedMetadataInWindow(t *testing.T) {
 	}
 }
 
+// TestDeployVCSRoundTrip verifies commit/PR provenance survives upsert and that
+// empty provenance does not clobber an existing value (COALESCE/NULLIF idiom).
+func TestDeployVCSRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	d := Deployment{
+		ID: "dep-vcs", Service: "svc-v", Version: "v1", Env: "prod",
+		FirstSeen: t1, LastSeen: t1,
+		CommitSHA: "a1b2c3d", PRURL: "https://example/pr/1", CommitAuthor: "alice",
+	}
+	if err := s.UpsertDeployment(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.DeploymentByID(ctx, "dep-vcs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CommitSHA != "a1b2c3d" || got.PRURL != "https://example/pr/1" || got.CommitAuthor != "alice" {
+		t.Fatalf("provenance round-trip mismatch: %+v", got)
+	}
+
+	// Re-upsert with empty provenance must not wipe the stored values.
+	if err := s.UpsertDeployment(ctx, Deployment{
+		ID: "dep-vcs", Service: "svc-v", Version: "v1", Env: "prod",
+		FirstSeen: t2, LastSeen: t2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.DeploymentByID(ctx, "dep-vcs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CommitSHA != "a1b2c3d" || got.PRURL != "https://example/pr/1" || got.CommitAuthor != "alice" {
+		t.Fatalf("empty provenance clobbered stored values: %+v", got)
+	}
+
+	// And it round-trips through the window query too.
+	win, err := s.DeploymentsInWindow(ctx, t1, t3, "svc-v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(win) != 1 || win[0].CommitSHA != "a1b2c3d" {
+		t.Fatalf("window query missing provenance: %+v", win)
+	}
+}
+
+// TestDeployErrorRateDelta locks the single-source threshold: the change ratio is
+// gated by minRequests (the constant lives only here), and rates reflect a real
+// before/after delta once enough samples exist.
+func TestDeployErrorRateDelta(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	deploy := t2
+
+	insert := func(success int, ts time.Time) {
+		t.Helper()
+		_, err := s.writer.ExecContext(ctx, `
+			INSERT INTO events (trace_id, event_name, service, env, user_id, status_code, success, latency_ms, timestamp)
+			VALUES ('tr', 'svc-r.request', 'svc-r', 'prod', 'u', 200, ?, 10, ?)`,
+			success, ts.UTC().Format(tsFormat))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Below threshold: a few samples each side → no ratio yet (too little signal).
+	for i := 0; i < 3; i++ {
+		insert(1, deploy.Add(-time.Minute))
+		insert(0, deploy.Add(time.Minute))
+	}
+	d, err := s.DeployErrorRateDelta(ctx, "svc-r", deploy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Ratio != nil {
+		t.Fatalf("expected nil ratio below minRequests, got %v", *d.Ratio)
+	}
+
+	// Above threshold with a real baseline: a few failures before, many after.
+	for i := 0; i < 10; i++ {
+		insert(1, deploy.Add(-time.Minute)) // before: mostly clean...
+		insert(0, deploy.Add(time.Minute))  // after: failing
+	}
+	for i := 0; i < 3; i++ {
+		insert(0, deploy.Add(-time.Minute)) // ...with a small baseline of failures
+	}
+	d, err = s.DeployErrorRateDelta(ctx, "svc-r", deploy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.BeforeRate == nil || d.AfterRate == nil {
+		t.Fatalf("expected computed rates, got before=%v after=%v", d.BeforeRate, d.AfterRate)
+	}
+	if *d.AfterRate <= *d.BeforeRate {
+		t.Fatalf("expected after rate > before rate, got before=%.3f after=%.3f", *d.BeforeRate, *d.AfterRate)
+	}
+	if d.Ratio == nil || *d.Ratio <= 1 {
+		t.Fatalf("expected ratio > 1 above minRequests with baseline, got %v", d.Ratio)
+	}
+}
+
 // TestServiceErrorRateInWindow verifies error rate calculation from events table.
 func TestServiceErrorRateInWindow(t *testing.T) {
 	s := newTestStore(t)

@@ -52,6 +52,7 @@ type DeploymentStore interface {
 	DeploymentByID(ctx context.Context, id string) (*Deployment, error)
 	DeploymentsInWindow(ctx context.Context, start, end time.Time, serviceFilter string) ([]Deployment, error)
 	ServiceErrorRateInWindow(ctx context.Context, svc string, from, to time.Time) (ServiceErrorRate, error)
+	DeployErrorRateDelta(ctx context.Context, service string, firstSeen time.Time) (DeployRateDelta, error)
 }
 
 // SQLiteStore wraps a SQLite database for cold storage of events and deployments.

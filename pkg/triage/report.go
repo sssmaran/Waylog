@@ -23,6 +23,7 @@ type Report struct {
 	IncidentRef   IncidentRef     `json:"incident_ref"`
 	BlastSnapshot BlastSnapshot   `json:"blast_snapshot"`
 	FirstFailure  json.RawMessage `json:"first_failure,omitempty"`
+	SuspectChange *SuspectChange  `json:"suspect_change,omitempty"`
 	SampleTraces  []TraceSample   `json:"sample_traces,omitempty"`
 	Signals       []SignalRef     `json:"signals,omitempty"`
 	Alerts        []AlertRef      `json:"alerts,omitempty"`
@@ -56,6 +57,23 @@ type ErrorFamily struct {
 	Step      string `json:"step"`
 	ErrorCode string `json:"error_code"`
 	Count     int    `json:"count"`
+}
+
+// SuspectChange is the deployment correlated to the incident by the incident
+// classifier, enriched with CI-pushed provenance. The identity fields participate
+// in report_hash; ErrorRateBefore/ErrorRateAfter are volatile measurements and
+// are deliberately excluded from the hash (see CanonicalHash), the same treatment
+// RuntimeRef gives its capture timestamp.
+type SuspectChange struct {
+	DeployID        string   `json:"deploy_id"`
+	Service         string   `json:"service"`
+	Version         string   `json:"version,omitempty"`
+	CommitSHA       string   `json:"commit_sha,omitempty"`
+	PRURL           string   `json:"pr_url,omitempty"`
+	CommitAuthor    string   `json:"commit_author,omitempty"`
+	DeployedAt      string   `json:"deployed_at,omitempty"`
+	ErrorRateBefore *float64 `json:"error_rate_before,omitempty"`
+	ErrorRateAfter  *float64 `json:"error_rate_after,omitempty"`
 }
 
 type TraceSample struct {
@@ -127,6 +145,14 @@ func (r *Report) CanonicalHash() (string, error) {
 	clone.PlanRunID = ""
 	clone.ReportHash = ""
 	clone.EvidenceFingerprint = ""
+	// SuspectChange is a pointer (shared with r); copy it and drop the volatile
+	// measured rates so the hash stays stable while the after-window fills.
+	if clone.SuspectChange != nil {
+		sc := *clone.SuspectChange
+		sc.ErrorRateBefore = nil
+		sc.ErrorRateAfter = nil
+		clone.SuspectChange = &sc
+	}
 	raw, err := json.Marshal(&clone)
 	if err != nil {
 		return "", fmt.Errorf("triage: canonical marshal: %w", err)
@@ -149,6 +175,9 @@ func (r *Report) CanonicalEvidenceFingerprint() string {
 		}
 	}
 	add("incident", r.IncidentRef.ID)
+	if r.SuspectChange != nil {
+		add("deploy", r.SuspectChange.DeployID)
+	}
 	for _, s := range r.Signals {
 		add("signal", s.ID)
 	}

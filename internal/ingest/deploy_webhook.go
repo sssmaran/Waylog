@@ -4,19 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sssmaran/WaylogCLI/internal/coldstore"
 )
 
 type deployRequest struct {
-	ID       string            `json:"id"`
-	Service  string            `json:"service"`
-	Version  string            `json:"version"`
-	Env      string            `json:"env"`
-	Metadata map[string]string `json:"metadata"`
+	ID           string            `json:"id"`
+	Service      string            `json:"service"`
+	Version      string            `json:"version"`
+	Env          string            `json:"env"`
+	Metadata     map[string]string `json:"metadata"`
+	CommitSHA    string            `json:"commit_sha"`
+	PRURL        string            `json:"pr_url"`
+	CommitAuthor string            `json:"commit_author"`
 }
 
 type deployResponse struct {
@@ -27,6 +30,9 @@ type deployResponse struct {
 	FirstSeen       time.Time         `json:"first_seen"`
 	LastSeen        time.Time         `json:"last_seen"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
+	CommitSHA       string            `json:"commit_sha,omitempty"`
+	PRURL           string            `json:"pr_url,omitempty"`
+	CommitAuthor    string            `json:"commit_author,omitempty"`
 	ErrorRateChange *float64          `json:"error_rate_change"`
 	BeforeErrorRate *float64          `json:"before_error_rate"`
 	AfterErrorRate  *float64          `json:"after_error_rate"`
@@ -75,13 +81,16 @@ func (s *Server) DeployWebhook(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 	dep := coldstore.Deployment{
-		ID:        req.ID,
-		Service:   req.Service,
-		Version:   req.Version,
-		Env:       req.Env,
-		FirstSeen: now,
-		LastSeen:  now,
-		Metadata:  req.Metadata,
+		ID:           req.ID,
+		Service:      req.Service,
+		Version:      req.Version,
+		Env:          req.Env,
+		FirstSeen:    now,
+		LastSeen:     now,
+		Metadata:     req.Metadata,
+		CommitSHA:    strings.TrimSpace(req.CommitSHA),
+		PRURL:        strings.TrimSpace(req.PRURL),
+		CommitAuthor: strings.TrimSpace(req.CommitAuthor),
 	}
 
 	if err := s.coldStore.UpsertDeployment(r.Context(), dep); err != nil {
@@ -117,45 +126,29 @@ func (s *Server) deploymentsPayload(ctx context.Context, start, now time.Time, s
 		return nil, err
 	}
 
-	const sampleWindow = 5 * time.Minute
-	const minRequests = 10
-
 	out := make([]deployResponse, 0, len(deps))
 	for _, d := range deps {
 		resp := deployResponse{
-			ID:        d.ID,
-			Service:   d.Service,
-			Version:   d.Version,
-			Env:       d.Env,
-			FirstSeen: d.FirstSeen,
-			LastSeen:  d.LastSeen,
-			Metadata:  d.Metadata,
+			ID:           d.ID,
+			Service:      d.Service,
+			Version:      d.Version,
+			Env:          d.Env,
+			FirstSeen:    d.FirstSeen,
+			LastSeen:     d.LastSeen,
+			Metadata:     d.Metadata,
+			CommitSHA:    d.CommitSHA,
+			PRURL:        d.PRURL,
+			CommitAuthor: d.CommitAuthor,
 		}
 
-		beforeRate, berr := s.coldStore.ServiceErrorRateInWindow(ctx, d.Service, d.FirstSeen.Add(-sampleWindow), d.FirstSeen)
-		afterRate, aerr := s.coldStore.ServiceErrorRateInWindow(ctx, d.Service, d.FirstSeen, d.FirstSeen.Add(sampleWindow))
-
-		resp.BeforeRequests = beforeRate.Total
-		resp.AfterRequests = afterRate.Total
-
-		if berr == nil && aerr == nil {
-			bRate := float64(beforeRate.Failures) / math.Max(float64(beforeRate.Total), 1)
-			aRate := float64(afterRate.Failures) / math.Max(float64(afterRate.Total), 1)
-
-			resp.BeforeErrorRate = &bRate
-			resp.AfterErrorRate = &aRate
-
-			if beforeRate.Total >= minRequests && afterRate.Total >= minRequests {
-				if beforeRate.Failures == 0 && afterRate.Failures == 0 {
-					// both error rates zero: no change signal
-				} else if beforeRate.Failures == 0 && afterRate.Failures > 0 {
-					// new errors appeared with no baseline: skip ratio
-				} else {
-					change := aRate / math.Max(bRate, 0.001)
-					resp.ErrorRateChange = &change
-				}
-			}
-		}
+		// Best-effort enrichment: a rate-query failure leaves the rate fields
+		// unset but still lists the deployment.
+		delta, _ := s.coldStore.DeployErrorRateDelta(ctx, d.Service, d.FirstSeen)
+		resp.BeforeRequests = delta.BeforeRequests
+		resp.AfterRequests = delta.AfterRequests
+		resp.BeforeErrorRate = delta.BeforeRate
+		resp.AfterErrorRate = delta.AfterRate
+		resp.ErrorRateChange = delta.Ratio
 
 		out = append(out, resp)
 	}

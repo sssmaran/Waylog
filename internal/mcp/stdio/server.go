@@ -57,11 +57,17 @@ type toolsListResult struct {
 type toolContent struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
-	JSON any    `json:"json,omitempty"`
 }
 
+// toolsCallResult is an MCP CallToolResult. Content carries the universally
+// consumable text form (the JSON-serialized tool output); StructuredContent
+// carries the same payload as an object for clients that support it; IsError
+// marks a tool-level failure the model should read and reason about (vs. a
+// transport error).
 type toolsCallResult struct {
-	Content []toolContent `json:"content"`
+	Content           []toolContent `json:"content"`
+	StructuredContent any           `json:"structuredContent,omitempty"`
+	IsError           bool          `json:"isError,omitempty"`
 }
 
 func Serve(ctx context.Context, in io.Reader, out io.Writer, reg *tools.Registry, info ServerInfo) error {
@@ -144,16 +150,23 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, reg *tools.Registry
 			}
 			result, err := reg.Call(ctx, params.Name, params.Arguments)
 			if err != nil {
-				writeError(enc, req.ID, -32000, "tool error", err.Error())
+				// MCP: tool execution failures are returned as a result with
+				// isError so the model can read and react to them, not as a
+				// JSON-RPC transport error.
+				writeResult(enc, req.ID, toolsCallResult{
+					Content: []toolContent{{Type: "text", Text: err.Error()}},
+					IsError: true,
+				})
+				continue
+			}
+			text, mErr := json.Marshal(result)
+			if mErr != nil {
+				writeError(enc, req.ID, -32603, "internal error", mErr.Error())
 				continue
 			}
 			writeResult(enc, req.ID, toolsCallResult{
-				Content: []toolContent{
-					{
-						Type: "json",
-						JSON: result,
-					},
-				},
+				Content:           []toolContent{{Type: "text", Text: string(text)}},
+				StructuredContent: result,
 			})
 		default:
 			writeError(enc, req.ID, -32601, "method not found", req.Method)

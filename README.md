@@ -36,6 +36,39 @@ Stop with `make demo-stop`. No Docker. No Kafka. No bridge process. SQLite + a s
 
 ---
 
+## Install
+
+Crux ships as auditable binaries from this repo — no package registry, nothing to
+compromise in your supply chain. Pick a tier:
+
+**Fast (one command):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sssmaran/WaylogCLI/master/install.sh | sh
+```
+
+The script lives in this repo — read it first if you prefer. It resolves the
+latest release, verifies its SHA-256 against `checksums.txt`, installs `crux` +
+`ingest`, and offers to run the demo.
+
+**Manual:** download `crux_<os>_<arch>.tar.gz` + `checksums.txt` from
+[Releases](https://github.com/sssmaran/WaylogCLI/releases), verify the checksum,
+extract, and run `crux first-run`.
+
+**From source:**
+
+```sh
+git clone https://github.com/sssmaran/WaylogCLI && cd WaylogCLI && make first-run
+```
+
+All three end the same way, in ~5 minutes — `crux first-run` starts Crux, drives a
+real checkout→payment failure burst through the SDK, opens a real incident, and
+prints the deterministic triage report with its `report_hash`. Distribution is
+GitHub-only: release binaries are built by GoReleaser (`make release`) and
+published as a draft GitHub Release on each `v*` tag.
+
+---
+
 ## What Waylog is
 
 Waylog turns failed requests and external alerts into **incidents with deterministic, cited triage reports** that humans and agents can both consume. Three things make it different:

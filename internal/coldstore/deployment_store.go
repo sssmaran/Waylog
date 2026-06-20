@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 )
 
@@ -14,14 +15,19 @@ import (
 var ErrEnvConflict = errors.New("coldstore: deployment env conflict")
 
 // Deployment represents a versioned deployment of a service in a specific environment.
+// CommitSHA/PRURL/CommitAuthor are optional provenance pushed by CI at deploy time;
+// they are opaque, vendor-neutral strings (pr_url is a full URL).
 type Deployment struct {
-	ID        string
-	Service   string
-	Version   string
-	Env       string
-	FirstSeen time.Time
-	LastSeen  time.Time
-	Metadata  map[string]string
+	ID           string
+	Service      string
+	Version      string
+	Env          string
+	FirstSeen    time.Time
+	LastSeen     time.Time
+	Metadata     map[string]string
+	CommitSHA    string
+	PRURL        string
+	CommitAuthor string
 }
 
 // ServiceErrorRate holds aggregate success/failure counts for a service in a time window.
@@ -60,16 +66,20 @@ func (s *SQLiteStore) UpsertDeployment(ctx context.Context, d Deployment) error 
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO deployments (id, service, version, env, first_seen, last_seen, metadata)
-		VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?)
+		INSERT INTO deployments (id, service, version, env, first_seen, last_seen, metadata, commit_sha, pr_url, commit_author)
+		VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))
 		ON CONFLICT(id) DO UPDATE SET
-			version    = COALESCE(NULLIF(excluded.version, ''), version),
-			first_seen = MIN(first_seen, excluded.first_seen),
-			last_seen  = MAX(last_seen, excluded.last_seen),
-			metadata   = COALESCE(excluded.metadata, metadata)
+			version       = COALESCE(NULLIF(excluded.version, ''), version),
+			first_seen    = MIN(first_seen, excluded.first_seen),
+			last_seen     = MAX(last_seen, excluded.last_seen),
+			metadata      = COALESCE(excluded.metadata, metadata),
+			commit_sha    = COALESCE(excluded.commit_sha, commit_sha),
+			pr_url        = COALESCE(excluded.pr_url, pr_url),
+			commit_author = COALESCE(excluded.commit_author, commit_author)
 	`,
 		d.ID, d.Service, d.Version, d.Env,
 		firstSeenStr, lastSeenStr, metaJSON,
+		d.CommitSHA, d.PRURL, d.CommitAuthor,
 	)
 	if err != nil {
 		return fmt.Errorf("coldstore: upsert deployment: %w", err)
@@ -83,7 +93,8 @@ func (s *SQLiteStore) UpsertDeployment(ctx context.Context, d Deployment) error 
 // Malformed metadata is tolerated: a warning is logged and an empty map is used.
 func (s *SQLiteStore) DeploymentsInWindow(ctx context.Context, start, end time.Time, serviceFilter string) ([]Deployment, error) {
 	var args []any
-	query := `SELECT id, service, COALESCE(version,''), env, first_seen, last_seen, COALESCE(metadata,'')
+	query := `SELECT id, service, COALESCE(version,''), env, first_seen, last_seen, COALESCE(metadata,''),
+		COALESCE(commit_sha,''), COALESCE(pr_url,''), COALESCE(commit_author,'')
 		FROM deployments
 		WHERE first_seen >= ? AND first_seen <= ?`
 	args = append(args, start.UTC().Format(tsFormat), end.UTC().Format(tsFormat))
@@ -104,7 +115,8 @@ func (s *SQLiteStore) DeploymentsInWindow(ctx context.Context, start, end time.T
 	for rows.Next() {
 		var dep Deployment
 		var firstStr, lastStr, metaStr string
-		if err := rows.Scan(&dep.ID, &dep.Service, &dep.Version, &dep.Env, &firstStr, &lastStr, &metaStr); err != nil {
+		if err := rows.Scan(&dep.ID, &dep.Service, &dep.Version, &dep.Env, &firstStr, &lastStr, &metaStr,
+			&dep.CommitSHA, &dep.PRURL, &dep.CommitAuthor); err != nil {
 			return nil, fmt.Errorf("coldstore: scan deployment: %w", err)
 		}
 		dep.FirstSeen, err = time.Parse(tsFormat, firstStr)
@@ -134,9 +146,11 @@ func (s *SQLiteStore) DeploymentByID(ctx context.Context, id string) (*Deploymen
 	var firstStr, lastStr, metaStr string
 
 	err := s.reader.QueryRowContext(ctx, `
-		SELECT id, service, COALESCE(version,''), env, first_seen, last_seen, COALESCE(metadata,'')
+		SELECT id, service, COALESCE(version,''), env, first_seen, last_seen, COALESCE(metadata,''),
+			COALESCE(commit_sha,''), COALESCE(pr_url,''), COALESCE(commit_author,'')
 		FROM deployments WHERE id = ?`, id,
-	).Scan(&dep.ID, &dep.Service, &dep.Version, &dep.Env, &firstStr, &lastStr, &metaStr)
+	).Scan(&dep.ID, &dep.Service, &dep.Version, &dep.Env, &firstStr, &lastStr, &metaStr,
+		&dep.CommitSHA, &dep.PRURL, &dep.CommitAuthor)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -160,6 +174,51 @@ func (s *SQLiteStore) DeploymentByID(ctx context.Context, id string) (*Deploymen
 	}
 	dep.Metadata = meta
 	return &dep, nil
+}
+
+// DeployRateDelta holds the before/after error-rate comparison around a deploy.
+// BeforeRate/AfterRate are failure ratios (nil when not computable). Ratio is the
+// after/before multiplier, set only when both windows clear minRequests and the
+// comparison is meaningful.
+type DeployRateDelta struct {
+	BeforeRate     *float64
+	AfterRate      *float64
+	BeforeRequests int
+	AfterRequests  int
+	Ratio          *float64
+}
+
+// DeployErrorRateDelta compares a service's failure ratio in the fixed windows
+// before and after firstSeen. It is the single source for the deploy comparison
+// window (5m) and the minimum-sample threshold (10) — both the deploy listing and
+// triage's suspect-change call it so the thresholds live in exactly one place.
+func (s *SQLiteStore) DeployErrorRateDelta(ctx context.Context, service string, firstSeen time.Time) (DeployRateDelta, error) {
+	const sampleWindow = 5 * time.Minute
+	const minRequests = 10
+
+	before, berr := s.ServiceErrorRateInWindow(ctx, service, firstSeen.Add(-sampleWindow), firstSeen)
+	after, aerr := s.ServiceErrorRateInWindow(ctx, service, firstSeen, firstSeen.Add(sampleWindow))
+
+	d := DeployRateDelta{BeforeRequests: before.Total, AfterRequests: after.Total}
+	if berr != nil {
+		return d, berr
+	}
+	if aerr != nil {
+		return d, aerr
+	}
+
+	bRate := float64(before.Failures) / math.Max(float64(before.Total), 1)
+	aRate := float64(after.Failures) / math.Max(float64(after.Total), 1)
+	d.BeforeRate = &bRate
+	d.AfterRate = &aRate
+
+	if before.Total >= minRequests && after.Total >= minRequests &&
+		!(before.Failures == 0 && after.Failures == 0) && // both clean: no signal
+		!(before.Failures == 0 && after.Failures > 0) { // no baseline: skip ratio
+		change := aRate / math.Max(bRate, 0.001)
+		d.Ratio = &change
+	}
+	return d, nil
 }
 
 // ServiceErrorRateInWindow returns the total and failure counts for a service

@@ -180,14 +180,21 @@ type Incident struct {
 	Blast                   *BlastSnapshot       `json:"blast,omitempty"`
 	Alerts                  *AlertSnapshot       `json:"alerts,omitempty"`
 	Runtime                 *RuntimeSnapshot     `json:"runtime,omitempty"`
+	// SuspectDeployID is the deployment correlated to this incident, set once by
+	// the classifier and kept sticky for the incident's lifetime so the triage
+	// Suspect Change does not flicker as evidence churns.
+	SuspectDeployID string `json:"suspect_deploy_id,omitempty"`
 }
 
 type Deployment struct {
-	ID        string
-	Service   string
-	Version   string
-	Env       string
-	FirstSeen time.Time
-	LastSeen  time.Time
-	Metadata  map[string]string
+	ID           string
+	Service      string
+	Version      string
+	Env          string
+	FirstSeen    time.Time
+	LastSeen     time.Time
+	Metadata     map[string]string
+	CommitSHA    string
+	PRURL        string
+	CommitAuthor string
 }

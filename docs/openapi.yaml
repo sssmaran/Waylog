@@ -23,6 +23,8 @@ tags:
     description: OTLP trace ingest converted into schema-2.0 events. HTTP is documented here; gRPC uses OTLP TraceService on the configured OTLP_GRPC_ADDR.
   - name: Signals
     description: Production-context facts used by incident triage.
+  - name: Deployments
+    description: Deployment registration (with optional commit/PR provenance) and query.
   - name: Events
     description: Direct event lookup and search.
   - name: Traces
@@ -246,6 +248,93 @@ paths:
           description: Method Not Allowed
         '503':
           description: Signal store unavailable
+
+  /v1/deployments:
+    post:
+      tags: [Deployments]
+      operationId: registerDeployment
+      summary: Register a deployment
+      description: |
+        Registers a deployment so the incident engine can correlate it to error
+        spikes. CI should include the optional commit/PR provenance
+        (`commit_sha`, `pr_url`, `commit_author`) at deploy time; these are
+        opaque, vendor-neutral strings surfaced later in the triage report's
+        Suspect Change section and the `suspect_change` tool. Requires SQLite.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploymentRequest'
+      responses:
+        '201':
+          description: Deployment registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: {type: string}
+        '400':
+          description: Invalid JSON or missing required fields (id, service, env)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadError'
+        '401':
+          description: Unauthorized
+        '409':
+          description: Deployment env conflict (id already registered to a different env)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadError'
+        '503':
+          description: Cold store unavailable; set SQLITE_PATH
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadError'
+    get:
+      tags: [Deployments]
+      operationId: listDeployments
+      summary: List recent deployments with error-rate enrichment
+      description: |
+        Returns deployments whose first_seen falls within the window, each
+        enriched with the before/after error-rate comparison around the deploy.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+      parameters:
+        - name: window
+          in: query
+          description: Lookback duration (Go duration, e.g. 1h). Capped at 24h.
+          schema: {type: string, default: 1h}
+        - name: service
+          in: query
+          description: Optional service filter.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Deployments in the window
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deployments]
+                properties:
+                  deployments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Deployment'
+        '401':
+          description: Unauthorized
+        '503':
+          description: Cold store unavailable; set SQLITE_PATH
 
   /v1/otlp/v1/traces:
     post:
@@ -1262,6 +1351,65 @@ components:
       properties:
         signal:
           $ref: '#/components/schemas/Signal'
+
+    DeploymentRequest:
+      type: object
+      required: [id, service, env]
+      example:
+        id: deploy_482
+        service: payment-service
+        env: prod
+        version: v1.4.2
+        commit_sha: a1b2c3d
+        pr_url: https://github.com/org/repo/pull/482
+        commit_author: alice
+      properties:
+        id:
+          type: string
+          description: Caller-supplied deployment id (idempotency key).
+        service:
+          type: string
+        env:
+          type: string
+        version:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {type: string}
+        commit_sha:
+          type: string
+          description: Optional, opaque commit hash pushed by CI at deploy time.
+        pr_url:
+          type: string
+          description: Optional full PR/MR URL (vendor-neutral; GitHub/GitLab/Bitbucket).
+        commit_author:
+          type: string
+          description: Optional commit/PR author.
+
+    Deployment:
+      type: object
+      required: [id, service, env, first_seen, last_seen]
+      properties:
+        id: {type: string}
+        service: {type: string}
+        version: {type: string}
+        env: {type: string}
+        first_seen: {type: string, format: date-time}
+        last_seen: {type: string, format: date-time}
+        metadata:
+          type: object
+          additionalProperties: {type: string}
+        commit_sha: {type: string}
+        pr_url: {type: string}
+        commit_author: {type: string}
+        before_requests: {type: integer}
+        after_requests: {type: integer}
+        before_error_rate: {type: number, nullable: true}
+        after_error_rate: {type: number, nullable: true}
+        error_rate_change:
+          type: number
+          nullable: true
+          description: after/before failure-ratio multiplier; null below the sample threshold.
 
     Anchor:
       type: object

@@ -54,6 +54,36 @@ func TestPagerDutyReportCitesEvidence(t *testing.T) {
 	}
 }
 
+func TestMarkdownSuspectChange(t *testing.T) {
+	// Absent: the default test report has no suspect change.
+	if out := Markdown(testReport()); !strings.Contains(out, "## Suspect Change") ||
+		!strings.Contains(out, "not available") {
+		t.Fatalf("expected 'Suspect Change' section with not-available line:\n%s", out)
+	}
+
+	// Present: render the correlated deploy + provenance + rate delta.
+	rep := testReport()
+	before, after := 0.004, 0.061
+	rep.SuspectChange = &pkgtriage.SuspectChange{
+		DeployID: "dep_42", Service: "payment", Version: "v1.4.2",
+		CommitSHA: "a1b2c3d", PRURL: "https://example/pr/482", CommitAuthor: "alice",
+		ErrorRateBefore: &before, ErrorRateAfter: &after,
+	}
+	out := Markdown(rep)
+	for _, want := range []string{
+		"## Suspect Change",
+		"payment v1.4.2",
+		"PR https://example/pr/482",
+		"by alice",
+		"deploy `dep_42`",
+		"err 0.4% -> 6.1%",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func testReport() *pkgtriage.Report {
 	return &pkgtriage.Report{
 		SchemaVersion: pkgtriage.SchemaVersionV1,

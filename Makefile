@@ -48,6 +48,12 @@ first-run: build-crux
 	go build -o ingest ./cmd/ingest
 	./crux first-run
 
+release-check:
+	goreleaser check
+
+release:
+	goreleaser release --snapshot --clean
+
 install-local: build build-crux
 	@mkdir -p "$$(go env GOPATH)/bin"
 	cp crux waylog "$$(go env GOPATH)/bin/"

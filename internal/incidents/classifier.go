@@ -24,6 +24,9 @@ type Classification struct {
 	Evidence                []Evidence
 	NextChecks              []string
 	InstrumentationWarnings []string
+	// SuspectDeployID is the deployment-store id correlated to the incident this
+	// tick, independent of the capped Evidence list. The engine makes it sticky.
+	SuspectDeployID string
 }
 
 func Classify(input ClassificationInput) Classification {
@@ -100,6 +103,19 @@ func Classify(input ClassificationInput) Classification {
 		evidence = append(evidence, signalEvidence(*deploySig, deployLabel(*deploySig)))
 	}
 
+	// A deployment-store match (not a deploy signal) is the suspect change,
+	// surfaced regardless of which cause ultimately wins. mk attaches it to every
+	// returned Classification so the engine can persist it stickily.
+	var suspectDeployID string
+	if deployment != nil {
+		suspectDeployID = deployment.ID
+	}
+	mk := func(cause Cause, confidence Confidence) Classification {
+		c := classification(cause, confidence, evidence, warnings, ctx)
+		c.SuspectDeployID = suspectDeployID
+		return c
+	}
+
 	switch {
 	case depSig != nil && hasDeploy:
 		// Both causes are signal-backed: a cause anchored at/before onset beats
@@ -109,29 +125,29 @@ func Classify(input ClassificationInput) Classification {
 		// Both evidence rows are already attached; the loser surfaces in next
 		// checks.
 		if deployBeatsDependency(deployAt, depSig.Timestamp, input.Incident.StartedAt) {
-			return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
+			return mk(CauseDeploy, ConfidenceHigh)
 		}
-		return classification(CauseDependency, ConfidenceHigh, evidence, warnings, ctx)
+		return mk(CauseDependency, ConfidenceHigh)
 	case depSig != nil:
-		return classification(CauseDependency, ConfidenceHigh, evidence, warnings, ctx)
+		return mk(CauseDependency, ConfidenceHigh)
 	case hasDeploy:
 		// A correlated deploy beats the unconfirmed trace-only downstream
 		// inference (ADR 0001); the downstream stays as evidence + next check.
-		return classification(CauseDeploy, ConfidenceHigh, evidence, warnings, ctx)
+		return mk(CauseDeploy, ConfidenceHigh)
 	case downstream != "":
-		return classification(CauseDependency, ConfidenceMedium, evidence, warnings, ctx)
+		return mk(CauseDependency, ConfidenceMedium)
 	}
 	if len(runtimeSigs) > 0 {
 		top := runtimeSigs[0]
 		ctx.RuntimeSignalID = top.SignalID
 		ctx.RuntimeReason = top.Reason
 		ctx.RuntimeSubtype = stringField(top.Metadata, "subtype")
-		return classification(CauseRuntime, ConfidenceHigh, evidence, warnings, ctx)
+		return mk(CauseRuntime, ConfidenceHigh)
 	}
 	if len(input.Events) > 0 && input.Incident.ErrorFamily.Step != "" && firstFailingDownstream(input.Events) == "" {
-		return classification(CauseApp, ConfidenceMedium, evidence, warnings, ctx)
+		return mk(CauseApp, ConfidenceMedium)
 	}
-	return classification(CauseUnknown, ConfidenceLow, evidence, warnings, ctx)
+	return mk(CauseUnknown, ConfidenceLow)
 }
 
 func sampleTraceID(input ClassificationInput) string {
@@ -504,20 +520,22 @@ func normalizeEvidence(evidence []Evidence, limit int) []Evidence {
 	if limit <= 0 || len(deduped) <= limit {
 		return deduped
 	}
-	// Runtime evidence must never be truncated by the cap: the acceptance gate
-	// and the dashboard Runtime panel both rely on every matched runtime signal
-	// being present. Keep all EvidenceRuntime rows, then fill remaining slots
-	// with the earliest non-runtime rows. Chronological order is preserved
-	// because deduped is already sorted and we append in order.
+	// Some evidence must never be truncated by the cap. Runtime rows: the
+	// acceptance gate and dashboard Runtime panel rely on every matched signal.
+	// Deployment rows (at most one): the suspect-change correlation must stay
+	// visible even under a runtime-signal flood. Keep all of those, then fill
+	// remaining slots with the earliest other rows. Chronological order is
+	// preserved because deduped is already sorted and we append in order.
+	keep := func(k EvidenceKind) bool { return k == EvidenceRuntime || k == EvidenceDeployment }
 	budget := limit
 	for _, ev := range deduped {
-		if ev.Kind == EvidenceRuntime {
+		if keep(ev.Kind) {
 			budget--
 		}
 	}
 	out := make([]Evidence, 0, limit)
 	for _, ev := range deduped {
-		if ev.Kind == EvidenceRuntime {
+		if keep(ev.Kind) {
 			out = append(out, ev)
 			continue
 		}

@@ -63,22 +63,40 @@ func (a incidentLookupAdapter) GetIncident(ctx context.Context, id string) (Inci
 		}
 		return IncidentSummary{}, err
 	}
+	// Prefer the persisted sticky correlation; fall back to scanning evidence for
+	// incidents stored before suspect_deploy_id existed.
+	suspectID := suspectDeploy(inc.Evidence)
+	if inc.SuspectDeployID != "" {
+		suspectID = inc.SuspectDeployID
+	}
 	return IncidentSummary{
-		ID:          inc.IncidentID,
-		Window:      defaultWindowLabel,
-		Env:         inc.Env,
-		StartedAt:   inc.StartedAt,
-		UpdatedAt:   inc.UpdatedAt,
-		Service:     inc.ErrorFamily.Service,
-		Step:        inc.ErrorFamily.Step,
-		ErrorCode:   inc.ErrorFamily.ErrorCode,
-		Confidence:  mapConfidence(inc.Confidence),
-		NextChecks:  append([]string(nil), inc.NextChecks...),
-		Propagation: inc.Propagation,
-		Blast:       inc.Blast,
-		Alerts:      inc.Alerts,
-		Runtime:     inc.Runtime,
+		ID:              inc.IncidentID,
+		Window:          defaultWindowLabel,
+		Env:             inc.Env,
+		StartedAt:       inc.StartedAt,
+		UpdatedAt:       inc.UpdatedAt,
+		Service:         inc.ErrorFamily.Service,
+		Step:            inc.ErrorFamily.Step,
+		ErrorCode:       inc.ErrorFamily.ErrorCode,
+		Confidence:      mapConfidence(inc.Confidence),
+		NextChecks:      append([]string(nil), inc.NextChecks...),
+		Propagation:     inc.Propagation,
+		Blast:           inc.Blast,
+		Alerts:          inc.Alerts,
+		Runtime:         inc.Runtime,
+		SuspectDeployID: suspectID,
 	}, nil
+}
+
+// suspectDeploy returns the id of the deployment the classifier correlated to the
+// incident (the first EvidenceDeployment with a deployment id), or empty when none.
+func suspectDeploy(ev []incidents.Evidence) string {
+	for _, e := range ev {
+		if e.Kind == incidents.EvidenceDeployment && e.DeployID != "" {
+			return e.DeployID
+		}
+	}
+	return ""
 }
 
 // mapConfidence converts an incidents.Confidence string to its pkg/triage
@@ -451,4 +469,60 @@ func (nextChecksAdapter) NextChecks(_ context.Context, inc IncidentSummary) ([]N
 		out = append(out, NextCheckSpec{ID: "check_" + strconv.Itoa(i), Prompt: prompt})
 	}
 	return out, nil
+}
+
+// DeployRecord is the deployment provenance the suspect-change adapter needs.
+type DeployRecord struct {
+	ID           string
+	Service      string
+	Version      string
+	CommitSHA    string
+	PRURL        string
+	CommitAuthor string
+	FirstSeen    time.Time
+}
+
+// DeployStore is the read surface the suspect-change adapter calls. Production
+// wiring satisfies it with a coldstore-backed adapter in cmd/ingest.
+type DeployStore interface {
+	// DeploymentByID returns the deployment, or nil when absent.
+	DeploymentByID(ctx context.Context, id string) (*DeployRecord, error)
+	// DeployErrorRate returns the before/after failure ratios around firstSeen.
+	DeployErrorRate(ctx context.Context, service string, firstSeen time.Time) (before, after *float64, err error)
+}
+
+type suspectChangeAdapter struct{ store DeployStore }
+
+// NewSuspectChangeAdapter wires the suspect-change query over a deployment store.
+func NewSuspectChangeAdapter(store DeployStore) SuspectChangeQuery {
+	return suspectChangeAdapter{store: store}
+}
+
+// SuspectChange reuses the classifier's correlation (inc.SuspectDeployID) and
+// hydrates provenance + error-rate delta. It degrades gracefully to nil — never
+// an error — so an unavailable deploy store only omits the section.
+func (a suspectChangeAdapter) SuspectChange(ctx context.Context, inc IncidentSummary, _ BuildOptions) (*pkgtriage.SuspectChange, error) {
+	if inc.SuspectDeployID == "" {
+		return nil, nil
+	}
+	dep, err := a.store.DeploymentByID(ctx, inc.SuspectDeployID)
+	if err != nil || dep == nil {
+		return nil, nil
+	}
+	sc := &pkgtriage.SuspectChange{
+		DeployID:     dep.ID,
+		Service:      dep.Service,
+		Version:      dep.Version,
+		CommitSHA:    dep.CommitSHA,
+		PRURL:        dep.PRURL,
+		CommitAuthor: dep.CommitAuthor,
+	}
+	if !dep.FirstSeen.IsZero() {
+		sc.DeployedAt = dep.FirstSeen.UTC().Format(time.RFC3339Nano)
+	}
+	if before, after, derr := a.store.DeployErrorRate(ctx, dep.Service, dep.FirstSeen); derr == nil {
+		sc.ErrorRateBefore = before
+		sc.ErrorRateAfter = after
+	}
+	return sc, nil
 }

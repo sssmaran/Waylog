@@ -1,0 +1,47 @@
+# GoReleaser config — GitHub-only release of crux + ingest.
+# SQLite is pure-Go (modernc.org/sqlite), so CGO_ENABLED=0 cross-compiles cleanly
+# to every target. Run `make release-check` to validate, `make release` for a
+# local snapshot.
+version: 2
+project_name: crux
+
+builds:
+  - id: crux
+    main: ./cmd/crux
+    binary: crux
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}}
+  - id: ingest
+    main: ./cmd/ingest
+    binary: ingest
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: crux
+    ids: [crux, ingest]
+    name_template: "crux_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  github:
+    owner: sssmaran
+    name: WaylogCLI
+  draft: true # review before publishing
+  prerelease: auto
+
+changelog:
+  use: github

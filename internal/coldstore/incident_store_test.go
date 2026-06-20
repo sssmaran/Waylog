@@ -84,6 +84,53 @@ func TestIncidentStoreRoundtripAndPrune(t *testing.T) {
 	}
 }
 
+func TestIncidentSuspectDeployRoundTrip(t *testing.T) {
+	managed, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer managed.Close()
+	store := NewIncidentStore(managed.(*SQLiteStore))
+	ctx := context.Background()
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+
+	inc := incidents.Incident{
+		IncidentID:      "inc_sd",
+		Env:             "prod",
+		Service:         "checkout",
+		ErrorFamily:     apiv2.ErrorFamily{Service: "checkout", Step: "charge", ErrorCode: "X"},
+		Status:          incidents.StatusActive,
+		StartedAt:       now,
+		UpdatedAt:       now,
+		LastSeenAt:      now,
+		SuspectDeployID: "dep_42",
+	}
+	if err := store.Upsert(ctx, inc); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(ctx, "inc_sd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SuspectDeployID != "dep_42" {
+		t.Fatalf("round-trip SuspectDeployID = %q, want dep_42", got.SuspectDeployID)
+	}
+
+	// A later upsert with an empty id must not clobber the stored correlation.
+	inc.SuspectDeployID = ""
+	inc.UpdatedAt = now.Add(time.Minute)
+	if err := store.Upsert(ctx, inc); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Get(ctx, "inc_sd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SuspectDeployID != "dep_42" {
+		t.Fatalf("empty upsert clobbered sticky id: %q", got.SuspectDeployID)
+	}
+}
+
 func TestPruneResolvedNeverTouchesActiveOrRecovering(t *testing.T) {
 	ctx := context.Background()
 	managed, err := Open(":memory:")

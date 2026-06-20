@@ -471,6 +471,13 @@ func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Inci
 	inc.Evidence = class.Evidence
 	inc.NextChecks = class.NextChecks
 	inc.InstrumentationWarnings = class.InstrumentationWarnings
+	// Sticky suspect deploy: carry the prior correlation forward and refresh it
+	// when this tick matched one. Once set it is never cleared, so the triage
+	// Suspect Change survives re-classification and evidence-cap churn.
+	inc.SuspectDeployID = existing.SuspectDeployID
+	if class.SuspectDeployID != "" {
+		inc.SuspectDeployID = class.SuspectDeployID
+	}
 	if e.metrics != nil {
 		e.observeClassification(inc.Cause, inc.Confidence)
 	}

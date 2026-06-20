@@ -86,6 +86,68 @@ func TestWriter_SampledInGraphFlag(t *testing.T) {
 	}
 }
 
+// TestWriter_GroupCommitCoalescesFsyncs proves the group-commit win: in sync
+// mode, concurrent writers are made durable by far fewer fsyncs than writes,
+// while every event still lands on disk.
+func TestWriter_GroupCommitCoalescesFsyncs(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewWithConfig(dir, WriterConfig{SyncOnWrite: true})
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+
+	const writers, perWriter = 100, 10
+	const total = writers * perWriter
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perWriter; j++ {
+				ev := testutil.MakeEvent()
+				if err := w.Write(&ev, true); err != nil {
+					t.Errorf("Write: %v", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	syncs := w.syncCount.Load()
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Correctness: never more fsyncs than writes; durability: every event present.
+	if syncs > total {
+		t.Fatalf("fsyncs (%d) exceeded writes (%d)", syncs, total)
+	}
+	// Coalescing: with 100 concurrent writers and real fsync latency, many writes
+	// share each fsync.
+	if syncs >= total {
+		t.Fatalf("no coalescing: %d fsyncs for %d writes", syncs, total)
+	}
+	t.Logf("group commit: %d fsyncs for %d durable writes (%.1fx amortization)",
+		syncs, total, float64(total)/float64(syncs))
+
+	files, _ := filepath.Glob(filepath.Join(dir, "events-*.jsonl"))
+	count := 0
+	for _, fp := range files {
+		f, err := os.Open(fp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			count++
+		}
+		f.Close()
+	}
+	if count != total {
+		t.Fatalf("durability: wrote %d events, found %d on disk", total, count)
+	}
+}
+
 func TestWriter_ConcurrentWrite(t *testing.T) {
 	dir := t.TempDir()
 	w, err := New(dir)
