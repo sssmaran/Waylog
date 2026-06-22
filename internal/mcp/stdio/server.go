@@ -106,7 +106,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, reg *tools.Registry
 		}
 
 		if isNotification(req.ID) {
-			handleNotification(ctx, req, reg, info)
+			// Notifications (no id) carry no response.
 			continue
 		}
 
@@ -172,12 +172,6 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, reg *tools.Registry
 			writeError(enc, req.ID, -32601, "method not found", req.Method)
 		}
 	}
-}
-
-func handleNotification(ctx context.Context, req rpcRequest, reg *tools.Registry, info ServerInfo) {
-	_ = ctx
-	_ = reg
-	_ = info
 }
 
 func writeResult(enc *json.Encoder, id json.RawMessage, result any) {

@@ -42,6 +42,8 @@ const (
 	EvidencePropagation EvidenceKind = "propagation"
 	EvidenceBlast       EvidenceKind = "blast"
 	EvidenceRuntime     EvidenceKind = "runtime"
+	EvidenceTraffic     EvidenceKind = "traffic"
+	EvidenceLatency     EvidenceKind = "latency"
 )
 
 type EvidenceCaptureStatus string

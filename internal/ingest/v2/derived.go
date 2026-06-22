@@ -125,6 +125,87 @@ func (r *Reader) BlastRadius(f SearchFilter, key BlastKeyMode) BlastRadiusResult
 	}
 }
 
+// ServiceStatsRow is per-service request volume and tail latency for a window
+// (all statuses), serving both the traffic (Count) and latency (LatencyMS +
+// Count-as-samples) anomaly detectors from a single index snapshot.
+type ServiceStatsRow struct {
+	Service   string
+	Count     int
+	LatencyMS int64
+}
+
+// ServiceStats returns per-service Count and, when percentile > 0, the nearest-
+// rank percentile of DurationMS, over EVERY event in the window (the
+// 1-request-1-event model — so a silent drop is visible). One snapshot serves
+// both detectors. percentile <= 0 skips the latency sort (LatencyMS = 0).
+// Deterministic order: count desc, service asc.
+func (r *Reader) ServiceStats(f SearchFilter, percentile, limit int) []ServiceStatsRow {
+	if r == nil || r.index == nil {
+		return nil
+	}
+	durs := map[string][]int64{}
+	counts := map[string]int{}
+	for _, ev := range r.index.SnapshotEvents() {
+		if ev == nil || ev.Service == "" {
+			continue
+		}
+		if f.Service != "" && ev.Service != f.Service {
+			continue
+		}
+		if !eventWithinWindow(ev, f) {
+			continue
+		}
+		counts[ev.Service]++
+		if percentile > 0 {
+			durs[ev.Service] = append(durs[ev.Service], ev.DurationMS)
+		}
+	}
+	rows := make([]ServiceStatsRow, 0, len(counts))
+	for svc, c := range counts {
+		var lat int64
+		if percentile > 0 {
+			lat = percentileInt64(durs[svc], percentile)
+		}
+		rows = append(rows, ServiceStatsRow{Service: svc, Count: c, LatencyMS: lat})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Count != rows[j].Count {
+			return rows[i].Count > rows[j].Count
+		}
+		return rows[i].Service < rows[j].Service
+	})
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows
+}
+
+// percentileInt64 returns the nearest-rank percentile of vs (deterministic:
+// sort, then index ceil(p/100·n)-1). p is clamped to [1,99]; empty input is 0.
+func percentileInt64(vs []int64, p int) int64 {
+	n := len(vs)
+	if n == 0 {
+		return 0
+	}
+	if p < 1 {
+		p = 1
+	}
+	if p > 99 {
+		p = 99
+	}
+	s := make([]int64, n)
+	copy(s, vs)
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	rank := (p*n + 99) / 100 // ceil(p/100 * n)
+	if rank < 1 {
+		rank = 1
+	}
+	if rank > n {
+		rank = n
+	}
+	return s[rank-1]
+}
+
 func buildStory(ev *eventv2.Event, linkage string) StoryResponse {
 	out := StoryResponse{
 		TraceID:    ev.TraceID,

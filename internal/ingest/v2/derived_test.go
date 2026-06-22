@@ -67,6 +67,55 @@ func TestTraceStoryByTraceExcludesSuppressedAndBuildsContributingWindow(t *testi
 	}
 }
 
+func TestServiceStatsCountAndPercentile(t *testing.T) {
+	idx := NewRecentIndex(nil)
+	// checkout durations 10..100 (10 events, all statuses); payment: 1 event @5ms.
+	for i := 1; i <= 10; i++ {
+		st := eventv2.StatusOK
+		if i == 3 {
+			st = eventv2.StatusError // volume counts all statuses
+		}
+		ev := testTraceEvent("c"+string(rune('0'+i%10)), "tc"+string(rune('0'+i)), "checkout", st, testTime(i))
+		ev.DurationMS = int64(i * 10)
+		idx.Insert(ev)
+	}
+	pe := testTraceEvent("p1", "tp1", "payment", eventv2.StatusOK, testTime(1))
+	pe.DurationMS = 5
+	idx.Insert(pe)
+	// Out of window: excluded.
+	idx.Insert(testTraceEvent("c-out", "t-out", "checkout", eventv2.StatusOK, testTime(100)))
+
+	reader := NewReader(idx)
+	rows := reader.ServiceStats(SearchFilter{Since: testTime(0), Until: testTime(50)}, 95, 10)
+	got := map[string]ServiceStatsRow{}
+	for _, r := range rows {
+		got[r.Service] = r
+	}
+	// Volume (all statuses, in-window) + p95 (nearest-rank ceil(0.95*10)=10 → 100).
+	if got["checkout"].Count != 10 || got["checkout"].LatencyMS != 100 {
+		t.Fatalf("checkout = count %d / p95 %dms, want 10/100", got["checkout"].Count, got["checkout"].LatencyMS)
+	}
+	if got["payment"].Count != 1 || got["payment"].LatencyMS != 5 {
+		t.Fatalf("payment = count %d / p95 %dms, want 1/5", got["payment"].Count, got["payment"].LatencyMS)
+	}
+	// Deterministic order: count desc → checkout before payment.
+	if len(rows) != 2 || rows[0].Service != "checkout" || rows[1].Service != "payment" {
+		t.Fatalf("order/rows wrong: %+v", rows)
+	}
+
+	// percentile<=0 skips the latency sort (LatencyMS=0) but still counts volume.
+	noLat := reader.ServiceStats(SearchFilter{Service: "checkout", Since: testTime(0), Until: testTime(50)}, 0, 10)
+	if len(noLat) != 1 || noLat[0].Count != 10 || noLat[0].LatencyMS != 0 {
+		t.Fatalf("percentile<=0 should give count without latency: %+v", noLat)
+	}
+
+	// p50 of 10..100 → nearest-rank ceil(0.5*10)=5 → 50.
+	p50 := reader.ServiceStats(SearchFilter{Service: "checkout", Since: testTime(0), Until: testTime(50)}, 50, 10)
+	if len(p50) != 1 || p50[0].LatencyMS != 50 {
+		t.Fatalf("checkout p50 = %+v, want 50ms", p50)
+	}
+}
+
 func TestErrorsGroupsAndPaginates(t *testing.T) {
 	idx := NewRecentIndex(nil)
 	idx.Insert(errorEvent("a", "trace-a", "checkout", "charge", "PMT_502", testTime(3), "u1"))

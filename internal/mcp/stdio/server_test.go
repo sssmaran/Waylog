@@ -125,3 +125,35 @@ func TestServeToolErrorIsResultNotTransportError(t *testing.T) {
 		t.Fatalf("error text not surfaced to model: %v", text)
 	}
 }
+
+// errorCode extracts the JSON-RPC error code from a decoded response (JSON
+// numbers decode to float64).
+func errorCode(t *testing.T, resp map[string]any) int {
+	t.Helper()
+	e, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected a JSON-RPC error, got %v", resp)
+	}
+	return int(e["code"].(float64))
+}
+
+func TestServeParseErrorIsRPCError(t *testing.T) {
+	resps := drive(t, testRegistry(t), `{not valid json`)
+	if got := errorCode(t, resps[0]); got != -32700 {
+		t.Fatalf("malformed input code = %d, want -32700 (parse error)", got)
+	}
+}
+
+func TestServeUnknownMethodIsRPCError(t *testing.T) {
+	resps := drive(t, testRegistry(t), `{"jsonrpc":"2.0","id":1,"method":"does/not/exist"}`)
+	if got := errorCode(t, resps[0]); got != -32601 {
+		t.Fatalf("unknown method code = %d, want -32601 (method not found)", got)
+	}
+}
+
+func TestServeToolsCallMissingNameIsRPCError(t *testing.T) {
+	resps := drive(t, testRegistry(t), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":""}}`)
+	if got := errorCode(t, resps[0]); got != -32602 {
+		t.Fatalf("missing tool name code = %d, want -32602 (invalid params)", got)
+	}
+}

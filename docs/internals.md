@@ -63,6 +63,67 @@ and explainable (no learned models):
   a family must also sustain `MIN_RATE × window-minutes` failures in the
   current window to open an incident.
 
+## Traffic anomaly detection
+
+Error-spike detection is blind to the *silent outage*: request volume collapses
+with zero errors (an upstream stops calling, a deploy wedges intake). When
+`WAYLOG_TRAFFIC_ANOMALY_ENABLED=true`, a parallel detector keys on **per-service
+request volume** (all statuses) using the **same median-of-3-prior-windows
+baseline** as the error detector — deterministic, no learned model.
+
+- **Drop**: open when `current ≤ WAYLOG_TRAFFIC_DROP_FACTOR × baseline`
+  (default `0.5`). **Surge**: open when
+  `current ≥ WAYLOG_TRAFFIC_SURGE_FACTOR × baseline` (default `3.0`; `0` disables).
+- **Low-volume floor** (`WAYLOG_TRAFFIC_MIN_VOLUME`, default `20`): a service is
+  eligible only if its baseline clears the floor — this excludes bursty
+  low-traffic services and makes "drop from nothing" / divide-by-zero impossible.
+- **Sustained gate** (`WAYLOG_TRAFFIC_SUSTAINED_TICKS`, default `2`): the anomaly
+  must hold for N consecutive ticks before an incident opens, damping
+  single-tick noise.
+- A traffic incident is a normal incident keyed by a synthetic family
+  (`step=<traffic>`, `error_code=TRAFFIC_DROP|TRAFFIC_SURGE`), so it reuses the
+  whole pipeline — lifecycle, classifier (incl. **deploy correlation**, so a drop
+  right after a deploy classifies `cause=deploy`), `suspect_change`, notify, and
+  the deterministic `report_hash`/`evidence_fingerprint`.
+
+**Known limitation (honest):** the baseline is the median of the *recent* prior
+windows (~30 min), so this is **local relative** detection, not daily/weekly
+seasonal. It catches sudden drops/surges but a planned, gradual maintenance
+ramp-down can trip a drop alert. A seasonal/ML baseline is intentionally out of
+scope — it would break determinism. Conservative defaults + the floor + the
+sustained gate keep false positives low; the feature is off by default.
+
+## Latency anomaly detection
+
+The third RED leg (Duration). With `WAYLOG_LATENCY_ANOMALY_ENABLED=true`, a
+detector tracks a configurable **tail percentile** of per-request `DurationMS`
+per service (`WAYLOG_LATENCY_PERCENTILE`, default `95`), computed deterministically
+by nearest-rank (sort + index), against the **same median-of-3-prior-windows**
+baseline. A spike opens when `current ≥ WAYLOG_LATENCY_FACTOR × baseline`
+(default `2.0`). Spike-only — a latency *drop* is not an incident.
+
+Two floors keep it honest, addressing the classic latency-detection mistakes:
+
+- **Sample floor** (`WAYLOG_LATENCY_MIN_REQUESTS`, default `50`): a percentile over
+  a few requests is meaningless. A service is eligible only when the current window
+  *and* ≥2 of the 3 baseline windows each clear the floor — so there is never a
+  "0 baseline → infinite spike" false positive.
+- **Absolute floor** (`WAYLOG_LATENCY_MIN_MS`, default `0` = off): stops a large
+  *ratio* on tiny absolute latencies (3 ms → 9 ms) from alerting.
+
+Plus the shared **sustained gate** (`WAYLOG_LATENCY_SUSTAINED_TICKS`, default `2`).
+A latency incident is a synthetic-family incident (`step=<latency>`,
+`error_code=LATENCY_SPIKE`) that reuses the whole pipeline — lifecycle, classifier
+(incl. deploy correlation, so a spike right after a deploy classifies
+`cause=deploy`), `suspect_change`, notify, and the deterministic
+`report_hash`/`evidence_fingerprint`.
+
+**Cost & limits (honest):** the percentile needs a per-service sort over the
+window's durations each tick (the one scaling-sensitive piece — bounded by
+`GRAPH_HOT_WINDOW`). Same local-window, non-seasonal limitation as volume.
+Per-**service** percentiles can mask a single slow **route**; per-route latency is
+a documented future refinement. Off by default.
+
 ## Service attribution
 
 The v2 reader carries per-request service info inferred from span fan-out:

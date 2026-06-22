@@ -39,6 +39,10 @@ profile.cov
 /data/
 data/demo-state/
 *.md
+# Ship these docs/skills despite the blanket *.md ignore above. Skills ship whole
+# (SKILL.md + reference/*.md), so the negation covers the skills tree, not all md.
+!docs/mcp.md
+!skills/**/*.md
 
 # Local runtime/build artifacts
 /ingest

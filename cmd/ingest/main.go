@@ -29,6 +29,7 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/llm"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
+	"github.com/sssmaran/WaylogCLI/internal/notify"
 	otelhttp "github.com/sssmaran/WaylogCLI/internal/otel"
 	"github.com/sssmaran/WaylogCLI/internal/ratelimit"
 	"github.com/sssmaran/WaylogCLI/internal/signals"
@@ -118,6 +119,25 @@ func main() {
 		ResolveAfter:            config.GetenvDuration("WAYLOG_INCIDENT_RESOLVE_AFTER", 2*time.Minute),
 		DeployCorrelationWindow: config.GetenvDuration("WAYLOG_DEPLOY_CORRELATION_WINDOW", 15*time.Minute),
 		SampleLimit:             config.GetenvInt("WAYLOG_INCIDENT_SAMPLE_LIMIT", 5),
+		// Traffic-anomaly detector (opt-in). Defaults are the single source of
+		// truth for the running binary; SurgeFactor=0 disables surge.
+		TrafficAnomaly: incidents.TrafficAnomalyConfig{
+			Enabled:        config.GetenvBool("WAYLOG_TRAFFIC_ANOMALY_ENABLED", false),
+			DropFactor:     config.GetenvFloat("WAYLOG_TRAFFIC_DROP_FACTOR", 0.5),
+			SurgeFactor:    config.GetenvFloat("WAYLOG_TRAFFIC_SURGE_FACTOR", 3.0),
+			MinVolume:      config.GetenvInt("WAYLOG_TRAFFIC_MIN_VOLUME", 20),
+			SustainedTicks: config.GetenvInt("WAYLOG_TRAFFIC_SUSTAINED_TICKS", 2),
+		},
+		// Latency-anomaly detector (opt-in). Defaults are the single source of
+		// truth for the running binary.
+		LatencyAnomaly: incidents.LatencyAnomalyConfig{
+			Enabled:        config.GetenvBool("WAYLOG_LATENCY_ANOMALY_ENABLED", false),
+			Percentile:     config.GetenvInt("WAYLOG_LATENCY_PERCENTILE", 95),
+			Factor:         config.GetenvFloat("WAYLOG_LATENCY_FACTOR", 2.0),
+			MinRequests:    config.GetenvInt("WAYLOG_LATENCY_MIN_REQUESTS", 50),
+			MinMS:          int64(config.GetenvInt("WAYLOG_LATENCY_MIN_MS", 0)),
+			SustainedTicks: config.GetenvInt("WAYLOG_LATENCY_SUSTAINED_TICKS", 2),
+		},
 	}
 	if signalRetention <= 0 {
 		slog.Error("WAYLOG_SIGNAL_RETENTION must be positive", "value", signalRetention)
@@ -384,6 +404,21 @@ func main() {
 				slog.Error("incident engine bootstrap failed", "err", err)
 				os.Exit(1)
 			}
+			// Outbound incident notification (opt-in: enabled only when a
+			// destination is configured). Best-effort, fires once on open/resolve.
+			notifyCfg := notify.Config{
+				SlackWebhookURL:     config.Getenv("WAYLOG_NOTIFY_SLACK_WEBHOOK", ""),
+				PagerDutyRoutingKey: config.Getenv("WAYLOG_NOTIFY_PAGERDUTY_ROUTING_KEY", ""),
+				GenericWebhookURL:   config.Getenv("WAYLOG_NOTIFY_WEBHOOK_URL", ""),
+				BaseURL:             config.Getenv("WAYLOG_NOTIFY_BASE_URL", ""),
+			}
+			if notifyCfg.Enabled() {
+				incidentEngine.SetNotifier(notify.New(notifyCfg, slog.Default()))
+				slog.Info("outbound incident notification enabled",
+					"slack", notifyCfg.SlackWebhookURL != "",
+					"pagerduty", notifyCfg.PagerDutyRoutingKey != "",
+					"webhook", notifyCfg.GenericWebhookURL != "")
+			}
 			if config.GetenvBool("WAYLOG_REBUILD_INCIDENTS_ON_START", false) {
 				rebuildMaxEvents := config.GetenvInt("WAYLOG_INCIDENT_REBUILD_MAX_EVENTS", 250000)
 				if rebuildMaxEvents <= 0 {
@@ -521,6 +556,10 @@ func main() {
 			}
 			if err := tools.RegisterSuspectChangeTool(reg, triageEng); err != nil {
 				slog.Error("suspect_change tool register failed", "err", err)
+				os.Exit(1)
+			}
+			if err := tools.RegisterListActiveIncidentsTool(reg, incidentEngine); err != nil {
+				slog.Error("list_active_incidents tool register failed", "err", err)
 				os.Exit(1)
 			}
 			triageHandler := triagehttp.NewHandler(triageEng)
@@ -841,6 +880,15 @@ func (a incidentReaderAdapter) BlastRadius(f incidents.SearchFilter, key apiv2.B
 func (a incidentReaderAdapter) SearchEvents(f incidents.SearchFilter, limit int) []*eventv2.Event {
 	res := a.reader.SearchEvents(toV2SearchFilter(f), nil, limit)
 	return res.Events
+}
+
+func (a incidentReaderAdapter) ServiceStats(f incidents.SearchFilter, percentile, limit int) []incidents.ServiceStatsRow {
+	rows := a.reader.ServiceStats(toV2SearchFilter(f), percentile, limit)
+	out := make([]incidents.ServiceStatsRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, incidents.ServiceStatsRow{Service: r.Service, Count: r.Count, LatencyMS: r.LatencyMS})
+	}
+	return out
 }
 
 func (a incidentReaderAdapter) TraceStoryByTraceID(traceID string) (apiv2.StoryResponse, bool) {

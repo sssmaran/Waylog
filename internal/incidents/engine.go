@@ -25,6 +25,29 @@ type Config struct {
 	ResolveAfter            time.Duration
 	DeployCorrelationWindow time.Duration
 	SampleLimit             int
+	TrafficAnomaly          TrafficAnomalyConfig
+	LatencyAnomaly          LatencyAnomalyConfig
+}
+
+// TrafficAnomalyConfig configures the volume-anomaly detector. Opt-in; all
+// thresholds are caller-supplied (defaults live at config load in cmd/ingest).
+type TrafficAnomalyConfig struct {
+	Enabled        bool
+	DropFactor     float64 // flag drop when current <= DropFactor * baseline
+	SurgeFactor    float64 // flag surge when current >= SurgeFactor * baseline; 0 disables surge
+	MinVolume      int     // minimum baseline req/window for a service to be eligible
+	SustainedTicks int     // consecutive anomalous ticks required before opening
+}
+
+// LatencyAnomalyConfig configures the tail-latency spike detector. Opt-in;
+// defaults live at config load in cmd/ingest.
+type LatencyAnomalyConfig struct {
+	Enabled        bool
+	Percentile     int     // tail percentile to track (1-99)
+	Factor         float64 // flag when current >= Factor * baseline
+	MinRequests    int     // min samples/window for a meaningful percentile
+	MinMS          int64   // absolute floor on current pX; 0 disables
+	SustainedTicks int     // consecutive anomalous ticks required before opening
 }
 
 func DefaultConfig() Config {
@@ -65,34 +88,52 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// Notifier receives incident lifecycle transitions for outbound notification
+// (Slack, PagerDuty, generic webhook). Implementations must be non-blocking and
+// best-effort: a notify call never blocks or fails an engine tick. Optional.
+type Notifier interface {
+	IncidentOpened(inc Incident)
+	IncidentResolved(inc Incident)
+}
+
 type Engine struct {
-	reader  Reader
-	signals SignalStore
-	deploys DeploySource
-	store   Store
-	cfg     Config
-	metrics *metrics.Metrics
-	log     *slog.Logger
-	now     func() time.Time
+	reader   Reader
+	signals  SignalStore
+	deploys  DeploySource
+	store    Store
+	cfg      Config
+	metrics  *metrics.Metrics
+	log      *slog.Logger
+	notifier Notifier
+	now      func() time.Time
 
 	mu     sync.RWMutex
 	active map[string]Incident
+
+	// pendingTraffic counts consecutive anomalous ticks per "service|direction"
+	// for the sustained-anomaly gate. Touched only on the (serial) tick path.
+	pendingTraffic map[string]int
 }
+
+// SetNotifier attaches an outbound notifier. Optional; nil leaves notification
+// off. Called once at wiring time before ticks start.
+func (e *Engine) SetNotifier(n Notifier) { e.notifier = n }
 
 func NewEngine(reader Reader, signalStore SignalStore, deploys DeploySource, store Store, cfg Config, m *metrics.Metrics, log *slog.Logger) *Engine {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Engine{
-		reader:  reader,
-		signals: signalStore,
-		deploys: deploys,
-		store:   store,
-		cfg:     cfg.withDefaults(),
-		metrics: m,
-		log:     log,
-		now:     time.Now,
-		active:  map[string]Incident{},
+		reader:         reader,
+		signals:        signalStore,
+		deploys:        deploys,
+		store:          store,
+		cfg:            cfg.withDefaults(),
+		metrics:        m,
+		log:            log,
+		now:            time.Now,
+		active:         map[string]Incident{},
+		pendingTraffic: map[string]int{},
 	}
 }
 
@@ -190,8 +231,236 @@ func (e *Engine) derive(ctx context.Context, now time.Time, seed map[string]Inci
 		seen[inc.IncidentID] = struct{}{}
 		out = append(out, derivedRow{Incident: inc, Existed: existed})
 	}
+	// Volume + latency detectors share ONE per-window stats snapshot (count +
+	// optional percentile), so enabling both does not double the index scans.
+	if e.cfg.TrafficAnomaly.Enabled || e.cfg.LatencyAnomaly.Enabled {
+		pct := 0
+		if e.cfg.LatencyAnomaly.Enabled {
+			pct = e.cfg.LatencyAnomaly.Percentile // 0 (traffic-only) skips the latency sort
+		}
+		curStats := reader.ServiceStats(SearchFilter{Since: currentStart, Until: now}, pct, serviceStatsReadLimit)
+		var baseStats [3][]ServiceStatsRow
+		for i := 0; i < 3; i++ {
+			until := now.Add(-time.Duration(i+1) * e.cfg.Window)
+			since := now.Add(-time.Duration(i+2) * e.cfg.Window)
+			baseStats[i] = reader.ServiceStats(SearchFilter{Since: since, Until: until}, pct, serviceStatsReadLimit)
+		}
+		if e.cfg.TrafficAnomaly.Enabled {
+			trafficRows, err := e.deriveTrafficAnomalies(ctx, now, seed, reader, curStats, baseStats, seen)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, trafficRows...)
+		}
+		if e.cfg.LatencyAnomaly.Enabled {
+			latencyRows, err := e.deriveLatencyAnomalies(ctx, now, seed, reader, curStats, baseStats, seen)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, latencyRows...)
+		}
+	}
 	out = append(out, e.deriveMissing(seed, seen, now)...)
 	return out, nil
+}
+
+// trafficDir is the direction of a volume anomaly.
+type trafficDir string
+
+const (
+	trafficDrop  trafficDir = "drop"
+	trafficSurge trafficDir = "surge"
+
+	// trafficStep is the synthetic step for traffic-anomaly incidents; the
+	// synthetic error codes key the incident family. Single source.
+	trafficStep           = "<traffic>"
+	errorCodeTrafficDrop  = "TRAFFIC_DROP"
+	errorCodeTrafficSurge = "TRAFFIC_SURGE"
+
+	// latencyStep / code key latency-anomaly incidents (synthetic family).
+	latencyStep           = "<latency>"
+	errorCodeLatencySpike = "LATENCY_SPIKE"
+
+	serviceStatsReadLimit = 500
+)
+
+// deriveTrafficAnomalies detects per-service request-volume drop/surge against
+// the median of the 3 prior windows (the same baseline machinery as errors),
+// gated by a min-volume floor and a sustained-anomaly count. Operates on
+// pre-fetched per-window stats (shared with the latency detector). Opened
+// incidents are added to seen so the shared recover/resolve path manages them.
+func (e *Engine) deriveTrafficAnomalies(ctx context.Context, now time.Time, seed map[string]Incident, reader Reader, curStats []ServiceStatsRow, baseStats [3][]ServiceStatsRow, seen map[string]struct{}) ([]derivedRow, error) {
+	cfg := e.cfg.TrafficAnomaly
+
+	current := map[string]int{}
+	for _, row := range curStats {
+		current[row.Service] = row.Count
+	}
+	baselineByService := map[string][3]int{}
+	for i := 0; i < 3; i++ {
+		for _, row := range baseStats[i] {
+			b := baselineByService[row.Service]
+			b[i] = row.Count
+			baselineByService[row.Service] = b
+		}
+	}
+
+	// Deterministic evaluation order over the union of services.
+	svcSet := map[string]struct{}{}
+	for s := range current {
+		svcSet[s] = struct{}{}
+	}
+	for s := range baselineByService {
+		svcSet[s] = struct{}{}
+	}
+	services := make([]string, 0, len(svcSet))
+	for s := range svcSet {
+		services = append(services, s)
+	}
+	sort.Strings(services)
+
+	out := make([]derivedRow, 0)
+	for _, svc := range services {
+		baseline := median3(baselineByService[svc])
+		dropKey, surgeKey := svc+"|drop", svc+"|surge"
+		// Floor: only services with real prior traffic are eligible (also avoids
+		// "drop from nothing" and divide-by-zero).
+		if baseline < cfg.MinVolume {
+			delete(e.pendingTraffic, dropKey)
+			delete(e.pendingTraffic, surgeKey)
+			continue
+		}
+		cur := current[svc]
+		dir := trafficDir("")
+		switch {
+		case float64(cur) <= cfg.DropFactor*float64(baseline):
+			dir = trafficDrop
+		case cfg.SurgeFactor > 0 && float64(cur) >= cfg.SurgeFactor*float64(baseline):
+			dir = trafficSurge
+		}
+		if dir == "" {
+			delete(e.pendingTraffic, dropKey)
+			delete(e.pendingTraffic, surgeKey)
+			continue
+		}
+		key := svc + "|" + string(dir)
+		other := dropKey
+		if dir == trafficDrop {
+			other = surgeKey
+		}
+		delete(e.pendingTraffic, other)
+		e.pendingTraffic[key]++
+		if e.pendingTraffic[key] < cfg.SustainedTicks {
+			continue
+		}
+		env := e.trafficEnv(reader, svc, now)
+		inc, existed, err := e.buildTrafficIncident(ctx, seed, svc, env, dir, cur, baseline, now)
+		if err != nil {
+			return nil, err
+		}
+		seen[inc.IncidentID] = struct{}{}
+		out = append(out, derivedRow{Incident: inc, Existed: existed})
+	}
+	return out, nil
+}
+
+// trafficEnv infers the environment for a service from a recent sample event
+// (looks back several windows so a fully-dropped service still resolves an env).
+func (e *Engine) trafficEnv(reader Reader, service string, now time.Time) string {
+	evs := reader.SearchEvents(SearchFilter{
+		Service: service,
+		Since:   now.Add(-4 * e.cfg.Window),
+		Until:   now,
+	}, 1)
+	return firstEventEnv(evs)
+}
+
+// deriveLatencyAnomalies detects per-service tail-latency spikes: the current
+// window's pX vs the median of the qualifying prior-3-window pX values. A service
+// is eligible only when the current window and >=2 baseline windows each clear
+// MinRequests (a percentile over too few samples is meaningless). Sustained-gated
+// and added to seen so the shared recover/resolve path manages lifecycle.
+func (e *Engine) deriveLatencyAnomalies(ctx context.Context, now time.Time, seed map[string]Incident, reader Reader, curStats []ServiceStatsRow, baseStats [3][]ServiceStatsRow, seen map[string]struct{}) ([]derivedRow, error) {
+	cfg := e.cfg.LatencyAnomaly
+
+	type lat struct {
+		ms      int64
+		samples int
+	}
+	current := map[string]lat{}
+	for _, row := range curStats {
+		current[row.Service] = lat{ms: row.LatencyMS, samples: row.Count}
+	}
+	// Per-service baseline pX values from the 3 prior windows, with sample counts.
+	baseline := map[string][]lat{}
+	for i := 0; i < 3; i++ {
+		for _, row := range baseStats[i] {
+			baseline[row.Service] = append(baseline[row.Service], lat{ms: row.LatencyMS, samples: row.Count})
+		}
+	}
+
+	svcSet := map[string]struct{}{}
+	for s := range current {
+		svcSet[s] = struct{}{}
+	}
+	for s := range baseline {
+		svcSet[s] = struct{}{}
+	}
+	services := make([]string, 0, len(svcSet))
+	for s := range svcSet {
+		services = append(services, s)
+	}
+	sort.Strings(services)
+
+	out := make([]derivedRow, 0)
+	for _, svc := range services {
+		key := svc + "|latency"
+		cur := current[svc]
+		// Current window must have enough samples for a meaningful percentile.
+		if cur.samples < cfg.MinRequests {
+			delete(e.pendingTraffic, key)
+			continue
+		}
+		// Baseline = median of windows that themselves cleared MinRequests; need >=2.
+		qualifying := make([]int, 0, 3)
+		for _, b := range baseline[svc] {
+			if b.samples >= cfg.MinRequests {
+				qualifying = append(qualifying, int(b.ms))
+			}
+		}
+		if len(qualifying) < 2 {
+			delete(e.pendingTraffic, key)
+			continue
+		}
+		base := medianInts(qualifying)
+		anomalous := base > 0 &&
+			float64(cur.ms) >= cfg.Factor*float64(base) &&
+			(cfg.MinMS == 0 || cur.ms >= cfg.MinMS)
+		if !anomalous {
+			delete(e.pendingTraffic, key)
+			continue
+		}
+		e.pendingTraffic[key]++
+		if e.pendingTraffic[key] < cfg.SustainedTicks {
+			continue
+		}
+		env := e.trafficEnv(reader, svc, now)
+		inc, existed, err := e.buildLatencyIncident(ctx, seed, svc, env, cfg.Percentile, cur.ms, int64(base), now)
+		if err != nil {
+			return nil, err
+		}
+		seen[inc.IncidentID] = struct{}{}
+		out = append(out, derivedRow{Incident: inc, Existed: existed})
+	}
+	return out, nil
+}
+
+// medianInts returns the median of vs (sorted; lower-middle for even length, so
+// the result is deterministic). vs must be non-empty.
+func medianInts(vs []int) int {
+	s := append([]int(nil), vs...)
+	sort.Ints(s)
+	return s[(len(s)-1)/2]
 }
 
 // deriveMissing emits transitions for seed rows absent from the current cycle:
@@ -238,6 +507,9 @@ func (e *Engine) ApplyLive(ctx context.Context, rows []derivedRow) error {
 			if e.metrics != nil {
 				e.metrics.IncidentResolved.Inc()
 			}
+			if e.notifier != nil {
+				e.notifier.IncidentResolved(dr.Incident)
+			}
 		case StatusRecovering:
 			e.remember(dr.Incident)
 			if dr.Existed {
@@ -253,6 +525,10 @@ func (e *Engine) ApplyLive(ctx context.Context, rows []derivedRow) error {
 				} else {
 					e.metrics.IncidentOpened.Inc()
 				}
+			}
+			// Notify exactly once, on the open transition (not on per-tick updates).
+			if !dr.Existed && e.notifier != nil {
+				e.notifier.IncidentOpened(dr.Incident)
 			}
 		}
 	}
@@ -482,6 +758,147 @@ func (e *Engine) buildIncidentFromSeed(ctx context.Context, seed map[string]Inci
 		e.observeClassification(inc.Cause, inc.Confidence)
 	}
 	return inc, hadExisting, nil
+}
+
+// buildTrafficIncident projects a volume anomaly into an Incident. It reuses the
+// signal/deploy correlation + classifier (so a drop right after a deploy is
+// classified cause=deploy and suspect_change surfaces it) but skips the
+// error-trace/blast/propagation path, which has no data for a volume anomaly.
+func (e *Engine) buildTrafficIncident(ctx context.Context, seed map[string]Incident, service, env string, dir trafficDir, current, baseline int, now time.Time) (Incident, bool, error) {
+	code := errorCodeTrafficDrop
+	if dir == trafficSurge {
+		code = errorCodeTrafficSurge
+	}
+	family := apiv2.ErrorFamily{Service: service, Step: trafficStep, ErrorCode: code}
+	return e.buildAnomalyIncident(ctx, seed, env, family, current, baseline, trafficLift(current, baseline, dir),
+		trafficEvidence(service, dir, current, baseline, now), now)
+}
+
+// buildAnomalyIncident projects a volume/latency anomaly into an Incident. It
+// reuses signal/deploy correlation + the classifier (so an anomaly right after a
+// deploy classifies cause=deploy with suspect_change) and skips the error-trace
+// path, which has no data for a synthetic-family anomaly. leadEvidence is the
+// cited measurement row; severity scales with the larger of current/baseline.
+func (e *Engine) buildAnomalyIncident(ctx context.Context, seed map[string]Incident, env string, family apiv2.ErrorFamily, current, baseline int, lift float64, leadEvidence Evidence, now time.Time) (Incident, bool, error) {
+	startedAt := now
+	if prior, ok := findByFamilyIn(seed, env, family); ok {
+		startedAt = prior.StartedAt
+	}
+	id := StableID(env, family, startedAt)
+	existing, hadExisting := getCachedIn(seed, id)
+	if !hadExisting {
+		if prior, ok := findByFamilyIn(seed, env, family); ok {
+			existing = prior
+			id = prior.IncidentID
+			hadExisting = true
+		}
+	}
+
+	sigs, err := e.querySignals(ctx, env, now.Add(-e.cfg.DeployCorrelationWindow), now)
+	if err != nil && !errors.Is(err, signals.ErrUnavailable) {
+		return Incident{}, false, err
+	}
+	deploys, err := e.queryDeploys(ctx, family.Service, now.Add(-e.cfg.DeployCorrelationWindow), now)
+	if err != nil {
+		return Incident{}, false, err
+	}
+
+	inc := Incident{
+		IncidentID:    id,
+		Env:           env,
+		Service:       family.Service,
+		ErrorFamily:   family,
+		Status:        StatusActive,
+		Severity:      severity(maxInt(current, baseline), 1, lift),
+		StartedAt:     startedAt,
+		UpdatedAt:     now,
+		LastSeenAt:    now,
+		Lift:          lift,
+		BaselineCount: baseline,
+		CurrentCount:  current,
+	}
+	if hadExisting {
+		inc.StartedAt = existing.StartedAt
+		inc.RecoveringAt = nil
+	}
+	inc.Alerts = updateAlertSnapshot(existing.Alerts, captureAlertEvidenceFromSignals(sigs, inc, now, e.cfg.DeployCorrelationWindow))
+	inc.Runtime = updateRuntimeSnapshot(existing.Runtime, captureRuntimeEvidence(sigs, inc, now, e.cfg.DeployCorrelationWindow))
+
+	class := Classify(ClassificationInput{Incident: inc, Events: nil, Signals: sigs, Deployments: deploys, Now: now})
+	inc.Cause = class.Cause
+	inc.Confidence = class.Confidence
+	// Lead with the cited measurement row, then the classifier's correlation
+	// evidence (deploy/signal/runtime).
+	inc.Evidence = append([]Evidence{leadEvidence}, class.Evidence...)
+	inc.NextChecks = class.NextChecks
+	inc.InstrumentationWarnings = class.InstrumentationWarnings
+	inc.SuspectDeployID = existing.SuspectDeployID
+	if class.SuspectDeployID != "" {
+		inc.SuspectDeployID = class.SuspectDeployID
+	}
+	if e.metrics != nil {
+		e.observeClassification(inc.Cause, inc.Confidence)
+	}
+	return inc, hadExisting, nil
+}
+
+// trafficLift quantifies how far volume moved: for a drop, how many× below
+// baseline (baseline/current); for a surge, how many× above (current/baseline).
+func trafficLift(current, baseline int, dir trafficDir) float64 {
+	if dir == trafficSurge {
+		return float64(current) / math.Max(float64(baseline), 1)
+	}
+	return float64(baseline) / math.Max(float64(current), 1)
+}
+
+func trafficEvidence(service string, dir trafficDir, current, baseline int, now time.Time) Evidence {
+	verb := "dropped"
+	if dir == trafficSurge {
+		verb = "surged"
+	}
+	return Evidence{
+		Kind:       EvidenceTraffic,
+		Title:      "Request volume " + verb,
+		Detail:     service,
+		Service:    service,
+		OccurredAt: now,
+		Fields: map[string]any{
+			"direction": string(dir),
+			"current":   current,
+			"baseline":  baseline,
+		},
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// buildLatencyIncident projects a tail-latency spike into an Incident via the
+// shared anomaly builder. currentMS/baselineMS are the tracked percentile values.
+func (e *Engine) buildLatencyIncident(ctx context.Context, seed map[string]Incident, service, env string, percentile int, currentMS, baselineMS int64, now time.Time) (Incident, bool, error) {
+	family := apiv2.ErrorFamily{Service: service, Step: latencyStep, ErrorCode: errorCodeLatencySpike}
+	lift := float64(currentMS) / math.Max(float64(baselineMS), 1)
+	return e.buildAnomalyIncident(ctx, seed, env, family, int(currentMS), int(baselineMS), lift,
+		latencyEvidence(service, percentile, currentMS, baselineMS, now), now)
+}
+
+func latencyEvidence(service string, percentile int, currentMS, baselineMS int64, now time.Time) Evidence {
+	return Evidence{
+		Kind:       EvidenceLatency,
+		Title:      "Tail latency spiked",
+		Detail:     service,
+		Service:    service,
+		OccurredAt: now,
+		Fields: map[string]any{
+			"percentile":  percentile,
+			"current_ms":  currentMS,
+			"baseline_ms": baselineMS,
+		},
+	}
 }
 
 func sampleEventsFromReader(reader Reader, f apiv2.ErrorFamily, since, until time.Time, limit int) []*eventv2.Event {

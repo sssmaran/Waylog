@@ -17,6 +17,19 @@ type Reader interface {
 	// Added for incident evidence capture (v1.0):
 	TraceStoryByTraceID(traceID string) (apiv2.StoryResponse, bool)
 	TraceEvents(traceID string) ([]*eventv2.Event, bool)
+
+	// ServiceStats returns per-service request volume (Count) and, when
+	// percentile > 0, the tail latency (LatencyMS) over the window — one snapshot
+	// serving both the traffic and latency anomaly detectors.
+	ServiceStats(f SearchFilter, percentile, limit int) []ServiceStatsRow
+}
+
+// ServiceStatsRow is per-service request volume and tail latency for a window.
+// Count is the request count (volume and, for latency, the sample count).
+type ServiceStatsRow struct {
+	Service   string
+	Count     int
+	LatencyMS int64
 }
 
 type SearchFilter struct {
