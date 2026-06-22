@@ -27,6 +27,8 @@ import (
 	"github.com/sssmaran/WaylogCLI/internal/ingest"
 	ingestv2 "github.com/sssmaran/WaylogCLI/internal/ingest/v2"
 	"github.com/sssmaran/WaylogCLI/internal/llm"
+	"github.com/sssmaran/WaylogCLI/internal/mcp"
+	mcphttp "github.com/sssmaran/WaylogCLI/internal/mcp/http"
 	"github.com/sssmaran/WaylogCLI/internal/mcp/stdio"
 	"github.com/sssmaran/WaylogCLI/internal/metrics"
 	"github.com/sssmaran/WaylogCLI/internal/notify"
@@ -603,6 +605,15 @@ func main() {
 	mux.Handle("/v1/ask", agentCORS("POST, OPTIONS", ingestServer.Ask))
 	mux.Handle("/v1/plans/execute", agentCORS("POST, OPTIONS", ingestServer.PlanExecute))
 	mux.Handle("/v1/stream/plans/", agentCORS("GET, OPTIONS", ingestServer.PlanStream))
+
+	// MCP over Streamable HTTP (opt-in): lets a remote/team agent reach this
+	// running server and drive the same tools as stdio. Behind the same
+	// agent-scope auth + rate limit as /v1/tools.
+	if config.GetenvBool("MCP_HTTP", false) {
+		mcpHTTP := mcphttp.Handler(reg, mcp.ServerInfo{Name: "waylog", Version: "0.1.0"})
+		mux.Handle("/mcp", agentCORS("POST, OPTIONS", mcpHTTP.ServeHTTP))
+		slog.Info("MCP HTTP enabled", "endpoint", "/mcp", "protocol", mcp.ProtocolVersion)
+	}
 
 	// Dashboard.
 	mux.Handle("/ui/", dashGate(http.StripPrefix("/ui/", dashboard.Handler())))

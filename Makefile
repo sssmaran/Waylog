@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help build build-crux first-run install-local build-examples ingest ingest-mcp waylog checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
+.PHONY: help build build-crux first-run install-local build-examples ingest ingest-mcp ingest-mcp-http waylog checkout test test-race test-sdk lint ci fmt vet vet-sdk clean kafka-up kafka-down demo demo-stop demo-acceptance proof-loop rca-scorecard rollup-comparison otlp-conformance demo-up demo-down micro-demo micro-demo-stop docker-build docker-up docker-down docker-reset docker-dev docker-prod ts-install ts-build ts-test bench-gate
 
 help:
 	@echo "Targets:"
@@ -10,6 +10,7 @@ help:
 	@echo "  build-examples - build example/demo binaries"
 	@echo "  ingest   - run ingest server"
 	@echo "  ingest-mcp - run ingest server with MCP stdio enabled"
+	@echo "  ingest-mcp-http - run ingest server with MCP over HTTP (POST /mcp)"
 	@echo "  waylog   - run CLI"
 	@echo "  checkout - run checkout server"
 	@echo "  test     - run tests"
@@ -73,6 +74,9 @@ ingest:
 
 ingest-mcp:
 	MCP_STDIO=1 go run ./cmd/ingest
+
+ingest-mcp-http:
+	MCP_HTTP=1 WAYLOG_AGENT_KEY=$${WAYLOG_AGENT_KEY:-dev-agent-key} go run ./cmd/ingest
 
 waylog:
 	go run ./cmd/waylog

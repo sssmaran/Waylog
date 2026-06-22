@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sssmaran/WaylogCLI/internal/mcp"
 	"github.com/sssmaran/WaylogCLI/internal/tools"
 )
 
@@ -69,7 +70,7 @@ func TestServeInitializeAndList(t *testing.T) {
 		t.Fatalf("want 2 responses (notification is silent), got %d: %v", len(resps), resps)
 	}
 	initRes := resps[0]["result"].(map[string]any)
-	if initRes["protocolVersion"] != protocolVersion {
+	if initRes["protocolVersion"] != mcp.ProtocolVersion {
 		t.Fatalf("protocolVersion = %v", initRes["protocolVersion"])
 	}
 	if _, ok := initRes["capabilities"].(map[string]any)["tools"]; !ok {
